@@ -18,7 +18,19 @@ export function segmentText(text: string): Segment[] {
   if (text.length === 0) return [];
 
   // Pass 1: fence boundaries. The closing fence consumes its trailing newline
-  // so the next region starts cleanly on the following line.
+  // ONLY for LF ("\n") endings, so the next region starts cleanly on the
+  // following line. With CRLF the "\r" is not consumed: the code segment ends
+  // at the backticks and the leading "\r\n" opens the next region, which
+  // surfaces as a short prose segment between the code block and the text
+  // after it. The tiling invariants still hold (segments stay contiguous and
+  // offsets stay absolute); only the kind boundary lands one line-ending
+  // earlier than an LF input would give. Pinned by the CRLF tests in
+  // test/segment/segment.test.ts.
+  //
+  // Deliberately NOT normalized upstream: spans must stay faithful to the
+  // original string, so rewriting CRLF before segmenting would shift every
+  // downstream finding offset. Per review, CRLF-awareness belongs here in the
+  // fence matcher when it is tuned (Task 10 owns that tuning).
   const regions: Array<{ start: number; end: number; kind: "code" | "other" }> = [];
   const fence = /```[\s\S]*?(?:```\n?|$)/g;
   let last = 0;
