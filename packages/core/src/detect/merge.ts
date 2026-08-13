@@ -10,6 +10,29 @@ import type { Finding } from "./types.js";
  * re-derived from ir.entityTypes by the producers (tier0.ts), so re-reading the
  * IR here could only disagree with them; actions are resolved downstream in
  * Task 12 over the clusters this module exposes.
+ *
+ * Both exports return the CALLER'S OWN finding objects, never copies, so the two
+ * can be joined by reference. Composing them for action resolution goes one of
+ * two ways, and either is fine:
+ *
+ *   per-cluster merge:  for (const cluster of clusterOverlapping(raw)) {
+ *                         const winners = mergeFindings(cluster);
+ *                         // action = strictest over `cluster`, applied to `winners`
+ *                       }
+ *   identity-map join:  const byMember = new Map(clusterOverlapping(raw)
+ *                         .flatMap((c) => c.map((m) => [m, c] as const)));
+ *                       for (const w of mergeFindings(raw)) byMember.get(w); // its cluster
+ *
+ * The reference-identity tests exist for the second form: a defensive clone
+ * anywhere in here turns every Map lookup into a miss, silently. If that glue
+ * grows past roughly five lines in Task 12, fold a combined export back into
+ * this module rather than letting the two-call dance spread to more callers.
+ *
+ * Both comparators assume `confidence` is a finite number. A NaN makes every
+ * comparison false, which makes Array#sort's ordering inconsistent and quietly
+ * destroys the determinism everything below depends on -- so tier adapters must
+ * validate confidence at the boundary, as types.ts already requires them to do
+ * for span text.
  */
 
 const SEVERITY_RANK: Record<Severity, number> = { low: 0, medium: 1, high: 2, critical: 3 };

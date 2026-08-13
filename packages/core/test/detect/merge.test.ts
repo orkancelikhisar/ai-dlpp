@@ -57,6 +57,36 @@ describe("mergeFindings", () => {
     expect([out[0]!.start, out[0]!.end]).toEqual([0, 20]);
   });
 
+  // Severity dominates outright: it beats confidence AND width at once, which
+  // no other test pins (they hold the weaker keys equal).
+  it("prefers a narrow low-confidence critical over a wide high-confidence low", () => {
+    const critical = span(10, 14, { severity: "critical", confidence: 0.6, source: "aadhaar-rule" });
+    const low = span(0, 40, { severity: "low", confidence: 0.99, source: "entropy-rule" });
+    const out = mergeFindings([critical, low]);
+    expect(out.map((x) => x.source)).toEqual(["aadhaar-rule"]);
+  });
+
+  // Winners are the SAME OBJECTS as the inputs, never copies: Task 12 joins
+  // merge winners back to their clusters through an identity Map, and a defensive
+  // clone here would silently turn every lookup into a miss.
+  it("returns input findings by reference, not copies", () => {
+    const wide = span(0, 45, { source: "entropy-rule", confidence: 0.7 });
+    const narrow = span(5, 15, { source: "pan-rule", confidence: 0.9 });
+    const far = span(60, 70, { source: "jwt-rule" });
+    const out = mergeFindings([wide, narrow, far]);
+    expect(out[0]).toBe(narrow);
+    expect(out[1]).toBe(far);
+  });
+
+  // Degenerate spans tier 0 never emits. The predicate says two zero-width spans
+  // at the same offset do not overlap, so merge keeps both; pinned so that any
+  // future change here is a deliberate one.
+  it("keeps both of two identical zero-width findings at the same offset", () => {
+    const a = f({ start: 7, end: 7, text: "", source: "rule-a" });
+    const b = f({ start: 7, end: 7, text: "", source: "rule-a" });
+    expect(mergeFindings([a, b])).toHaveLength(2);
+  });
+
   // (b) containment: entropy fires on the whole "SECRET_TOKEN=<secret>" run at
   // 0.7 while a regex rule matches just the secret inside it at 0.9. Equal
   // severity, so confidence decides -- and the winner keeps its OWN narrow span.
@@ -155,6 +185,10 @@ describe("clusterOverlapping", () => {
     const clusters = clusterOverlapping([entropy, pan]);
     expect(clusters).toHaveLength(1);
     expect(clusters[0]!.map((x) => x.source)).toEqual(["entropy-rule", "pan-rule"]);
+    // By reference: Task 12 keys a Map on cluster members to find the merge
+    // winner's cluster, so cluster members must be the caller's own objects.
+    expect(clusters[0]![0]).toBe(entropy);
+    expect(clusters[0]![1]).toBe(pan);
     // Merge keeps the critical entropy finding only; the PAN survives in the cluster.
     const merged = mergeFindings([entropy, pan]);
     expect(merged.map((x) => x.source)).toEqual(["entropy-rule"]);
