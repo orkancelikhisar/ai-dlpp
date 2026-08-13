@@ -69,6 +69,36 @@ describe("pan-structure", () => {
   });
 });
 
+describe("jwt-shape", () => {
+  const jwt = getValidator("jwt-shape");
+  const b64url = (s: string) => Buffer.from(s).toString("base64url");
+  const header = b64url('{"alg":"HS256"}');
+
+  it("accepts a structurally valid JWT", () => {
+    const token = `${b64url('{"alg":"HS256","typ":"JWT"}')}.${b64url('{"sub":"1"}')}.${b64url("sig")}`;
+    expect(jwt(token)).toBe(true);
+  });
+  it("rejects three dot-separated non-JWT parts", () => {
+    expect(jwt("aaa.bbb.ccc")).toBe(false); // header decodes but has no alg
+    expect(jwt("not a token")).toBe(false);
+  });
+
+  // All three parts are charset-gated, not just the header -- otherwise the
+  // "three base64url parts" contract is a claim the code does not enforce.
+  it("rejects non-base64url payload and signature parts", () => {
+    expect(jwt(`${header}.!not base64!.@@@`)).toBe(false);
+    expect(jwt(`${header}. . `)).toBe(false);
+  });
+  it("requires a non-empty payload", () => {
+    expect(jwt(`${header}..`)).toBe(false);
+  });
+  // The signature is the one part allowed to be empty: an unsigned alg:"none"
+  // token is still a token, and still worth reporting if it leaks.
+  it("accepts an unsigned token with an empty signature", () => {
+    expect(jwt(`${b64url('{"alg":"none"}')}.${b64url("{}")}.`)).toBe(true);
+  });
+});
+
 describe("registry", () => {
   it("resolves every registered validator", () => {
     for (const name of ["luhn", "verhoeff", "pan-structure", "jwt-shape"]) {

@@ -123,10 +123,14 @@ export function shannonEntropy(s: string): number {
   return h;
 }
 
+/** base64url alphabet, non-empty. JWT parts carry no `=` padding. */
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
 function decodeBase64Url(part: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]+$/.test(part)) return undefined;
+  if (!BASE64URL.test(part)) return undefined;
   try {
-    // atob is ES-level in Node 20+ and browsers; no DOM lib needed.
+    // atob is a WHATWG global (typed via @types/node); available in browsers
+    // and Node 16+; no DOM lib needed.
     const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
     return atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
   } catch {
@@ -136,21 +140,38 @@ function decodeBase64Url(part: string): string | undefined {
 
 /**
  * JWT shape: three base64url parts whose header decodes to a JSON object
- * carrying a string `alg`. Structure only -- this never verifies the signature,
- * so `alg: "none"` and expired or forged tokens still match. That is intended:
- * a leaked token is reportable whether or not it would authenticate.
+ * carrying a string `alg`. Header and payload must be non-empty base64url; the
+ * signature must be base64url but MAY be empty, so unsigned `alg: "none"`
+ * tokens still match.
+ *
+ * Structure only -- this never verifies the signature, so `alg: "none"` and
+ * expired or forged tokens still match. That is intended: a leaked token is
+ * reportable whether or not it would authenticate.
  */
 function jwtShape(candidate: string): boolean {
   const parts = candidate.split(".");
   if (parts.length !== 3) return false;
+  // Charset-gate every part, not just the header -- the contract above says
+  // "three base64url parts", so all three are checked or the claim is a lie.
+  // The signature is the only part allowed to be empty (unsigned tokens).
+  if (!BASE64URL.test(parts[1]!)) return false;
+  if (parts[2] !== "" && !BASE64URL.test(parts[2]!)) return false;
   const header = decodeBase64Url(parts[0]!);
   if (header === undefined) return false;
+  let parsed: unknown;
   try {
-    const obj = JSON.parse(header) as Record<string, unknown>;
-    return typeof obj["alg"] === "string";
+    parsed = JSON.parse(header);
   } catch {
-    return false;
+    return false; // scoped to parsing: nothing below should be absorbed here
   }
+  // Explicit object check. `typeof null === "object"`, and a JSON header of
+  // `null` would otherwise throw on property access and be swallowed by a
+  // broader catch -- correct by accident, and able to mask real bugs.
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as Record<string, unknown>)["alg"] === "string"
+  );
 }
 
 const REGISTRY: Record<string, Validator> = {

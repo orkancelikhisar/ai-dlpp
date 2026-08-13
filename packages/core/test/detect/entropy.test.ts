@@ -1,20 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getValidator, shannonEntropy } from "../../src/detect/validators.js";
+import { shannonEntropy } from "../../src/detect/validators.js";
 
-describe("jwt-shape", () => {
-  const jwt = getValidator("jwt-shape");
-  const b64url = (s: string) => Buffer.from(s).toString("base64url");
-
-  it("accepts a structurally valid JWT", () => {
-    const token = `${b64url('{"alg":"HS256","typ":"JWT"}')}.${b64url('{"sub":"1"}')}.${b64url("sig")}`;
-    expect(jwt(token)).toBe(true);
-  });
-  it("rejects three dot-separated non-JWT parts", () => {
-    expect(jwt("aaa.bbb.ccc")).toBe(false); // header decodes but has no alg
-    expect(jwt("not a token")).toBe(false);
-  });
-});
-
+// jwt-shape lives in validators.test.ts with the rest of the registry; this
+// file covers only the entropy scorer.
 describe("shannonEntropy", () => {
   it("is 0 for a single repeated character", () => {
     expect(shannonEntropy("aaaaaaaa")).toBe(0);
