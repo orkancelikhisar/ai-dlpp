@@ -29,12 +29,30 @@ export interface TierConfig {
   backend?: "wasm" | "webgpu";
 }
 
-/** Seam for tiers 1-2 (Plans 4-5). Labels come from ir.entityTypes at inference. */
+/**
+ * Seam for tiers 1-2 (Plans 4-5). Labels come from ir.entityTypes at inference.
+ *
+ * Implementers MUST re-derive `text` as message.slice(start, end) from the
+ * offsets they report, and never pass through model-produced span text:
+ * tokenizer offset drift makes the two disagree, and everything downstream
+ * relies on Finding.text matching the offsets exactly.
+ *
+ * `signal` is a real cancellation channel, not decoration. Per spec 5.3 a
+ * tier-2 run that exceeds latencyBudgetMs degrades to the tier 0/1 findings;
+ * racing a timeout alone would leak the still-running inference, which then
+ * serializes behind the engine and delays the *next* message's tier-2.
+ * Implementers should abort in-flight work when the signal fires.
+ */
 export interface SpanTagger {
-  tag(segments: Segment[], ir: PolicyIr): Promise<Finding[]>;
+  tag(segments: Segment[], ir: PolicyIr, signal?: AbortSignal): Promise<Finding[]>;
 }
 export interface SemanticJudge {
-  judge(segments: Segment[], ir: PolicyIr, priorFindings: Finding[]): Promise<Finding[]>;
+  judge(
+    segments: Segment[],
+    ir: PolicyIr,
+    priorFindings: Finding[],
+    signal?: AbortSignal,
+  ): Promise<Finding[]>;
 }
 
 export interface DetectorEngines {
