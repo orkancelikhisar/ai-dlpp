@@ -1,7 +1,12 @@
 export type Validator = (candidate: string) => boolean;
 
+// Fail closed until Task 5 lands the real implementations: a stub that returned true
+// would silently validate nothing. The loader only checks that names resolve, so a
+// registered-but-unimplemented validator is safe to declare and unsafe to call.
 const REGISTRY: Record<string, Validator> = {
-  "pan-structure": () => true, // implemented in Task 5
+  "pan-structure": () => {
+    throw new Error("pan-structure not implemented (Task 5)");
+  },
 };
 
 export function hasValidator(name: string): boolean {
