@@ -48,6 +48,23 @@ describe("segmentText", () => {
   });
 });
 
+// Entropy rules (tier 0) scan code and kv segments ONLY, so a key shape that
+// falls through to prose is a secret that is never scanned. Under-inclusion is
+// the dangerous direction here, hence these shapes are pinned.
+describe("segmentText kv key shapes", () => {
+  it("classifies a YAML list item with a key as kv", () => {
+    expect(segmentText("- api_key: x9K2mQ8vL4jR7nT3wY6z")[0]!.kind).toBe("kv");
+  });
+
+  it("classifies a digit-initial key as kv", () => {
+    expect(segmentText("2fa_secret: abc")[0]!.kind).toBe("kv");
+  });
+
+  it("leaves a plain list item (no separator) as prose", () => {
+    expect(segmentText("- just a list item")[0]!.kind).toBe("prose");
+  });
+});
+
 describe("segmentText documented quirks", () => {
   // Pinned, not accidental: the closing-fence match consumes "\n" but not
   // "\r\n", so a CRLF fence leaves the line ending at the head of the next

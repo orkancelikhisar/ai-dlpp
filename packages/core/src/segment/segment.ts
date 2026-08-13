@@ -7,7 +7,18 @@ export interface Segment {
   text: string;
 }
 
-const KV_LINE = /^\s*[A-Za-z_][A-Za-z0-9_.-]*\s*[=:]\s*\S/;
+/**
+ * A key/value line: optional YAML list dash, a key, a `=` or `:`, a value.
+ *
+ * Deliberately generous on the key: digit-initial keys (`2fa_secret:`) and YAML
+ * list entries (`- api_key:`) are real config shapes, and anything not matched
+ * here is classified prose -- which tier-0 entropy rules never scan. So a key
+ * shape this misses is a secret nobody looks at, while a false kv only means an
+ * extra segment gets scanned. Under-inclusion is the expensive direction; the
+ * separator plus a non-space value is what keeps prose out. A bare list item
+ * ("- just a list item") has no separator and stays prose.
+ */
+const KV_LINE = /^\s*(?:-\s+)?[A-Za-z0-9_][A-Za-z0-9_.-]*\s*[=:]\s*\S/;
 
 /**
  * Split text into contiguous, gap-free segments with absolute offsets.

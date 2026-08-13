@@ -1,19 +1,30 @@
 import type { PolicyIr, Rule } from "../policy/types.js";
 import type { Segment } from "../segment/segment.js";
 import type { Finding } from "./types.js";
-import { getValidator } from "./validators.js";
+import { getValidator, shannonEntropy } from "./validators.js";
 
 /**
- * Tier 0 -- spec 4.1. Deterministic regex rules over the FULL message text.
+ * Tier 0 -- spec 4.1. Deterministic rules: regex over the FULL message text,
+ * entropy per segment.
  *
- * Scanning the whole message rather than each segment is what makes spans
+ * Scanning the whole message rather than each segment is what makes regex spans
  * absolute for free (a match index IS the offset into the message), and it
- * keeps entities that straddle a segment boundary detectable. Segments are
- * passed in for the entropy rules (Task 10), which need per-segment windows.
+ * keeps entities that straddle a segment boundary detectable. Entropy rules
+ * cannot work that way -- they are scoped to code and kv segments, so they walk
+ * `segments` and rebase each match onto the segment's absolute start.
  */
 
 const BASE_CONFIDENCE = 0.9;
 const CONTEXT_BONUS = 0.05;
+/**
+ * Entropy findings are FIXED at 0.7 -- below any regex rule's floor. Entropy is
+ * a heuristic over shape alone: it knows a string looks random, never that it is
+ * a secret. Raising the confidence is tier 1-2's job (or the user's), so nothing
+ * here varies it.
+ */
+const ENTROPY_CONFIDENCE = 0.7;
+/** Default candidate length when a rule omits `minLength`. */
+const DEFAULT_MIN_LENGTH = 20;
 /** Characters of context inspected on each side of a match for boost keywords. */
 const CONTEXT_WINDOW = 40;
 const MAX_CONFIDENCE = 0.99;
@@ -92,6 +103,57 @@ function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
 }
 
 /**
+ * Entropy rules -- spec 4.1. Unlike regex rules these scan PER SEGMENT, and only
+ * code and kv segments: a high-entropy run in prose is far more often a hash, an
+ * id, or a URL slug than a credential, and scanning prose drowns the user in
+ * false positives. The cost is that a secret pasted mid-sentence is missed here;
+ * tiers 1-2 are what cover that.
+ *
+ * Candidates are maximal runs of the secret alphabet, so a run is scored as the
+ * user wrote it rather than as an arbitrary window. Note the alphabet contains
+ * "=" and "_", so `KEY=<secret>` in a kv line is ONE run: the span reported is
+ * wider than the secret itself. Accepted for now -- an over-inclusive span still
+ * redacts the secret, and over-inclusion is the safe direction.
+ *
+ * Takes no `text` parameter on purpose: segments already carry their own slice
+ * and their absolute `start`, so `seg.start + m.index` is the message offset.
+ */
+function runEntropyRule(ir: PolicyIr, rule: Rule, segments: Segment[]): Finding[] {
+  const findings: Finding[] = [];
+  const minLength = rule.minLength ?? DEFAULT_MIN_LENGTH;
+  // Loop-invariant per rule, as in runRegexRule.
+  const severity = severityOf(ir, rule.entityType);
+  // Compiled per call for the same reason as runRegexRule's: a module-level /g/
+  // regex keeps lastIndex between calls, so an exception mid-scan would leave
+  // the NEXT message's scan starting at a stale offset.
+  const secretRun = /[A-Za-z0-9+/=_-]+/g;
+  for (const seg of segments) {
+    if (seg.kind === "prose") continue;
+    // Fresh scan per segment: lastIndex is reset before each one rather than
+    // after, so an exception cannot leave it primed for the following segment.
+    secretRun.lastIndex = 0;
+    for (let m = secretRun.exec(seg.text); m !== null; m = secretRun.exec(seg.text)) {
+      // "+" quantifier: a match is never zero-width, so no skip-and-advance
+      // guard is needed here (unlike runRegexRule, whose pattern is policy-supplied).
+      if (m[0].length < minLength) continue;
+      if (shannonEntropy(m[0]) < rule.entropyThreshold!) continue;
+      const start = seg.start + m.index;
+      findings.push({
+        start,
+        end: start + m[0].length,
+        text: m[0],
+        entityType: rule.entityType,
+        severity,
+        tier: 0,
+        source: rule.id,
+        confidence: ENTROPY_CONFIDENCE,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
  * Run every tier-0 rule over `text`, returning findings sorted by start offset.
  *
  * Overlapping and duplicate findings are all reported -- two rules may cover the
@@ -103,13 +165,14 @@ function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
 export function runTier0(ir: PolicyIr, text: string, segments: Segment[]): Finding[] {
   const findings: Finding[] = [];
   for (const rule of ir.rules) {
+    // Exhaustive by construction: the schema enforces regex XOR entropyThreshold
+    // on every rule, so a rule that is not a regex rule IS an entropy rule. No
+    // else branch to drop a rule silently.
     if (rule.regex !== undefined) {
       findings.push(...runRegexRule(ir, rule, text));
+    } else if (rule.entropyThreshold !== undefined) {
+      findings.push(...runEntropyRule(ir, rule, segments));
     }
-    // SEAM: entropy rules (rule.entropyThreshold !== undefined) land here in
-    // Task 10 and consume `segments` -- they score sliding windows per segment
-    // so that code blocks and kv values can be treated differently from prose.
   }
-  void segments;
   return findings.sort((a, b) => a.start - b.start);
 }
