@@ -146,10 +146,62 @@ describe("cluster-strictest action resolution", () => {
     expect(winner.action).toBe("block");
   });
 
+  it("escalates cluster-WIDE, through a bridging finding", async () => {
+    // Chain cluster A-B-C: A and C are disjoint, B overlaps both. The strict
+    // action lives at C, the far end; the winner (A) overlaps only the mild B.
+    // Narrowing resolution to a winner's DIRECT overlaps would still pass every
+    // other test in this file -- this is the test that stops that "optimization".
+    const text = "0123456789abcdefghijklmnopqrst";
+    const a = finding({ start: 0, end: 10, text: text.slice(0, 10), entityType: "generic-secret", confidence: 0.7 });
+    const b = finding({ start: 8, end: 20, text: text.slice(8, 20), entityType: "client-name", confidence: 0.8 });
+    const c = finding({ start: 18, end: 28, text: text.slice(18, 28), entityType: "in-pan", confidence: 0.9 });
+    const result = await detect({
+      ir, provider: "chatgpt", text,
+      config: { tier0: false, tier1: true, tier2: false },
+      engines: { tier1: tagger([a, b, c]) },
+    });
+    // B loses to A (critical beats high); C survives because it never overlapped A.
+    expect(result.findings.map((x) => x.entityType)).toEqual(["generic-secret", "in-pan"]);
+    const winner = result.findings[0]!;
+    const farEnd = result.findings[1]!;
+    expect(winner.end).toBeLessThanOrEqual(farEnd.start); // premise: the two are disjoint
+    expect(resolveAction(ir, "client-name", "chatgpt")).toBe("pseudonymize"); // premise: the bridge is mild
+    expect(winner.action).toBe("block"); // escalated across B, from C
+  });
+
   it("leaves a non-overlapping finding on its own action", async () => {
     const result = await detect({ ir, provider: "chatgpt", text: MESSAGE, config });
     const secret = result.findings.find((x) => x.entityType === "generic-secret")!;
     expect(secret.action).toBe("redact");
+  });
+});
+
+describe("engine failures propagate", () => {
+  // Spec 5.3: detection THROWS and never silently degrades -- mapping an engine
+  // crash to ir.failMode belongs to the caller. These pin that contract before
+  // Plan 5 adds latency-budget degradation, when a try/catch around an engine
+  // call becomes tempting: catching here would quietly reclassify a crashed
+  // model as a clean scan, and every other test in this file would still pass.
+  it("propagates a tier-1 engine rejection", async () => {
+    const boom: SpanTagger = { tag: async () => { throw new Error("t1 engine exploded"); } };
+    await expect(
+      detect({
+        ir, provider: "chatgpt", text: MESSAGE,
+        config: { tier0: true, tier1: true, tier2: false },
+        engines: { tier1: boom },
+      }),
+    ).rejects.toThrow("t1 engine exploded");
+  });
+
+  it("propagates a tier-2 engine rejection", async () => {
+    const boom: SemanticJudge = { judge: async () => { throw new Error("t2 engine exploded"); } };
+    await expect(
+      detect({
+        ir, provider: "chatgpt", text: MESSAGE,
+        config: { tier0: true, tier1: false, tier2: true },
+        engines: { tier2: boom },
+      }),
+    ).rejects.toThrow("t2 engine exploded");
   });
 });
 

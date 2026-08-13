@@ -61,6 +61,21 @@ export interface DetectorEngines {
 }
 
 export interface DetectionResult {
+  /**
+   * Pairwise DISJOINT and sorted by start offset -- overlaps were already
+   * resolved when this array was built. A rewriter (Plan 2's redaction and
+   * pseudonymization pass) can therefore splice every span in one walk without
+   * checking for collisions or re-sorting; walking it in reverse is what keeps
+   * the remaining offsets valid, since a replacement of a different length
+   * shifts everything after it.
+   */
   findings: ResolvedFinding[];
+  /**
+   * Wall-clock per tier, measured around the tier's own work only. A tier that
+   * did not run has no entry -- except `tier0Ms`, which is required by this type
+   * and reads 0 when `config.tier0` was false. Zero there means "did not run",
+   * not "ran instantly", so read it against the TierConfig that produced it
+   * before charting it as a latency.
+   */
   timings: { tier0Ms: number; tier1Ms?: number; tier2Ms?: number };
 }

@@ -174,9 +174,16 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     //
     // Priors are a snapshot, not the live accumulator: `raw` is pushed into
     // again the moment the judge returns, so handing over the array itself
-    // would let an engine that holds onto it observe (or mutate) findings it
-    // never saw. The objects inside are the same objects by design -- merge.ts joins
-    // clusters to winners by reference and a deep clone would break that.
+    // would let an engine that holds onto it observe findings it never saw --
+    // or splice the list detection is about to resolve.
+    //
+    // Shallow on purpose. The Finding objects inside ARE shared with the
+    // pipeline, which is safe only because findings are treated as immutable
+    // everywhere (nothing here or downstream mutates one; normalizeFindings
+    // copies rather than rewrites). An engine that mutates a prior in place
+    // violates that convention and corrupts the merge. Deep-cloning every
+    // finding on every tier-2 call would buy protection against a contract
+    // breach at a per-message allocation cost, and is not worth it.
     const started = performance.now();
     const found = await engines.tier2.judge(segments, ir, [...raw]);
     timings.tier2Ms = performance.now() - started;
