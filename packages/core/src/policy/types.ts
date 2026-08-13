@@ -21,9 +21,14 @@ export interface Rule {
   validator?: string;
   /** Nearby keywords that raise confidence. */
   contextBoost?: string[];
-  /** Present for entropy rules (bits/char over sliding windows). */
+  /**
+   * Present for entropy rules: minimum bits/char, scored over each maximal run
+   * of secret-alphabet characters (not a sliding window). Capped by the schema
+   * at the alphabet's own maximum entropy, since a higher threshold can never
+   * fire.
+   */
   entropyThreshold?: number;
-  /** Minimum candidate length for entropy rules. */
+  /** Minimum candidate-run length for entropy rules. */
   minLength?: number;
 }
 

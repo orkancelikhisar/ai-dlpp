@@ -53,6 +53,23 @@ describe("PolicyIrSchema", () => {
     expect(() => PolicyIrSchema.parse(ir)).toThrow(/cannot have both regex and entropyThreshold/i);
   });
 
+  // Shannon entropy is bounded by log2(alphabet size), and tier-0 entropy
+  // candidates are drawn from a 67-character alphabet — so a threshold above
+  // ~6.07 bits/char describes a string that cannot exist. Such a rule parses
+  // and runs and silently never fires: a policy author believes a secret class
+  // is covered when nothing is watching it. Loud at load time instead.
+  it("rejects an entropyThreshold that can never fire", () => {
+    const ir = minimalIr();
+    ir.rules[2]!.entropyThreshold = 8;
+    expect(() => PolicyIrSchema.parse(ir)).toThrow(/can never fire/i);
+  });
+
+  it("accepts an entropyThreshold just under the alphabet ceiling", () => {
+    const ir = minimalIr();
+    ir.rules[2]!.entropyThreshold = 6;
+    expect(() => PolicyIrSchema.parse(ir)).not.toThrow();
+  });
+
   it("rejects validator on an entropy rule", () => {
     const ir = minimalIr();
     ir.rules[2]!.validator = "pan-structure";

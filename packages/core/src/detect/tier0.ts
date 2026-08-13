@@ -23,7 +23,23 @@ const CONTEXT_BONUS = 0.05;
  * here varies it.
  */
 const ENTROPY_CONFIDENCE = 0.7;
-/** Default candidate length when a rule omits `minLength`. */
+/**
+ * Default candidate length when a rule omits `minLength`.
+ *
+ * How threshold and length interact, since the two are easy to set blindly:
+ * Shannon entropy is bounded by h <= log2(distinct chars) <= log2(length), so
+ * length caps what a threshold can ever see. At the default pairing (threshold
+ * 4.0, minLength 20) a candidate needs at least 17 DISTINCT characters to clear
+ * the bar -- 16 distinct over 20 characters maxes out at 3.92 bits/char. Two
+ * consequences worth knowing before writing a policy:
+ *
+ * - A threshold above log2(67) = 6.07 (the secret alphabet's size) can never
+ *   fire at any length. The schema rejects those outright.
+ * - Hex-only secrets have 16 symbols, so they cap at EXACTLY log2(16) = 4.0 and
+ *   only at perfect uniformity. A 4.0 threshold therefore makes sha/md5-style
+ *   hex tokens effectively undetectable; a policy meant to cover them wants
+ *   roughly 3.5.
+ */
 const DEFAULT_MIN_LENGTH = 20;
 /** Characters of context inspected on each side of a match for boost keywords. */
 const CONTEXT_WINDOW = 40;
@@ -117,6 +133,12 @@ function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
  *
  * Takes no `text` parameter on purpose: segments already carry their own slice
  * and their absolute `start`, so `seg.start + m.index` is the message offset.
+ *
+ * Scanning per segment cannot truncate a run only because every boundary the
+ * segmenter produces is flanked by "\n", "\r", or a backtick -- none of which
+ * are in the secret alphabet, so no candidate straddles one. A future segmenter
+ * that splits mid-line would break that and silently cut runs in half; it would
+ * have to scan across the boundary or rejoin adjacent scannable segments.
  */
 function runEntropyRule(ir: PolicyIr, rule: Rule, segments: Segment[]): Finding[] {
   const findings: Finding[] = [];
@@ -125,13 +147,18 @@ function runEntropyRule(ir: PolicyIr, rule: Rule, segments: Segment[]): Finding[
   const severity = severityOf(ir, rule.entityType);
   // Compiled per call for the same reason as runRegexRule's: a module-level /g/
   // regex keeps lastIndex between calls, so an exception mid-scan would leave
-  // the NEXT message's scan starting at a stale offset.
+  // the NEXT message's scan starting at a stale offset. No explicit lastIndex
+  // reset between segments: exec() zeroes it when it returns null, which is the
+  // only way the inner loop exits, and an exception aborts the whole call along
+  // with this call-local regex.
+  //
+  // Alphabet excludes "." deliberately. Including it would glue filenames,
+  // version strings, and dotted config paths into one long run and score the
+  // noise; the cost is that a JWT fragments into its three parts. Detecting a
+  // JWT as one entity is the jwt-shape REGEX rule's job, not entropy's.
   const secretRun = /[A-Za-z0-9+/=_-]+/g;
   for (const seg of segments) {
     if (seg.kind === "prose") continue;
-    // Fresh scan per segment: lastIndex is reset before each one rather than
-    // after, so an exception cannot leave it primed for the following segment.
-    secretRun.lastIndex = 0;
     for (let m = secretRun.exec(seg.text); m !== null; m = secretRun.exec(seg.text)) {
       // "+" quantifier: a match is never zero-width, so no skip-and-advance
       // guard is needed here (unlike runRegexRule, whose pattern is policy-supplied).

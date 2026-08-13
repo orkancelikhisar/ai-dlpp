@@ -14,6 +14,14 @@ const EntityTypeSchema = z.object({
 });
 
 /**
+ * Ceiling on a meaningful entropyThreshold: Shannon entropy cannot exceed
+ * log2(alphabet size), and tier-0 entropy candidates are runs over a 67-char
+ * alphabet ([A-Za-z0-9+/=_-]), so log2(67) = 6.066 bits/char is the hard max.
+ * Rounded up a hair so a threshold of exactly the max stays legal.
+ */
+const MAX_ENTROPY_THRESHOLD = 6.08;
+
+/**
  * A rule is exactly one of two variants: regex or entropy. The variants are
  * mutually exclusive (detection dispatch is if/else-if, so a rule carrying both
  * would silently drop one check), and each variant's optional fields are only
@@ -59,6 +67,21 @@ const RuleSchema = z
         });
       }
     }
+    // A threshold above the alphabet's maximum entropy describes a string that
+    // cannot exist: the rule parses, runs on every message, and never fires.
+    // That is the worst failure shape for a DLP policy -- the author believes an
+    // entity class is covered while nothing watches it -- so it is rejected at
+    // load time rather than silently tolerated.
+    if (r.entropyThreshold !== undefined && r.entropyThreshold > MAX_ENTROPY_THRESHOLD) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          `rule "${r.id}": entropyThreshold ${r.entropyThreshold} can never fire ` +
+          `(max entropy over the secret alphabet is ~6.07 bits/char)`,
+        path: ["entropyThreshold"],
+      });
+    }
+
     if (!isEntropyRule && r.minLength !== undefined) {
       ctx.addIssue({
         code: "custom",
