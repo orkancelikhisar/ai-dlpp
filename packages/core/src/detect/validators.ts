@@ -107,12 +107,17 @@ function panStructure(candidate: string): boolean {
  * strings are secret-shaped), so it returns a score rather than a verdict.
  */
 export function shannonEntropy(s: string): number {
-  if (s.length === 0) return 0;
+  // Count and divide over the SAME unit. Iterating a string yields code points
+  // while s.length counts UTF-16 code units, so dividing by s.length would make
+  // the probabilities sum to <1 for any astral input (an emoji pair scoring 0.5
+  // bits/char instead of 0). Materializing the code points keeps both in sync.
+  const chars = [...s];
+  if (chars.length === 0) return 0;
   const counts = new Map<string, number>();
-  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  for (const ch of chars) counts.set(ch, (counts.get(ch) ?? 0) + 1);
   let h = 0;
   for (const n of counts.values()) {
-    const p = n / s.length;
+    const p = n / chars.length;
     h -= p * Math.log2(p);
   }
   return h;
