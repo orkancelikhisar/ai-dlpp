@@ -60,10 +60,47 @@ function panStructure(candidate: string): boolean {
   return PAN_HOLDER_TYPES.has(candidate[3]!);
 }
 
+export function shannonEntropy(s: string): number {
+  if (s.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let h = 0;
+  for (const n of counts.values()) {
+    const p = n / s.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+function decodeBase64Url(part: string): string | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(part)) return undefined;
+  try {
+    // atob is ES-level in Node 20+ and browsers; no DOM lib needed.
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    return atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  } catch {
+    return undefined;
+  }
+}
+
+function jwtShape(candidate: string): boolean {
+  const parts = candidate.split(".");
+  if (parts.length !== 3) return false;
+  const header = decodeBase64Url(parts[0]!);
+  if (header === undefined) return false;
+  try {
+    const obj = JSON.parse(header) as Record<string, unknown>;
+    return typeof obj["alg"] === "string";
+  } catch {
+    return false;
+  }
+}
+
 const REGISTRY: Record<string, Validator> = {
   luhn,
   verhoeff,
   "pan-structure": panStructure,
+  "jwt-shape": jwtShape,
 };
 
 export function hasValidator(name: string): boolean {
