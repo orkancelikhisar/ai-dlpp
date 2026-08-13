@@ -15,6 +15,26 @@ describe("PolicyIrSchema", () => {
     expect(() => PolicyIrSchema.parse(ir)).toThrow(/orphan.*no action/i);
   });
 
+  // Regression: the action-mapping check must consult own keys only. An `in` check
+  // walks the prototype chain, so an entityType named after an Object.prototype
+  // member would appear to have a mapping it does not have (a silent fail-open).
+  it("rejects an entityType named toString when it has no action mapping", () => {
+    const ir = minimalIr();
+    ir.entityTypes.push({
+      id: "toString", tier: 1, nlDefinition: "x", examples: [], counterExamples: [], severity: "low",
+    });
+    expect(() => PolicyIrSchema.parse(ir)).toThrow(/toString.*no action/i);
+  });
+
+  it("accepts an entityType named toString when it does have an action mapping", () => {
+    const ir = minimalIr();
+    ir.entityTypes.push({
+      id: "toString", tier: 1, nlDefinition: "x", examples: [], counterExamples: [], severity: "low",
+    });
+    ir.actions.default["toString"] = "redact";
+    expect(() => PolicyIrSchema.parse(ir)).not.toThrow();
+  });
+
   it("rejects a rule referencing an unknown entityType", () => {
     const ir = minimalIr();
     ir.rules[0]!.entityType = "nope";
