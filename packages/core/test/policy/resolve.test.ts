@@ -45,6 +45,15 @@ describe("resolveAction", () => {
     expect(resolveAction(ir, "client-name", "some-new-provider")).toBe("pseudonymize");
   });
 
+  it("resolves defaults when the IR declares no providerOverrides at all", () => {
+    const raw = minimalIr();
+    delete raw.actions.providerOverrides;
+    const bare = loadPolicyIr(JSON.stringify(raw));
+    // deepseek's client-name override is gone with the field, so the default applies.
+    expect(resolveAction(bare, "client-name", "deepseek")).toBe("pseudonymize");
+    expect(resolveAction(bare, "in-pan", "deepseek")).toBe("block");
+  });
+
   it("throws on an unknown entityType (programmer error)", () => {
     expect(() => resolveAction(ir, "nope", "chatgpt")).toThrow(/unknown entityType/i);
   });

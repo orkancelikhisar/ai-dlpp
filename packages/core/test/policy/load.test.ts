@@ -59,4 +59,28 @@ describe("loadPolicyIr", () => {
     raw.rules[0]!.validator = "not-a-real-validator";
     expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(/unknown validator/i);
   });
+
+  // An object literal cannot express these: `__proto__:` in a literal sets the
+  // prototype. JSON.parse is the only way to get a real own "__proto__" key — which is
+  // also exactly how one arrives from a hand-edited or hostile IR.
+  describe("__proto__ keys", () => {
+    it("rejects a __proto__ key in providerOverrides instead of silently dropping it", () => {
+      const raw = minimalIr();
+      raw.actions.providerOverrides = JSON.parse('{"__proto__":{"in-pan":"allow"}}');
+      expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(PolicyLoadError);
+      expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(/forbidden key/i);
+    });
+
+    it("rejects a __proto__ key nested inside an array element", () => {
+      const raw = minimalIr();
+      raw.rules[0] = JSON.parse('{"id":"pan-rule","entityType":"in-pan","regex":"x","__proto__":{}}');
+      expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(/forbidden key/i);
+    });
+
+    it("accepts __proto__ as a string value, which is not a key", () => {
+      const raw = minimalIr();
+      raw.entityTypes[0]!.examples.push("__proto__");
+      expect(loadPolicyIr(JSON.stringify(raw)).entityTypes).toHaveLength(4);
+    });
+  });
 });

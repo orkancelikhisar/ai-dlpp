@@ -14,6 +14,36 @@ export class PolicyVersionError extends PolicyLoadError {
 
 export const SUPPORTED_IR_VERSION = "1";
 
+/**
+ * Rejects a literal own "__proto__" key anywhere in the parsed IR.
+ *
+ * This cannot be a schema refinement: JSON.parse creates "__proto__" as an own key, but
+ * zod's record parse copies keys onto a fresh object, and that assignment fires the
+ * Object.prototype `__proto__` setter instead of creating a key — so the key is already
+ * gone by the time superRefine runs. For entityTypes the loss fails closed (the entity
+ * then has no action mapping and validation rejects the IR), but a dropped
+ * providerOverrides["__proto__"] is silent: that provider's overrides simply disappear
+ * and resolution falls back to the weaker defaults — a policy downgrade in a
+ * hash-stamped security artifact. Refuse the input instead.
+ *
+ * JSON.parse output is a tree, never cyclic, so plain recursion terminates.
+ */
+function assertNoProtoKeys(value: unknown, path: string): void {
+  if (typeof value !== "object" || value === null) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => assertNoProtoKeys(item, `${path}[${i}]`));
+    return;
+  }
+  // getOwnPropertyNames sees the own "__proto__" that JSON.parse created; `in` and
+  // prototype-chain reads would not distinguish it from the inherited accessor.
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (key === "__proto__") {
+      throw new PolicyLoadError(`forbidden key "__proto__" at ${path}`);
+    }
+    assertNoProtoKeys((value as Record<string, unknown>)[key], `${path}.${key}`);
+  }
+}
+
 export function loadPolicyIr(jsonText: string): PolicyIr {
   let raw: unknown;
   try {
@@ -21,6 +51,10 @@ export function loadPolicyIr(jsonText: string): PolicyIr {
   } catch (e) {
     throw new PolicyLoadError(`IR is not valid JSON: ${(e as Error).message}`);
   }
+
+  // Before any structural interpretation: zod would drop such keys, so this is the last
+  // point at which they are still observable.
+  assertNoProtoKeys(raw, "$");
 
   // Input that carries no version is not an IR at all. Classifying it as a version
   // error would tell the caller to recompile their policy, which is bad advice.
