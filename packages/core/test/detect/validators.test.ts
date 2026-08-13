@@ -13,6 +13,16 @@ describe("luhn", () => {
     expect(luhn("")).toBe(false);
     expect(luhn("abcd")).toBe(false);
   });
+
+  // Pinned decisions, not incidental behavior -- change these only deliberately.
+  it("accepts all-zeros, which IS Luhn-valid", () => {
+    // Filtering placeholders like 0000... is the regex rule's job, not the
+    // checksum's; a validator that lied about the math would hide real numbers.
+    expect(luhn("00")).toBe(true);
+  });
+  it("rejects a single digit via the min-length gate", () => {
+    expect(luhn("0")).toBe(false); // >=2 digits required, so "0" is not a "number"
+  });
 });
 
 describe("verhoeff", () => {
@@ -25,6 +35,17 @@ describe("verhoeff", () => {
     const valid = [..."0123456789"].filter((d) => verhoeff(base + d));
     expect(valid).toHaveLength(1);
   });
+  it("tolerates the separators real numbers are written with", () => {
+    expect(verhoeff("2363 ")).toBe(true);
+    expect(verhoeff("23-63")).toBe(true);
+  });
+  it("rejects empty input and non-digits", () => {
+    expect(verhoeff("")).toBe(false);
+    expect(verhoeff("abcd")).toBe(false);
+  });
+  // Verhoeff catches adjacent transpositions, so this only demonstrates
+  // anything because the base's first two digits ("2","3") differ -- swapping
+  // equal digits is a no-op and would leave the number valid.
   it("a single transposed digit invalidates", () => {
     const base = "23629958402";
     const check = [..."0123456789"].find((d) => verhoeff(base + d))!;
@@ -50,7 +71,7 @@ describe("pan-structure", () => {
 
 describe("registry", () => {
   it("resolves every registered validator", () => {
-    for (const name of ["luhn", "verhoeff", "pan-structure"]) {
+    for (const name of ["luhn", "verhoeff", "pan-structure", "jwt-shape"]) {
       expect(hasValidator(name)).toBe(true);
       expect(typeof getValidator(name)).toBe("function");
     }
