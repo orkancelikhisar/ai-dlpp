@@ -85,6 +85,19 @@ export function loadPolicyIr(jsonText: string): PolicyIr {
       } catch (e) {
         throw new PolicyLoadError(`rule "${rule.id}" has invalid regex: ${(e as Error).message}`);
       }
+      // A nullable regex (one that can match "") cannot drive a scan: /g/ exec returns an
+      // empty match without advancing lastIndex, so detection must skip it, and a rule
+      // whose pattern is satisfied by nothing at all is malformed rather than merely
+      // noisy. Rejecting here means a policy fails to load instead of loading and then
+      // quietly detecting nothing — the fail-open this exists to prevent.
+      //
+      // Necessary but NOT sufficient, deliberately: test("") probes offset 0 only, where
+      // a lookbehind like "(?<=:)\w*" cannot succeed, so that rule loads and still matches
+      // empty mid-string. runTier0 keeps its own zero-width guard for exactly that gap.
+      // Non-global regex on purpose — test() on a /g/ regex mutates lastIndex.
+      if (new RegExp(rule.regex).test("")) {
+        throw new PolicyLoadError(`rule "${rule.id}" regex can match the empty string`);
+      }
     }
     if (rule.validator !== undefined && !hasValidator(rule.validator)) {
       throw new PolicyLoadError(`rule "${rule.id}" names unknown validator "${rule.validator}"`);

@@ -19,12 +19,14 @@ const CONTEXT_WINDOW = 40;
 const MAX_CONFIDENCE = 0.99;
 
 /**
- * Severity is RE-DERIVED from ir.entityTypes on every finding and never carried
+ * Severity is RE-DERIVED from ir.entityTypes for every finding and never carried
  * along from anywhere else: the entityType table is the single source of truth,
  * so a rule (or a later tier) cannot inflate or downgrade what a policy says an
  * entity is worth. The throw is a can't-happen guard -- the schema already
  * rejects a rule referencing an undeclared entityType -- kept as defense in
  * depth, since silently defaulting a severity would be a quiet policy downgrade.
+ * Called once per rule (the lookup is match-independent), so a rule that matches
+ * nothing still trips the guard: fail loudly on a malformed IR either way.
  */
 function severityOf(ir: PolicyIr, entityTypeId: string) {
   const e = ir.entityTypes.find((et) => et.id === entityTypeId);
@@ -33,17 +35,18 @@ function severityOf(ir: PolicyIr, entityTypeId: string) {
 }
 
 /**
- * Case-insensitive substring hit for any keyword within +/-CONTEXT_WINDOW of the
- * match. The keyword must fall ENTIRELY inside the window: one straddling the
- * boundary does not count, so the effective reach is CONTEXT_WINDOW minus the
- * keyword's own length. Boost is a nudge, not a decision, so the fuzziness is
- * acceptable -- but do not read the constant as "distance to the keyword".
+ * Substring hit for any of `lowerKeywords` (already lowercased by the caller)
+ * within +/-CONTEXT_WINDOW of the match. The keyword must fall ENTIRELY inside
+ * the window: one straddling the boundary does not count, so the effective reach
+ * is CONTEXT_WINDOW minus the keyword's own length. Boost is a nudge, not a
+ * decision, so the fuzziness is acceptable -- but do not read the constant as
+ * "distance to the keyword".
  */
-function hasNearbyKeyword(text: string, start: number, end: number, keywords: string[]): boolean {
+function hasNearbyKeyword(text: string, start: number, end: number, lowerKeywords: string[]): boolean {
   const window = text
     .slice(Math.max(0, start - CONTEXT_WINDOW), Math.min(text.length, end + CONTEXT_WINDOW))
     .toLowerCase();
-  return keywords.some((k) => window.includes(k.toLowerCase()));
+  return lowerKeywords.some((k) => window.includes(k));
 }
 
 function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
@@ -54,21 +57,23 @@ function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
   // make results depend on the previous message).
   const re = new RegExp(rule.regex!, "g");
   const validator = rule.validator ? getValidator(rule.validator) : undefined;
+  // Loop-invariant per rule: the severity lookup and the keyword lowering do not
+  // depend on the match, so they happen once rather than once per match.
+  const severity = severityOf(ir, rule.entityType);
+  const boostKeywords = rule.contextBoost?.length ? rule.contextBoost.map((k) => k.toLowerCase()) : undefined;
   for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    // A zero-width match does not advance lastIndex, so exec would return the
-    // same empty match forever. An empty span is not an entity, so we stop this
-    // rule rather than emit or spin. Note the cost: a regex that CAN match empty
-    // (e.g. "[A-Z]*[0-9]*") matches empty at offset 0 and is therefore abandoned
-    // before its real matches -- the rule detects nothing at all. That is a
-    // fail-open for a malformed rule, so the durable fix belongs at load time
-    // (reject any rule regex where new RegExp(src).test("") is true), not here.
-    if (m[0].length === 0) break;
+    // Suspenders to the loader's nullable-regex check, which only probes offset 0:
+    // a lookbehind can still match empty mid-scan, and exec does not advance past a
+    // zero-width match. Step over it and keep scanning -- abandoning the rule here
+    // would silently drop its real matches.
+    if (m[0].length === 0) {
+      re.lastIndex++;
+      continue;
+    }
     // The validator is the false-positive gate: regex shape alone accepts
     // things like ABCXD1234E, which is not a structurally valid PAN.
     if (validator && !validator(m[0])) continue;
-    const boosted = rule.contextBoost?.length
-      ? hasNearbyKeyword(text, m.index, m.index + m[0].length, rule.contextBoost)
-      : false;
+    const boosted = boostKeywords ? hasNearbyKeyword(text, m.index, m.index + m[0].length, boostKeywords) : false;
     findings.push({
       start: m.index,
       end: m.index + m[0].length,
@@ -77,7 +82,7 @@ function runRegexRule(ir: PolicyIr, rule: Rule, text: string): Finding[] {
       // normalized or re-cased string here.
       text: m[0],
       entityType: rule.entityType,
-      severity: severityOf(ir, rule.entityType),
+      severity,
       tier: 0,
       source: rule.id,
       confidence: Math.min(MAX_CONFIDENCE, BASE_CONFIDENCE + (boosted ? CONTEXT_BONUS : 0)),

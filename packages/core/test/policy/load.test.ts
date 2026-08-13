@@ -54,6 +54,27 @@ describe("loadPolicyIr", () => {
     expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(/invalid regex/i);
   });
 
+  // A nullable regex (one that can match "") cannot drive a scan: /g/ exec returns an
+  // empty match without advancing lastIndex. Detection has to skip those matches, so a
+  // rule built on one is malformed — reject it at compile-load time, not at scan time.
+  it("throws PolicyLoadError on a regex that can match the empty string", () => {
+    const raw = minimalIr();
+    raw.rules[0]!.regex = "X*";
+    expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(PolicyLoadError);
+    expect(() => loadPolicyIr(JSON.stringify(raw))).toThrow(/empty string/i);
+    // ...and the check does not fire on the ordinary fixture rules.
+    expect(() => loadPolicyIr(JSON.stringify(minimalIr()))).not.toThrow();
+  });
+
+  // Pins the known LIMIT of the check above: `test("")` only probes offset 0, where a
+  // lookbehind cannot succeed, so this regex loads and then matches empty mid-string.
+  // That gap is exactly why runTier0 keeps its own zero-width guard.
+  it("accepts a lookbehind regex that matches empty only mid-string", () => {
+    const raw = minimalIr();
+    raw.rules[0]!.regex = "(?<=:)\\w*";
+    expect(() => loadPolicyIr(JSON.stringify(raw))).not.toThrow();
+  });
+
   it("throws PolicyLoadError when a named validator does not exist", () => {
     const raw = minimalIr();
     raw.rules[0]!.validator = "not-a-real-validator";
