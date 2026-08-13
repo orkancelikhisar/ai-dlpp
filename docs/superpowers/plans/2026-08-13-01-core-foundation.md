@@ -1562,3 +1562,16 @@ git add -A && git commit -m "feat(core): detection orchestrator (tier-0) and pub
 `@sih/core` loads a policy IR, refuses bad/unknown ones, and `detect()` turns raw message text into span-accurate, provenance-linked, provider-resolved findings using tier-0 rules — with the engine seams (`SpanTagger`, `SemanticJudge`, `TierConfig`) in place for Plans 4–5. Everything runs and is tested in plain Node.
 
 **Next plans:** 2 — vault + pseudonymization + rehydration; 3 — policy compiler CLI + the three policy documents.
+
+---
+
+## Deviations log
+
+- **Task 2 (Policy IR types + zod schema) — schema tightened post-review**, beyond the inline code in this plan, after a code-quality review returned "With fixes":
+  - **Rule variant exclusivity:** `regex` and `entropyThreshold` are now mutually exclusive, and variant-mismatched fields are rejected (`validator`/`contextBoost` only on regex rules, `minLength` only on entropy rules). The planned schema allowed a rule carrying both; Task 9/10's if/else-if dispatch would silently drop one check. That dispatch is now provably safe.
+  - **Id uniqueness:** duplicate `entityTypes[].id`, `rules[].id`, and `semanticPredicates[].id` are rejected.
+  - **Referential integrity:** every key of `actions.default` and of `actions.providerOverrides[*]` must be a declared entityType id (a misspelled override key otherwise falls back to the default action silently — the spec names this a silent-leak surface); every `provenance` key must reference a declared rule, entityType, or semanticPredicate id. Provenance *completeness* is deliberately NOT enforced here — it stays the compiler's Extract-stage guarantee (Plan 3).
+  - **Strict top level:** the IR object rejects unknown top-level keys rather than stripping them, since it is a hash-stamped artifact and silent stripping would hide drift or tampering. Inner objects stay non-strict.
+  - **Issue paths:** superRefine issues are anchored at the offending element (e.g. `["rules", i, "entityType"]`).
+  - **Types:** `PolicyIrInput` widened to `Omit<PolicyIr, "irVersion"> & { irVersion: string }` (JSON cannot guarantee the `"1"` literal; the Task 3 loader narrows), plus a zero-runtime schema/type drift assertion in `schema.ts` that fails typecheck on divergence.
+  - **No downstream churn:** `test/fixtures/minimal-ir.ts` was unaffected — it already satisfies every new constraint and passes unmodified — and later-task snippets in this plan need no changes.

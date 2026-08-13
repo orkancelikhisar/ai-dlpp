@@ -55,5 +55,9 @@ export interface PolicyIr {
   provenance: Record<string, Provenance>;
 }
 
-/** Input shape before zod validation (what JSON.parse gives us). */
-export type PolicyIrInput = PolicyIr;
+/**
+ * Input shape before zod validation (what JSON.parse gives us): identical to
+ * `PolicyIr` except that `irVersion` is any string — JSON cannot guarantee the "1"
+ * literal, and the loader is what narrows it.
+ */
+export type PolicyIrInput = Omit<PolicyIr, "irVersion"> & { irVersion: string };
