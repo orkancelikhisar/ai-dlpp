@@ -4,6 +4,12 @@ import { getValidator } from "../../src/detect/validators.js";
 
 const KEY = "conv1\u0000client-name\u0000Globex";
 
+/** Case-insensitive whitespace-delimited tokens present in both strings. */
+function sharedTokens(a: string, b: string): string[] {
+  const bt = new Set(b.toLowerCase().split(/\s+/));
+  return a.toLowerCase().split(/\s+/).filter((t) => bt.has(t));
+}
+
 describe("generateSurrogate", () => {
   it("is deterministic per seed key", () => {
     expect(generateSurrogate("org-name", "Globex", KEY)).toBe(generateSurrogate("org-name", "Globex", KEY));
@@ -42,6 +48,51 @@ describe("generateSurrogate", () => {
     expect(s).toHaveLength(20);
     expect(s).toMatch(/^[a-z][0-9][A-Z][0-9][a-z][A-Z][0-9][a-z][A-Z][0-9][a-z][A-Z][0-9][a-z][A-Z][0-9][a-z][A-Z][0-9][a-z]$/);
     expect(s).not.toBe("x9K2mQ8vL4jR7nT3wY6z");
+  });
+
+  it("person-name re-rolls when the pick shares a token with the real", () => {
+    // Same deterministic trick as the org case: a real sharing no token with the
+    // pools returns the UNSALTED pick for this key. Feed one of that pick's own
+    // tokens back in as the real's first name -- keeping it would leak the real
+    // first name verbatim even though the whole strings differ, so the retry
+    // has to move off it.
+    const unsalted = generateSurrogate("person-name", "zzz nomatch", "kT");
+    const leakedFirst = unsalted.split(" ")[0]!;
+    const real = `${leakedFirst} Sharma`;
+    expect(sharedTokens(generateSurrogate("person-name", real, "kT"), real)).toEqual([]);
+  });
+
+  it("id-number substitutes holder type P when the real's 4th char is not one", () => {
+    // "Z" is A-Z (so the real is PAN-shaped) but is not a holder type; copying it
+    // through would emit a structurally invalid PAN its own validator rejects.
+    const s = generateSurrogate("id-number", "ABCZD1234E", "k6");
+    expect(s[3]).toBe("P");
+    expect(getValidator("pan-structure")(s)).toBe(true);
+  });
+
+  it("throws rather than looping forever when the real has nothing to scramble", () => {
+    // Every scramble candidate for these IS the real, so the salted retry could
+    // never terminate -- a hang, not a wrong answer. Task 4's vault maps the
+    // throw onto the entity's failMode.
+    expect(() => generateSurrogate("opaque", "", "k7")).toThrow(/no scrambleable characters/);
+    expect(() => generateSurrogate("opaque", "@@@", "k7")).toThrow(/no scrambleable characters/);
+    expect(() => generateSurrogate("id-number", "----", "k7")).toThrow(/no scrambleable characters/);
+  });
+
+  it("exempts single-character tokens, which would otherwise be unsatisfiable", () => {
+    // A class-preserving scramble of 26 single-letter tokens can only ever draw
+    // letters the real already contains, so counting them as leaks would turn a
+    // generatable value into a thrown error. Initials are not names.
+    const alphabet = "a b c d e f g h i j k l m n o p q r s t u v w x y z";
+    const s = generateSurrogate("opaque", alphabet, "kY");
+    expect(s).toMatch(/^[a-z]( [a-z]){25}$/);
+    expect(s).not.toBe(alphabet);
+  });
+
+  it("still generates when the real has even one scrambleable character", () => {
+    const s = generateSurrogate("opaque", "-a-", "k7");
+    expect(s).toMatch(/^-[a-z]-$/);
+    expect(s).not.toBe("-a-");
   });
 
   it("different seed keys give different surrogates (spot check)", () => {

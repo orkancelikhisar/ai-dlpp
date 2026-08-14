@@ -1,3 +1,4 @@
+import { PAN_HOLDER_TYPES } from "../detect/validators.js";
 import type { SurrogateKind } from "../policy/types.js";
 import { seededRng } from "./seed.js";
 
@@ -15,8 +16,11 @@ const ORGS = ["Vantor", "Corvex Systems", "Nimbria Labs", "Atlas Forge", "Zephyr
 const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const LOWER = "abcdefghijklmnopqrstuvwxyz";
 const DIGITS = "0123456789";
-/** Valid PAN 4th-char holder types — keep in sync with validators.ts. */
-const PAN_HOLDER = "ABCFGHJLPT";
+
+const PAN_SHAPE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const SCRAMBLEABLE = /[A-Za-z0-9]/;
+/** Retry ceiling: an unsatisfiable request must surface as an error, not a hang. */
+const MAX_SALT = 64;
 
 function pick(rng: () => number, pool: string | readonly string[]): string {
   return pool[Math.floor(rng() * pool.length)]!;
@@ -24,15 +28,51 @@ function pick(rng: () => number, pool: string | readonly string[]): string {
 
 /**
  * Deterministic under (kind, seedKey); salted retry guarantees the surrogate
- * never equals the real value (case-insensitive), which would be a non-
- * pseudonymization.
+ * never leaks the real value, which would be a non-pseudonymization.
  */
 export function generateSurrogate(kind: SurrogateKind, real: string, seedKey: string): string {
-  for (let salt = 0; ; salt++) {
-    const rng = seededRng(salt === 0 ? seedKey : `${seedKey}#${salt}`);
-    const candidate = generate(kind, real, rng);
-    if (candidate.toLowerCase() !== real.toLowerCase()) return candidate;
+  // A scramble returns its own input when there is nothing in it to scramble
+  // ("", "----"), so the retry below could never converge — it would spin
+  // forever. Fail fast instead and let the caller's failMode decide (Task 4).
+  // Echoing `real` is safe in THIS message only: the guard fires exactly when
+  // it holds no alphanumerics, i.e. punctuation that cannot be a secret.
+  if (usesScramble(kind, real) && !SCRAMBLEABLE.test(real)) {
+    throw new Error(`cannot generate surrogate for "${real}": no scrambleable characters`);
   }
+  for (let salt = 0; salt < MAX_SALT; salt++) {
+    // NUL separator, matching the base key's: a "#" would let a real value
+    // containing "#1" alias a different entity's salted key.
+    const rng = seededRng(salt === 0 ? seedKey : `${seedKey}\u0000${salt}`);
+    const candidate = generate(kind, real, rng);
+    if (!leaksReal(candidate, real)) return candidate;
+  }
+  // Reachable when every candidate collides — a person-name real that lists the
+  // whole first-name pool, say. Deliberately does NOT echo `real`: unlike the
+  // guard above, this one can fire on a genuinely sensitive value.
+  throw new Error(`exhausted ${MAX_SALT} retries generating a ${kind} surrogate`);
+}
+
+/** Kinds whose output is a per-character scramble of the real (not a pool pick). */
+function usesScramble(kind: SurrogateKind, real: string): boolean {
+  return kind === "opaque" || (kind === "id-number" && !PAN_SHAPE.test(real));
+}
+
+/**
+ * A candidate leaks if it equals the real OR reuses any of its multi-character
+ * tokens: real "Rohan Mehta" drawing "Rohan Kapoor" clears a whole-string check
+ * while handing back the real first name verbatim. Single-character tokens are
+ * exempt — an initial is not a name, and counting one as a leak makes some
+ * inputs unsatisfiable (a class-preserving scramble of "a b c … z" can never
+ * clear the check, so a perfectly generatable value would start throwing).
+ */
+function leaksReal(candidate: string, real: string): boolean {
+  if (candidate.toLowerCase() === real.toLowerCase()) return true;
+  const realTokens = new Set(tokens(real));
+  return tokens(candidate).some((t) => realTokens.has(t));
+}
+
+function tokens(s: string): string[] {
+  return s.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
 }
 
 function generate(kind: SurrogateKind, real: string, rng: () => number): string {
@@ -51,8 +91,8 @@ function generate(kind: SurrogateKind, real: string, rng: () => number): string 
 function idNumber(real: string, rng: () => number): string {
   // PAN-shaped reals keep their holder type (4th char) — format preservation
   // means a fake PAN should still read as the same kind of PAN.
-  if (/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(real)) {
-    const holder = PAN_HOLDER.includes(real[3]!) ? real[3]! : "P";
+  if (PAN_SHAPE.test(real)) {
+    const holder = PAN_HOLDER_TYPES.has(real[3]!) ? real[3]! : "P";
     return (
       pick(rng, UPPER) + pick(rng, UPPER) + pick(rng, UPPER) + holder + pick(rng, UPPER) +
       pick(rng, DIGITS) + pick(rng, DIGITS) + pick(rng, DIGITS) + pick(rng, DIGITS) +

@@ -87,8 +87,13 @@ function verhoeff(candidate: string): boolean {
   return c === 0;
 }
 
-// Indian PAN: AAAPA9999A; 4th char = holder type.
-const PAN_HOLDER_TYPES = new Set(["A", "B", "C", "F", "G", "H", "J", "L", "P", "T"]);
+/**
+ * Indian PAN: AAAPA9999A; 4th char = holder type. Exported because the
+ * surrogate generator has to emit a holder type this validator will accept --
+ * two copies of the set would drift into generated "PANs" that fail their own
+ * validator. ReadonlySet so neither side can mutate the other's view.
+ */
+export const PAN_HOLDER_TYPES: ReadonlySet<string> = new Set(["A", "B", "C", "F", "G", "H", "J", "L", "P", "T"]);
 
 /**
  * Indian PAN structure. Deliberately asymmetric with the checksum validators
