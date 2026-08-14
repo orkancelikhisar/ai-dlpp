@@ -8,10 +8,10 @@ const BASE: PolicyIrInput = {
   irVersion: "1",
   policyHash: "test-hash",
   entityTypes: [
-    { id: "in-pan", tier: 0, nlDefinition: "Indian PAN card number", examples: ["ABCPD1234E"], counterExamples: [], severity: "high" },
-    { id: "aws-key", tier: 0, nlDefinition: "AWS access key ID", examples: ["AKIAIOSFODNN7EXAMPLE"], counterExamples: [], severity: "critical" },
-    { id: "generic-secret", tier: 0, nlDefinition: "High-entropy secret string", examples: [], counterExamples: [], severity: "critical" },
-    { id: "client-name", tier: 1, nlDefinition: "Name of a client organization", examples: ["Globex"], counterExamples: [], severity: "high" },
+    { id: "in-pan", tier: 0, nlDefinition: "Indian PAN card number", examples: ["ABCPD1234E"], counterExamples: [], severity: "high", surrogateKind: "id-number" },
+    { id: "aws-key", tier: 0, nlDefinition: "AWS access key ID", examples: ["AKIAIOSFODNN7EXAMPLE"], counterExamples: [], severity: "critical", neverPseudonymize: true },
+    { id: "generic-secret", tier: 0, nlDefinition: "High-entropy secret string", examples: [], counterExamples: [], severity: "critical", neverPseudonymize: true },
+    { id: "client-name", tier: 1, nlDefinition: "Name of a client organization", examples: ["Globex"], counterExamples: [], severity: "high", surrogateKind: "org-name" },
   ],
   rules: [
     { id: "pan-rule", entityType: "in-pan", regex: "\\b[A-Z]{5}[0-9]{4}[A-Z]\\b", validator: "pan-structure", contextBoost: ["PAN", "tax"] },

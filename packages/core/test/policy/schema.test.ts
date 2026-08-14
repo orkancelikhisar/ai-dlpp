@@ -142,4 +142,27 @@ describe("PolicyIrSchema", () => {
     (ir as unknown as Record<string, unknown>)["rogueKey"] = "tampered";
     expect(() => PolicyIrSchema.parse(ir)).toThrow(/unrecognized key/i);
   });
+
+  it("accepts surrogateKind and neverPseudonymize on entityTypes", () => {
+    // Fixture now carries both fields (client-name: surrogateKind; aws-key/generic-secret: neverPseudonymize).
+    expect(() => PolicyIrSchema.parse(minimalIr())).not.toThrow();
+  });
+
+  it("rejects a neverPseudonymize entityType with default action pseudonymize", () => {
+    const ir = minimalIr();
+    ir.entityTypes.find((e) => e.id === "aws-key")!.neverPseudonymize = true;
+    ir.actions.default["aws-key"] = "pseudonymize";
+    expect(() => PolicyIrSchema.parse(ir)).toThrow(/never be pseudonymized/i);
+  });
+
+  it("rejects a neverPseudonymize entityType with a pseudonymize provider override", () => {
+    const ir = minimalIr();
+    ir.actions.providerOverrides!["deepseek"] = { "generic-secret": "pseudonymize" };
+    expect(() => PolicyIrSchema.parse(ir)).toThrow(/never be pseudonymized/i);
+  });
+
+  it("accepts neverPseudonymize with block and redact actions", () => {
+    const ir = minimalIr(); // aws-key: block, generic-secret: redact — both neverPseudonymize
+    expect(() => PolicyIrSchema.parse(ir)).not.toThrow();
+  });
 });

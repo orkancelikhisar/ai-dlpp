@@ -11,6 +11,8 @@ const EntityTypeSchema = z.object({
   examples: z.array(z.string()),
   counterExamples: z.array(z.string()),
   severity: SeveritySchema,
+  surrogateKind: z.enum(["person-name", "org-name", "id-number", "opaque"]).optional(),
+  neverPseudonymize: z.boolean().optional(),
 });
 
 /**
@@ -182,6 +184,30 @@ export const PolicyIrSchema = z
             code: "custom",
             message: `actions.providerOverrides["${provider}"] references unknown entityType "${key}"`,
             path: ["actions", "providerOverrides", provider, key],
+          });
+        }
+      }
+    }
+
+    // neverPseudonymize × pseudonymize is contradictory policy — reject at compile
+    // time rather than trusting the vault's runtime refusal alone (defense in depth).
+    const neverPseudo = new Set(ir.entityTypes.filter((e) => e.neverPseudonymize).map((e) => e.id));
+    for (const [entityId, action] of Object.entries(ir.actions.default)) {
+      if (action === "pseudonymize" && neverPseudo.has(entityId)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `entityType "${entityId}" is marked neverPseudonymize and must never be pseudonymized`,
+          path: ["actions", "default", entityId],
+        });
+      }
+    }
+    for (const [provider, overrides] of Object.entries(ir.actions.providerOverrides ?? {})) {
+      for (const [entityId, action] of Object.entries(overrides)) {
+        if (action === "pseudonymize" && neverPseudo.has(entityId)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `entityType "${entityId}" is marked neverPseudonymize and must never be pseudonymized`,
+            path: ["actions", "providerOverrides", provider, entityId],
           });
         }
       }

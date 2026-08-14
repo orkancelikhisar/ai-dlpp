@@ -3,6 +3,9 @@ export type Action = "allow" | "pseudonymize" | "redact" | "block";
 export type FailMode = "open" | "closed";
 export type Tier = 0 | 1 | 2;
 
+/** Which format-preserving generator mints surrogates for this entityType (Plan 2). */
+export type SurrogateKind = "person-name" | "org-name" | "id-number" | "opaque";
+
 export interface EntityType {
   id: string;
   tier: Tier;
@@ -10,6 +13,14 @@ export interface EntityType {
   examples: string[];
   counterExamples: string[];
   severity: Severity;
+  /** Generator used when the resolved action is "pseudonymize". Missing → "opaque". */
+  surrogateKind?: SurrogateKind;
+  /**
+   * Credentials-class marker (spec §5.4): a format-valid fake credential is a lie
+   * waiting to be pasted somewhere. Schema rejects pseudonymize actions for these,
+   * and the vault refuses to mint them — defense in depth.
+   */
+  neverPseudonymize?: boolean;
 }
 
 export interface Rule {
