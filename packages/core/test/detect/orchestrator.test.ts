@@ -176,6 +176,73 @@ describe("cluster-strictest action resolution", () => {
   });
 });
 
+/**
+ * A neverPseudonymize entityType whose OWN action is `allow`. Legal policy: the
+ * schema rejects only `pseudonymize` for these, so `allow` on a credential class
+ * a policy does not care about loads fine -- and it is the one input from which
+ * cluster-strictest can stamp `pseudonymize` onto a credential.
+ */
+const allowCredentialIr = (() => {
+  const raw = minimalIr();
+  raw.actions.default["aws-key"] = "allow";
+  return loadPolicyIr(JSON.stringify(raw));
+})();
+
+describe("neverPseudonymize winners escalate rather than pseudonymize", () => {
+  it("escalates a neverPseudonymize winner from pseudonymize to redact", async () => {
+    // `aws-key` is neverPseudonymize/critical at `allow`; the overlapping
+    // `client-name` is high at `pseudonymize`. allow(0) < pseudonymize(1), so the
+    // cluster resolves to `pseudonymize` and the credential WINS the merge on
+    // severity -- stamping the credential with an action the vault refuses to
+    // mint, i.e. a guaranteed throw in the apply stage on a schema-valid IR.
+    const text = "key AKIAIOSFODNN7EXAMPLE here";
+    const at = text.indexOf("AKIA");
+    const neighbour = finding({
+      start: at + 2, end: at + 12, text: text.slice(at + 2, at + 12),
+      entityType: "client-name", confidence: 0.9,
+    });
+    const result = await detect({
+      ir: allowCredentialIr, provider: "chatgpt", text,
+      config: { tier0: true, tier1: true, tier2: false },
+      engines: { tier1: tagger([neighbour]) },
+    });
+    expect(result.findings).toHaveLength(1);
+    const winner = result.findings[0]!;
+    expect(winner.entityType).toBe("aws-key");
+    // Premises: the credential alone is allowed, and the neighbour is what drags
+    // the cluster up to `pseudonymize`.
+    expect(resolveAction(allowCredentialIr, "aws-key", "chatgpt")).toBe("allow");
+    expect(resolveAction(allowCredentialIr, "client-name", "chatgpt")).toBe("pseudonymize");
+    expect(winner.action).toBe("redact");
+  });
+
+  it("escalates per winner, not per cluster", async () => {
+    // Chain A-B-C: the credential A overlaps a bridging client-name B, which
+    // overlaps a second client-name C that is disjoint from A. A and C both
+    // survive the merge inside one `pseudonymize` cluster. Only A escalates --
+    // `pseudonymize` is a legal, and more useful, action for C, and blanket
+    // cluster-level escalation would throw that utility away.
+    const text = "key AKIAIOSFODNN7EXAMPLE here plus more text";
+    const bridge = finding({
+      start: 20, end: 30, text: text.slice(20, 30), entityType: "client-name", confidence: 0.7,
+    });
+    const far = finding({
+      start: 28, end: 38, text: text.slice(28, 38), entityType: "client-name", confidence: 0.9,
+    });
+    const result = await detect({
+      ir: allowCredentialIr, provider: "chatgpt", text,
+      config: { tier0: true, tier1: true, tier2: false },
+      engines: { tier1: tagger([bridge, far]) },
+    });
+    expect(result.findings.map((x) => x.entityType)).toEqual(["aws-key", "client-name"]);
+    const credential = result.findings[0]!;
+    const survivor = result.findings[1]!;
+    expect(credential.end).toBeLessThanOrEqual(survivor.start); // premise: disjoint, bridged by B
+    expect(credential.action).toBe("redact");
+    expect(survivor.action).toBe("pseudonymize");
+  });
+});
+
 describe("engine failures propagate", () => {
   // Spec 5.3: detection THROWS and never silently degrades -- mapping an engine
   // crash to ir.failMode belongs to the caller. These pin that contract before

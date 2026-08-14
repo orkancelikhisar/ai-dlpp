@@ -94,6 +94,37 @@ function strictestAction(ir: PolicyIr, provider: string, cluster: Finding[]): Ac
   return strictest;
 }
 
+/**
+ * The action one WINNER carries, given its cluster's strictest. Almost always
+ * the cluster's answer unchanged; the exception is the one combination that
+ * cluster-strictest can produce and no downstream stage can honour.
+ *
+ * `pseudonymize` on a neverPseudonymize entityType is rejected by the schema, so
+ * it is unreachable as *policy* -- but it is reachable as a STAMP. A credential
+ * class whose own action is `allow` (legal: the schema rejects only
+ * pseudonymize for these) can overlap a `pseudonymize` neighbour, and allow(0) <
+ * pseudonymize(1) hands the cluster's action to a winner the vault refuses to
+ * mint for. The result would be a guaranteed message-level exception on a
+ * perfectly valid IR, at apply time, after detection reported success.
+ *
+ * Resolved by escalating that winner to `redact`: the cluster did say this span
+ * deserves rewriting, and redaction rewrites it without minting a format-valid
+ * fake credential -- the strict direction, which is the direction this file
+ * already commits to for cluster-wide escalation. Downgrading to `allow`
+ * instead would forward text the policy wanted rewritten.
+ *
+ * PER WINNER, not per cluster: a non-credential winner in the same cluster keeps
+ * `pseudonymize`, which is legal for it and preserves the answer utility that
+ * pseudonymization exists for.
+ */
+function winnerAction(ir: PolicyIr, winner: Finding, clusterAction: Action): Action {
+  if (clusterAction !== "pseudonymize") return clusterAction;
+  // normalizeFindings already rejected any finding whose entityType is not in
+  // the IR, so a miss here is unreachable rather than a silent pass-through.
+  const entity = ir.entityTypes.find((e) => e.id === winner.entityType);
+  return entity?.neverPseudonymize === true ? "redact" : clusterAction;
+}
+
 export interface DetectInput {
   ir: PolicyIr;
   provider: string;
@@ -198,7 +229,9 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
   const findings: ResolvedFinding[] = [];
   for (const cluster of clusterOverlapping(raw)) {
     const action = strictestAction(ir, provider, cluster);
-    for (const winner of mergeFindings(cluster)) findings.push({ ...winner, action });
+    for (const winner of mergeFindings(cluster)) {
+      findings.push({ ...winner, action: winnerAction(ir, winner, action) });
+    }
   }
   // Already globally ordered, and deliberately not re-sorted: clusters come back
   // ordered by start and are pairwise disjoint, and each cluster's winners come
