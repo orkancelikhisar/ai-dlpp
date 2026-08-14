@@ -31,4 +31,14 @@ describe("mulberry32 / seededRng", () => {
     }
     expect(seededRng("k1")()).not.toBe(seededRng("k2")());
   });
+
+  it("pins the xor-fold formula (golden value)", () => {
+    // Fold-formula pin. Every other assertion in this file passes just as well
+    // if seededRng folds only ONE half of the 64-bit hash, silently halving the
+    // seed space -- low-half-only yields 0.8319924469105899 here and high-half-
+    // only 0.13595368387177587, and both are deterministic and in [0, 1). This
+    // golden value was computed once from the implementation and hard-coded; if
+    // it changes, the fold changed, and every surrogate ever minted re-rolls.
+    expect(seededRng("some-key")()).toBe(0.9004601179622114);
+  });
 });

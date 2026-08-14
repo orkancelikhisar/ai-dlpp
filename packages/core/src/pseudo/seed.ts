@@ -1,6 +1,11 @@
 /**
- * Deterministic seeding for surrogate generation (spec §5.4: surrogate =
- * seeded generator keyed on hash(conversationId ‖ realValue)).
+ * Deterministic seeding for surrogate generation (spec §5.4): a surrogate is
+ * whatever a generator produces when seeded from the hash of a seed key.
+ *
+ * What goes INTO that key is deliberately not fixed here — key composition is
+ * the caller's contract; see Vault.mint (Task 4). Restating the recipe in this
+ * docstring only earns a stale comment the first time the caller's key grows a
+ * field.
  *
  * NOT a security boundary: FNV-1a is not cryptographic, deliberately. The
  * vault's security property is that real values never leave the machine;
