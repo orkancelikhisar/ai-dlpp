@@ -162,7 +162,7 @@ describe("fnv1a64", () => {
   });
 
   it("is deterministic and input-sensitive", () => {
-    expect(fnv1a64("conv1 client-name Globex")).toBe(fnv1a64("conv1 client-name Globex"));
+    expect(fnv1a64("conv1\u0000client-name\u0000Globex")).toBe(fnv1a64("conv1\u0000client-name\u0000Globex"));
     expect(fnv1a64("conv1")).not.toBe(fnv1a64("conv2"));
   });
 });
@@ -262,7 +262,7 @@ import { describe, expect, it } from "vitest";
 import { generateSurrogate } from "../../src/pseudo/generators.js";
 import { getValidator } from "../../src/detect/validators.js";
 
-const KEY = "conv1 client-name Globex";
+const KEY = "conv1\u0000client-name\u0000Globex";
 
 describe("generateSurrogate", () => {
   it("is deterministic per seed key", () => {
@@ -445,7 +445,7 @@ describe("Vault", () => {
     const vault = new Vault(store);
     // Deterministic construction: precompute what "Initech" WOULD get unsalted,
     // then occupy that surrogate for a different real value first.
-    const wouldGet = generateSurrogate("org-name", "Initech", "conv1 client-name Initech");
+    const wouldGet = generateSurrogate("org-name", "Initech", "conv1\u0000client-name\u0000Initech");
     await store.put("conv1", { entries: [{ real: "Other Corp", surrogate: wouldGet, entityType: "client-name" }] });
     const minted = await vault.mint("conv1", "Initech", "client-name", ir);
     expect(minted).not.toBe(wouldGet);
@@ -545,7 +545,7 @@ export class Vault {
     if (existing) return existing.surrogate;
 
     const kind = entity.surrogateKind ?? "opaque";
-    const baseKey = `${conversationId} ${entityTypeId} ${real}`;
+    const baseKey = `${conversationId}\u0000${entityTypeId}\u0000${real}`;
     let surrogate: string;
     for (let salt = 0; ; salt++) {
       surrogate = generateSurrogate(kind, real, salt === 0 ? baseKey : `${baseKey}!${salt}`);
@@ -1225,3 +1225,4 @@ git add -A && git commit -m "feat(core): pseudo layer public API and end-to-end 
 ## Deviations log
 
 (entries added during execution, same convention as Plan 1)
+- **Plan-file encoding fix (post Task 2):** the seed-key separator was written as raw NUL bytes (0x00) in four code blocks, corrupting the markdown. Replaced with the literal TS escape text `\u0000` (Task 2 determinism test, Task 3 KEY, Task 4 baseKey + collision-test precompute). Task 2's already-committed test uses spaces in its determinism assertion — semantically neutral (asserts f(x)===f(x) only) and left as-is. Tasks 3+ MUST use the `\u0000` escape separator consistently; a space separator would be ambiguity-prone for real values containing spaces.
