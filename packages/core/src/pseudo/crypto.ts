@@ -16,6 +16,8 @@
 export type CryptoKey = Parameters<typeof crypto.subtle.encrypt>[1];
 
 const IV_BYTES = 12;
+/** AES-GCM's default authentication tag, appended to the ciphertext by WebCrypto. */
+const TAG_BYTES = 16;
 
 function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
@@ -38,8 +40,14 @@ export async function exportVaultKey(key: CryptoKey): Promise<string> {
   return bytesToBase64(new Uint8Array(await crypto.subtle.exportKey("raw", key)));
 }
 
+/**
+ * Imported non-extractable: nothing re-exports an imported key (the base64 the
+ * caller already holds *is* the persistable form), so the handle Plan 6 passes
+ * around cannot be turned back into key bytes. Narrows the surface; it is not a
+ * containment boundary — whoever holds the base64 can import an extractable one.
+ */
 export async function importVaultKey(b64: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", base64ToBytes(b64), { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", base64ToBytes(b64), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
 /** Returns base64(iv ‖ ciphertext); IV is random per call — never reuse under GCM. */
@@ -56,6 +64,10 @@ export async function encryptString(key: CryptoKey, plaintext: string): Promise<
 
 export async function decryptString(key: CryptoKey, payload: string): Promise<string> {
   const packed = base64ToBytes(payload);
+  // Below this length the payload cannot even hold an IV and a tag, so slicing
+  // would hand subtle.decrypt a nonsense IV and surface as a generic
+  // OperationError indistinguishable from a wrong key or real tampering.
+  if (packed.length < IV_BYTES + TAG_BYTES) throw new Error("payload too short");
   const iv = packed.slice(0, IV_BYTES);
   const ct = packed.slice(IV_BYTES);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
