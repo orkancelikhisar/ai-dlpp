@@ -73,3 +73,120 @@ export function rehydrateText(text: string, map: Map<string, string>): string {
   if (!pattern) return text;
   return text.replace(pattern, (m) => map.get(m)!);
 }
+
+/**
+ * Streaming rehydration (spec §5.4): the same replacement `rehydrateText` makes
+ * over a whole string, made incrementally as provider chunks arrive. The
+ * contract is exactly that equivalence — for any chunking of any input, the
+ * concatenated output equals `rehydrateText(wholeInput, map)` — and the tests
+ * assert it directly at every split point rather than spot-checking cases.
+ * Operates on decoded text; SSE/JSON framing is the adapter's job (Plan 6).
+ *
+ * The whole design follows from one observation: a match found in a partial
+ * buffer is not yet a decision. Two things can still overturn it, so a match is
+ * only **settled** — replaced and emitted — when both are ruled out:
+ *
+ * 1. **Its right boundary has not arrived.** `(?![0-9])` passes vacuously at the
+ *    end of a string, so a match ending at the buffer edge may be vetoed by the
+ *    next chunk's first character. Requiring `end < buffer.length` means the
+ *    veto character was real text and the decision is final. Without it,
+ *    `["total 8842", "1 units"]` rehydrates the id inside "88421" — the exact
+ *    splice the boundaries exist to prevent, reintroduced at a chunk seam.
+ * 2. **A longer alternative is still arriving.** The pool-exhaustion ladder
+ *    mints "Vantor" and then "Vantor 2", so a surrogate that is another's prefix
+ *    is routine. Requiring `start <= buffer.length - maxLen` means every
+ *    alternative starting there was short enough to be fully visible, so
+ *    longest-first had its chance. Without it, `["met Vantor", " 2 today"]`
+ *    commits to "Vantor" and hands the reader the FIRST entity's real value for
+ *    the SECOND entity's mention — unrecoverable once emitted.
+ *
+ * Everything not settled stays in `pending` and is reconsidered verbatim next
+ * chunk. `pending` is always RAW input, never replaced output: replacements are
+ * appended straight to the emitted string and never re-scanned, which is what
+ * `String.replace` does over a whole string, and is why the equivalence holds.
+ * (It also retires an accepted limitation of the earlier design, which held back
+ * a slice of the REPLACED buffer and could re-match a real value's suffix.)
+ *
+ * **Carry.** `(?<![0-9])` mirrors hazard 1 at the other edge: it also passes
+ * vacuously at position 0, so once the digit that should veto a match has been
+ * emitted, `pending` alone can no longer see it. The buffer therefore keeps one
+ * already-emitted raw character at its head (`carry`), used only as regex left
+ * context and never re-emitted — emission starts at `base`, not 0. One character
+ * is enough because the lookbehind inspects exactly one. No match can BEGIN at
+ * the carry: it is either the last character of a match already replaced (the
+ * scan resumes after it) or a character emitted only because every match that
+ * could start there was fully visible and settled — so the `start < base` guard
+ * below is an invariant check, not a code path.
+ *
+ * Cost is O(buffer) per chunk, and `pending` never exceeds `maxLen` (emission
+ * stops at `buffer.length - maxLen` unless a settled replacement carried the
+ * cursor past it, which only shortens the remainder). A long non-matching stream
+ * therefore costs one pass over each chunk plus a bounded window, with no
+ * unbounded growth.
+ */
+export function createRehydrateTransform(map: Map<string, string>): TransformStream<string, string> {
+  const pattern = surrogatePattern(map);
+  // Nothing to match: hand chunks straight through, preserving chunk identity.
+  if (!pattern) {
+    return new TransformStream<string, string>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+      },
+    });
+  }
+  const maxLen = maxSurrogateLength(map);
+  /** One already-emitted raw character; left context for the lookbehind only. */
+  let carry = "";
+  /** Raw, never-replaced input that is not yet safe to emit. */
+  let pending = "";
+
+  /**
+   * One pass over carry + pending + chunk. Returns the text to emit and leaves
+   * `carry`/`pending` positioned for the next call. At `atEnd` there is no next
+   * character, so both hazards above are moot and every match is settled.
+   */
+  const consume = (chunk: string, atEnd: boolean): string => {
+    const buffer = carry + pending + chunk;
+    const base = carry.length; // 0 or 1: where not-yet-emitted text starts
+    const visibleFrom = buffer.length - maxLen; // last start index fully in view
+
+    let out = "";
+    let cursor = base; // buffer consumed into `out` so far
+    let deferFrom = atEnd ? buffer.length : visibleFrom;
+
+    // matchAll, never an exec loop: it iterates a clone and leaves this
+    // instance's lastIndex alone, so every call scans from the start.
+    for (const m of buffer.matchAll(pattern)) {
+      const surrogate = m[0]!;
+      const start = m.index;
+      const end = start + surrogate.length;
+      if (start < base) continue; // invariant: unreachable (see docstring)
+      if (!(atEnd || (end < buffer.length && start <= visibleFrom))) {
+        // Unsettled. Provably start >= visibleFrom, so this min never actually
+        // moves deferFrom; it is written out so the holdback is locally evident
+        // and survives a future change to the settled rule.
+        deferFrom = Math.min(deferFrom, start);
+        break; // every later match is unsettled too
+      }
+      out += buffer.slice(cursor, start) + map.get(surrogate)!;
+      cursor = end;
+    }
+
+    const emitEnd = Math.max(cursor, deferFrom);
+    out += buffer.slice(cursor, emitEnd);
+    if (emitEnd > base) carry = buffer.charAt(emitEnd - 1);
+    pending = buffer.slice(emitEnd);
+    return out;
+  };
+
+  return new TransformStream<string, string>({
+    transform(chunk, controller) {
+      const out = consume(chunk, false);
+      if (out) controller.enqueue(out);
+    },
+    flush(controller) {
+      const out = consume("", true);
+      if (out) controller.enqueue(out);
+    },
+  });
+}
