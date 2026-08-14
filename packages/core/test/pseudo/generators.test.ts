@@ -4,10 +4,14 @@ import { getValidator } from "../../src/detect/validators.js";
 
 const KEY = "conv1\u0000client-name\u0000Globex";
 
-/** Case-insensitive whitespace-delimited tokens present in both strings. */
+/** Case-insensitive tokens present in both strings, split on non-alphanumerics. */
 function sharedTokens(a: string, b: string): string[] {
-  const bt = new Set(b.toLowerCase().split(/\s+/));
-  return a.toLowerCase().split(/\s+/).filter((t) => bt.has(t));
+  const bt = new Set(splitTokens(b));
+  return splitTokens(a).filter((t) => bt.has(t));
+}
+
+function splitTokens(s: string): string[] {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
 }
 
 describe("generateSurrogate", () => {
@@ -93,6 +97,40 @@ describe("generateSurrogate", () => {
     const s = generateSurrogate("opaque", "-a-", "k7");
     expect(s).toMatch(/^-[a-z]-$/);
     expect(s).not.toBe("-a-");
+  });
+
+  it("re-rolls when a candidate reuses a punctuation-joined token of the real", () => {
+    // Same deterministic trick as above, but the real joins its tokens with a
+    // hyphen rather than a space. Splitting on whitespace alone made
+    // "Rohan-Mehta" a single token, so a candidate named Rohan sailed through
+    // the leak check and handed back the real first name verbatim.
+    const key = "kHyphen";
+    const unsalted = generateSurrogate("person-name", "zzz nomatch", key);
+    const real = `${unsalted.split(" ")[0]!}-Mehta`;
+    const s = generateSurrogate("person-name", real, key);
+    expect(sharedTokens(s, real)).toEqual([]);
+  });
+
+  it("honours an injected salt cap and reports exhaustion without echoing the real", () => {
+    // The cap is injectable purely so this path is testable: at the 64 default,
+    // constructing a real whose every candidate collides is impractical. Cap 0
+    // means "no salt is allowed to succeed", so exhaustion fires immediately.
+    const real = "Priyanka Deshpande";
+    expect(() => generateSurrogate("person-name", real, "kCap", 0)).toThrow(/exhausted/i);
+    let message = "";
+    try {
+      generateSurrogate("person-name", real, "kCap", 0);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // The no-echo contract: this path can fire on a genuinely sensitive value,
+    // so neither the real nor any token of it may reach a log or a UI string.
+    expect(message).not.toContain(real);
+    for (const token of splitTokens(real)) expect(message.toLowerCase()).not.toContain(token);
+  });
+
+  it("leaves the default salt budget unchanged when a cap is not injected", () => {
+    expect(generateSurrogate("org-name", "Globex", KEY, 64)).toBe(generateSurrogate("org-name", "Globex", KEY));
   });
 
   it("different seed keys give different surrogates (spot check)", () => {
