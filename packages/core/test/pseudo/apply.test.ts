@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { ResolvedFinding } from "../../src/detect/types.js";
 import { detect } from "../../src/detect/orchestrator.js";
+import type { Action } from "../../src/policy/types.js";
 import { loadPolicyIr } from "../../src/policy/load.js";
 import { applyActions } from "../../src/pseudo/apply.js";
 import { MemoryVaultStore, Vault } from "../../src/pseudo/vault.js";
@@ -14,22 +16,63 @@ const newVault = () => new Vault(new MemoryVaultStore(), SALT);
 
 const TEXT = "PAN ABCPD1234E and key AKIAIOSFODNN7EXAMPLE here";
 
+/**
+ * Hand-built resolved finding. `text` is re-derived from the source string
+ * rather than passed in, which is the Finding contract (offsets are the truth)
+ * and keeps these fixtures from drifting when a literal is edited.
+ */
+function findingAt(
+  source: string,
+  start: number,
+  end: number,
+  action: Action,
+  entityType = "aws-key",
+): ResolvedFinding {
+  return {
+    start,
+    end,
+    text: source.slice(start, end),
+    entityType,
+    severity: "critical",
+    tier: 0,
+    source: "hand-built",
+    confidence: 1,
+    action,
+  };
+}
+
 describe("applyActions", () => {
   it("pseudonymizes and redacts by span, leaves allow untouched", async () => {
     const vault = newVault();
-    const { findings } = await detect({ ir, provider: "chatgpt", text: TEXT, config });
-    // The fixture's actions are block/block for these two, so the mix this test
-    // is about is crafted here rather than resolved from policy.
-    const manual = findings.map((f) =>
-      f.entityType === "in-pan" ? { ...f, action: "pseudonymize" as const } : { ...f, action: "redact" as const },
-    );
-    const result = await applyActions(TEXT, manual, vault, "conv1", ir);
+    // `client-name` is a tier-1 entity and tier 1 is off here, so the allow
+    // finding is appended by hand -- which is also the only way to exercise the
+    // branch: the fixture maps client-name to pseudonymize.
+    const text = `${TEXT} for Globex`;
+    const clientStart = text.indexOf("Globex");
+    const { findings } = await detect({ ir, provider: "chatgpt", text, config });
+    // The fixture's actions are block/block for the detected two, so the mix
+    // this test is about is crafted here rather than resolved from policy.
+    const manual: ResolvedFinding[] = [
+      ...findings.map((f) =>
+        f.entityType === "in-pan" ? { ...f, action: "pseudonymize" as const } : { ...f, action: "redact" as const },
+      ),
+      findingAt(text, clientStart, clientStart + "Globex".length, "allow", "client-name"),
+    ];
+    const result = await applyActions(text, manual, vault, "conv1", ir);
     expect(result.blocked).toBe(false);
     expect(result.text).not.toContain("ABCPD1234E");
     expect(result.text).not.toContain("AKIAIOSFODNN7EXAMPLE");
     expect(result.text).toContain("[REDACTED:aws-key]");
     // The surrogate is format-preserving, so the PAN shape survives.
     expect(result.text).toMatch(/PAN [A-Z]{5}[0-9]{4}[A-Z] and key/);
+    // Allow is a rewrite of nothing: the span survives verbatim, and it must not
+    // appear in `applied` either -- a caller diffing that list would otherwise
+    // report a replacement that never happened (and one whose newStart/newEnd
+    // would be meaningless).
+    expect(result.text).toContain(" for Globex");
+    expect(result.text.endsWith(" for Globex")).toBe(true);
+    expect(result.applied.map((a) => a.entityType)).not.toContain("client-name");
+    expect(result.applied).toHaveLength(2);
   });
 
   it("applied records slice the rewritten text exactly", async () => {
@@ -55,6 +98,49 @@ describe("applyActions", () => {
     expect(result.blocked).toBe(true);
     expect(result.text).toContain("ABCPD1234E"); // block does not rewrite
     expect(result.text).toContain("[REDACTED:aws-key]");
+  });
+
+  // The forward assembly is a cursor walk, and every off-by-one in it hides at
+  // the edges: a mid-string finding surrounded by slack passes even if the gap
+  // copy is wrong by a character. These three pin the edges themselves.
+  describe("span boundaries", () => {
+    it("handles adjacent findings with no gap or overlap between them", async () => {
+      const text = "AAAABBBB tail";
+      const findings = [
+        findingAt(text, 0, 4, "redact", "aws-key"),
+        findingAt(text, 4, 8, "redact", "generic-secret"),
+      ];
+      const result = await applyActions(text, findings, newVault(), "conv1", ir);
+      expect(result.text).toBe("[REDACTED:aws-key][REDACTED:generic-secret] tail");
+      // The zero-length gap between them stays zero-length: no dropped or
+      // duplicated character where the two replacements meet.
+      expect(result.applied[0]!.newEnd).toBe(result.applied[1]!.newStart);
+      for (const a of result.applied) {
+        expect(result.text.slice(a.newStart, a.newEnd)).toBe(a.replacement);
+      }
+    });
+
+    it("handles a finding that starts at offset 0", async () => {
+      const text = "AAAA tail";
+      const result = await applyActions(text, [findingAt(text, 0, 4, "redact")], newVault(), "conv1", ir);
+      expect(result.text).toBe("[REDACTED:aws-key] tail");
+      expect(result.applied[0]!.newStart).toBe(0);
+    });
+
+    it("handles a finding that ends at text.length", async () => {
+      const text = "tail AAAA";
+      const result = await applyActions(
+        text,
+        [findingAt(text, 5, text.length, "redact")],
+        newVault(),
+        "conv1",
+        ir,
+      );
+      expect(result.text).toBe("tail [REDACTED:aws-key]");
+      // Nothing is appended after the last span, so the replacement has to run
+      // to the very end of the output.
+      expect(result.applied[0]!.newEnd).toBe(result.text.length);
+    });
   });
 
   it("is the identity on empty findings", async () => {

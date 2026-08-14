@@ -63,11 +63,19 @@ export interface DetectorEngines {
 export interface DetectionResult {
   /**
    * Pairwise DISJOINT and sorted by start offset -- overlaps were already
-   * resolved when this array was built. A rewriter (Plan 2's redaction and
-   * pseudonymization pass) can therefore splice every span in one walk without
-   * checking for collisions or re-sorting; walking it in reverse is what keeps
-   * the remaining offsets valid, since a replacement of a different length
-   * shifts everything after it.
+   * resolved when this array was built. A rewriter can therefore consume the
+   * array in one walk without checking for collisions or re-sorting.
+   *
+   * Plan 2's rewriter (`pseudo/apply.ts`, `applyActions`) walks it FORWARD and
+   * assembles a new string -- copy the gap since the last span, append the
+   * replacement, advance the cursor -- rather than splicing the original in
+   * place. Assembly is why offset shift never has to be reasoned about: the
+   * replacement's new offsets simply fall out of the output length as it is
+   * built, so a replacement of a different length costs nothing. (Reverse-walk
+   * splicing is the alternative that keeps in-place edits valid, and it is what
+   * this comment used to recommend; it survives only if every consumer edits
+   * the original buffer, and it cannot report new offsets without a second
+   * pass.)
    */
   findings: ResolvedFinding[];
   /**
