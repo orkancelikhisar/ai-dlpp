@@ -69,7 +69,6 @@ describe("applyActions", () => {
     // appear in `applied` either -- a caller diffing that list would otherwise
     // report a replacement that never happened (and one whose newStart/newEnd
     // would be meaningless).
-    expect(result.text).toContain(" for Globex");
     expect(result.text.endsWith(" for Globex")).toBe(true);
     expect(result.applied.map((a) => a.entityType)).not.toContain("client-name");
     expect(result.applied).toHaveLength(2);

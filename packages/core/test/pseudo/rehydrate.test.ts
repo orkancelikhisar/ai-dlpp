@@ -72,4 +72,51 @@ describe("digit-boundary on surrogate matches", () => {
     // digit when the text does not continue the run.
     expect(rehydrateText("filed by Vantor 2 today", suffixed)).toBe("filed by Borealis Ltd today");
   });
+
+  // The right boundary alone is half a fix. `id-number` surrogates outside the
+  // PAN shape scramble to all-digit strings, so a surrogate is routinely a bare
+  // number that can sit inside any longer figure in the response.
+  it("does not match a numeric surrogate inside a longer digit run", () => {
+    const numeric = new Map([["8842", "1234"]]);
+    // Unboundaried on the left, "8842" matches the tail of "1998842" and splices
+    // the REAL id's digits into an unrelated figure: "invoice 1991234 total".
+    // Silent, and it corrupts a number the user will read as authoritative.
+    expect(rehydrateText("invoice 1998842 total", numeric)).toBe("invoice 1998842 total");
+  });
+
+  it("still rehydrates a numeric surrogate standing on its own", () => {
+    // Control for the pin above: the left boundary must not cost the normal case.
+    expect(rehydrateText("ref 8842 closed", new Map([["8842", "1234"]]))).toBe("ref 1234 closed");
+  });
+});
+
+/**
+ * Two mentions the boundaries knowingly decline to rehydrate. Both leave a
+ * surrogate in front of the user rather than risk a wrong value; both are here
+ * so a future reader sees a decision instead of a bug.
+ */
+describe("declined rehydrations (documented trades)", () => {
+  const map = new Map([["Vantor", "Globex"]]);
+
+  it("leaves a digit-glued mention alone", () => {
+    // "Vantor2024" matches nothing: the right boundary rejects it and there is
+    // no shorter alternative. The fake name reaches the user, which is the
+    // deliberate side to fail on -- the alternative is matching at a digit seam,
+    // exactly what produces misattribution and mangled numbers.
+    expect(rehydrateText("Vantor2024 filing", map)).toBe("Vantor2024 filing");
+  });
+
+  it("is case-sensitive", () => {
+    // A model that lowercases the surrogate ("the vantor deal") loses the
+    // rehydration. Case-insensitive matching is not the fix: it would collapse
+    // distinct surrogates and rehydrate ordinary words that happen to collide.
+    expect(rehydrateText("the vantor deal", map)).toBe("the vantor deal");
+  });
+
+  it("still rehydrates a letter-glued mention", () => {
+    // The counterpart to the pluralization pin, on the left edge: letters are
+    // deliberately unboundaried in both directions, so a surrogate fused to a
+    // word still comes back. Desirable, not tolerated.
+    expect(rehydrateText("ClientVantor ticket", map)).toBe("ClientGlobex ticket");
+  });
 });
