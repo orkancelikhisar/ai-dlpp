@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadPolicyIr } from "../../src/policy/load.js";
 import { generateSurrogate } from "../../src/pseudo/generators.js";
-import { MemoryVaultStore, Vault } from "../../src/pseudo/vault.js";
+import { MemoryVaultStore, Vault, type VaultRecord } from "../../src/pseudo/vault.js";
 import { minimalIr } from "../fixtures/minimal-ir.js";
 
 const ir = loadPolicyIr(JSON.stringify(minimalIr()));
@@ -25,8 +25,27 @@ function orgPool(): string[] {
   return [...seen];
 }
 
+/**
+ * Occupants' reals fuse their index into one token ("zzOccupant11", not
+ * "occupant-11"): a bare numeric token would be blocked by the cross-entry leak
+ * check and quietly move the suffix ladder, testing something other than what
+ * the test names.
+ */
 function occupy(surrogates: string[]) {
-  return { entries: surrogates.map((surrogate, i) => ({ real: `occupant-${i}`, surrogate, entityType: "client-name" })) };
+  return { entries: surrogates.map((surrogate, i) => ({ real: `zzOccupant${i}`, surrogate, entityType: "client-name" })) };
+}
+
+/** The first probe real whose unsalted pick is `target`, for cross-entry setups. */
+function realDrawing(target: string): string {
+  for (let i = 0; i < 2000; i++) {
+    const real = `Probe${i}`;
+    if (generateSurrogate("org-name", real, baseKey("conv1", "client-name", real)) === target) return real;
+  }
+  throw new Error(`no probe real draws ${target}`);
+}
+
+function tokensOf(s: string): string[] {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
 }
 
 const SUFFIXED = /\s\d+$/;
@@ -101,6 +120,19 @@ describe("Vault", () => {
     expect(second).toBe(first);
   });
 
+  it("mints the same surrogate from a fresh store under the same install salt", async () => {
+    // The test above shares a store, so a lookup of the stored entry satisfies
+    // it even if minting were random. Two empty stores pin the derivation.
+    const first = await new Vault(new MemoryVaultStore(), SALT).mint("conv1", "Globex", "client-name", ir);
+    const second = await new Vault(new MemoryVaultStore(), SALT).mint("conv1", "Globex", "client-name", ir);
+    expect(second).toBe(first);
+  });
+
+  it("rejects a blank install salt", () => {
+    expect(() => new Vault(new MemoryVaultStore(), "")).toThrow(/install salt/i);
+    expect(() => new Vault(new MemoryVaultStore(), "   ")).toThrow(/install salt/i);
+  });
+
   // D2 — provable termination when the pool runs out.
 
   it("mints 17 distinct orgs in one conversation, falling back to suffixes", async () => {
@@ -119,6 +151,16 @@ describe("Vault", () => {
     for (let i = 0; i < 5; i++) minted.push(await vault.mint("conv1", `Realco${i}`, "client-name", ir));
     expect(new Set(minted).size).toBe(5);
     expect(minted.filter((s) => SUFFIXED.test(s))).toEqual([]);
+  });
+
+  it("returns the same suffixed surrogate when a pool-exhausted real is re-minted", async () => {
+    const vault = new Vault(new MemoryVaultStore(), SALT);
+    const minted: string[] = [];
+    for (let i = 0; i < 17; i++) minted.push(await vault.mint("conv1", `Realco${i}`, "client-name", ir));
+    expect(minted[16]).toMatch(SUFFIXED);
+    // Referential integrity has to hold on the fallback path too, or the 18th
+    // turn renames a client the model has already been told about.
+    expect(await vault.mint("conv1", "Realco16", "client-name", ir)).toBe(minted[16]);
   });
 
   it("skips a suffixed candidate that would leak a token of the real", async () => {
@@ -141,5 +183,69 @@ describe("Vault", () => {
     // Pool kinds would happily mint a surrogate for "" — the generator's
     // degenerate guard only covers the scramble kinds.
     expect((await vault.rehydrationMap("conv1")).size).toBe(0);
+  });
+
+  // Concurrency, store semantics, cross-entry leaks.
+
+  it("keeps every entry when one conversation's mints run concurrently", async () => {
+    const vault = new Vault(new MemoryVaultStore(), SALT);
+    const reals = Array.from({ length: 12 }, (_, i) => `Realco${i}`);
+    // A message with 12 detected entities mints them together. Read-modify-write
+    // without serialization drops all but the last: every mint reads the record
+    // before any of them writes it.
+    const minted = await Promise.all(reals.map((real) => vault.mint("conv1", real, "client-name", ir)));
+    const map = await vault.rehydrationMap("conv1");
+    expect(map.size).toBe(12);
+    expect(new Set(minted).size).toBe(12);
+    for (const [surrogate, real] of map) expect(reals).toContain(real);
+    expect([...map.keys()].sort()).toEqual([...minted].sort());
+  });
+
+  it("serializes per conversation without serializing across conversations", async () => {
+    const vault = new Vault(new MemoryVaultStore(), SALT);
+    await Promise.all([
+      ...Array.from({ length: 6 }, (_, i) => vault.mint("convA", `Realco${i}`, "client-name", ir)),
+      ...Array.from({ length: 6 }, (_, i) => vault.mint("convB", `Realco${i}`, "client-name", ir)),
+    ]);
+    expect((await vault.rehydrationMap("convA")).size).toBe(6);
+    expect((await vault.rehydrationMap("convB")).size).toBe(6);
+  });
+
+  it("does not let a rejected mint wedge the conversation's queue", async () => {
+    const vault = new Vault(new MemoryVaultStore(), SALT);
+    const [failed, ok] = await Promise.allSettled([
+      vault.mint("conv1", "x", "nope", ir),
+      vault.mint("conv1", "Globex", "client-name", ir),
+    ]);
+    expect(failed!.status).toBe("rejected");
+    expect(ok!.status).toBe("fulfilled");
+  });
+
+  it("MemoryVaultStore hands out snapshots, not live records", async () => {
+    // IndexedDB structured-clones on the way out; a memory store that aliases
+    // its own record would let a forgotten put pass every test here and fail
+    // only in the extension.
+    const store = new MemoryVaultStore();
+    await store.put("conv1", { entries: [{ real: "Globex", surrogate: "Vantor", entityType: "client-name" }] });
+    const fetched = (await store.get("conv1"))!;
+    fetched.entries.push({ real: "Initech", surrogate: "Kitehill", entityType: "client-name" });
+    expect((await store.get("conv1"))!.entries).toHaveLength(1);
+    // ...and the caller's record cannot be mutated through the store either.
+    const held: VaultRecord = { entries: [] };
+    await store.put("conv2", held);
+    held.entries.push({ real: "Initech", surrogate: "Kitehill", entityType: "client-name" });
+    expect((await store.get("conv2"))!.entries).toHaveLength(0);
+  });
+
+  it("will not draw a surrogate that leaks another entry's real", async () => {
+    const vault = new Vault(new MemoryVaultStore(), SALT);
+    // "Meridian Traders" shares its distinctive token with the pool name
+    // "Meridian Ops". Mint it, then mint a second real whose own unsalted pick
+    // IS "Meridian Ops" — checking candidates only against their own real would
+    // ship the first client's name to the provider under a second one's cover.
+    await vault.mint("conv1", "Meridian Traders", "client-name", ir);
+    const second = await vault.mint("conv1", realDrawing("Meridian Ops"), "client-name", ir);
+    expect(second).not.toBe("Meridian Ops");
+    expect(tokensOf(second)).not.toContain("meridian");
   });
 });
