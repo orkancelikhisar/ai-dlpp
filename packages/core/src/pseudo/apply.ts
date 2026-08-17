@@ -14,6 +14,28 @@ export interface AppliedReplacement {
   action: "pseudonymize" | "redact";
 }
 
+/**
+ * A span the policy did NOT rewrite, located in the rewritten text.
+ *
+ * The text is identical on both sides — `rewritten.slice(newStart, newEnd)` ===
+ * `original.slice(start, end)` — so the only information here is the offset
+ * shift, and that is exactly the part a caller cannot recompute cheaply.
+ * Everything to the right of a length-changing replacement moves, so a UI
+ * holding original offsets (Plan 6's review sheet, highlighting what is
+ * blocking the send) would otherwise have to replay every delta in `applied`
+ * to find where a blocked span landed. The forward pass knows it for free.
+ */
+export interface SkippedSpan {
+  /** Original-text span (== the finding's span). */
+  start: number;
+  end: number;
+  /** The same characters' span in the rewritten text. */
+  newStart: number;
+  newEnd: number;
+  entityType: string;
+  action: "block" | "allow";
+}
+
 export interface ApplyResult {
   text: string;
   /**
@@ -24,6 +46,56 @@ export interface ApplyResult {
    */
   blocked: boolean;
   applied: AppliedReplacement[];
+  /**
+   * Spans left verbatim because their action was `block` or `allow`, in span
+   * order, carrying their position in `text`. Disjoint from `applied`: every
+   * finding lands in exactly one of the two lists.
+   */
+  skipped: SkippedSpan[];
+}
+
+/**
+ * The DetectionResult contract (spans in bounds, non-inverted, pairwise
+ * disjoint), enforced instead of assumed. Every violation this rejects used to
+ * produce a plausible-looking result containing REAL text, which is the one
+ * outcome this module exists to prevent and the one a caller cannot detect:
+ * `applied` stays internally consistent either way, so nothing downstream can
+ * tell the difference.
+ *
+ * - **Overlap.** [0,10) then [5,8) regresses the cursor; `slice(10, 5)` is "",
+ *   the cursor then jumps to 8, and characters 8-9 of a span the policy said to
+ *   rewrite are re-emitted verbatim in the tail copy.
+ * - **Negative start.** JS reads a negative slice index from the END of the
+ *   string, so `slice(0, -4)` silently succeeds and the replacement lands in an
+ *   unrelated position with the whole original surviving around it.
+ * - **Out-of-range end.** Swallows the tail: the gap copy after the last span
+ *   is empty, so text nobody looked at disappears from the message.
+ *
+ * Compared against `lastEnd` -- the previous finding's end, whatever its action
+ * -- rather than the rewrite `cursor`. The two are equal for rewritten spans,
+ * but `block`/`allow` leave the cursor where it was, so a cursor-based check is
+ * blind to a rewrite landing inside a blocked span: that mangles the blocked
+ * text and silently falsifies the `skipped` offsets reported below.
+ *
+ * Zero-width spans are NOT rejected here; `normalizeFindings` already refuses
+ * them at the pipeline entrance, where the text needed to judge them lives.
+ */
+function assertSpanSane(text: string, f: ResolvedFinding, lastEnd: number): void {
+  const violation =
+    f.start < 0
+      ? "negative start"
+      : f.end < f.start
+        ? "end before start"
+        : f.end > text.length
+          ? `end past text length ${text.length}`
+          : f.start < lastEnd
+            ? `starts before the previous span ended (${lastEnd}); findings must be pairwise disjoint`
+            : undefined;
+  if (violation === undefined) return;
+  throw new Error(
+    `applyActions: invalid span [${f.start}, ${f.end}) for entityType "${f.entityType}" ` +
+      `from source "${f.source}": ${violation}`,
+  );
 }
 
 /**
@@ -65,10 +137,29 @@ export async function applyActions(
 
   let out = "";
   let cursor = 0;
+  let lastEnd = 0;
   const applied: AppliedReplacement[] = [];
+  const skipped: SkippedSpan[] = [];
 
   for (const f of sorted) {
-    if (f.action !== "pseudonymize" && f.action !== "redact") continue;
+    assertSpanSane(text, f, lastEnd);
+    lastEnd = f.end;
+    if (f.action !== "pseudonymize" && f.action !== "redact") {
+      // Everything from `cursor` to `f.start` is copied verbatim, so the shift
+      // at this point is exactly `out.length - cursor` -- no delta replay, and
+      // no dependence on where the copy actually happens (the gap is appended
+      // later, by the next rewrite or by the final tail copy).
+      const newStart = out.length + (f.start - cursor);
+      skipped.push({
+        start: f.start,
+        end: f.end,
+        newStart,
+        newEnd: newStart + (f.end - f.start),
+        entityType: f.entityType,
+        action: f.action,
+      });
+      continue;
+    }
     // Awaited in the loop on purpose, not gathered with Promise.all: the vault
     // serializes mints per conversation anyway (they are a read-modify-write
     // over one record), so parallelism buys nothing here and only makes the
@@ -94,5 +185,5 @@ export async function applyActions(
   }
   out += text.slice(cursor);
 
-  return { text: out, blocked, applied };
+  return { text: out, blocked, applied, skipped };
 }

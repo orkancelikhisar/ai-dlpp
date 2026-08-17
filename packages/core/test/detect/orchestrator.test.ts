@@ -119,6 +119,67 @@ describe("finding normalization", () => {
     // Normalization is pure: the engine's own object is never rewritten.
     expect(claimed.severity).toBe("low");
   });
+
+  /**
+   * Spans were trusted entirely, and every consumer downstream is built on the
+   * assumption in `types.ts` that `text === message.slice(start, end)`:
+   * `applyActions` rewrites BY OFFSET, so a drifted span sends a neighbouring
+   * word to the vault and leaves the real value in place, and the merge orders
+   * and clusters by offsets that describe nothing. Tier 0 cannot violate this
+   * (it slices the message itself); a tokenizer-backed tier-1/2 model can and
+   * routinely does, which is why `SpanTagger` already tells implementers to
+   * re-derive `text`. The contract is now enforced at the point the pipeline
+   * takes ownership rather than restated in a docstring.
+   */
+  const drifted = "Globex signed the deal.";
+  const run = (f: Finding) =>
+    detect({
+      ir, provider: "chatgpt", text: drifted,
+      config: { tier0: false, tier1: true, tier2: false },
+      engines: { tier1: tagger([f]) },
+    });
+
+  it("rejects a finding whose text disagrees with its span", async () => {
+    // Classic tokenizer drift: the offsets say [0,6), the model says "Globe".
+    const f = finding({ start: 0, end: 6, text: "Globe", entityType: "client-name" });
+    await expect(run(f)).rejects.toThrow(/does not match its span/);
+    await expect(run(f)).rejects.toThrow(/stub-t1/);
+    // The message reports lengths, never the values: a finding's text is the
+    // sensitive string this whole system exists to keep out of places it may be
+    // logged, and an exception message is exactly such a place.
+    await expect(run(f)).rejects.not.toThrow(/Globe/);
+  });
+
+  it("rejects a finding whose span runs past the end of the text", async () => {
+    const f = finding({ start: 0, end: drifted.length + 5, text: drifted, entityType: "client-name" });
+    await expect(run(f)).rejects.toThrow(/out-of-range span/);
+    await expect(run(f)).rejects.toThrow(/stub-t1/);
+  });
+
+  it("rejects a negative start", async () => {
+    const f = finding({ start: -1, end: 6, text: "Globex", entityType: "client-name" });
+    await expect(run(f)).rejects.toThrow(/out-of-range span/);
+  });
+
+  // Zero-width is rejected rather than tolerated: tier 0 never emits one, and a
+  // finding covering no characters means nothing downstream -- it would mint a
+  // surrogate for the empty string (the vault refuses), or splice a redaction
+  // marker into text at a point where nothing was detected.
+  it("rejects a zero-width finding", async () => {
+    const f = finding({ start: 3, end: 3, text: "", entityType: "client-name" });
+    await expect(run(f)).rejects.toThrow(/out-of-range span/);
+  });
+
+  it("validates tier-2 findings on the same terms", async () => {
+    const bad = finding({ start: 0, end: 6, text: "Globe", entityType: "client-name", tier: 2, source: "stub-t2" });
+    await expect(
+      detect({
+        ir, provider: "chatgpt", text: drifted,
+        config: { tier0: false, tier1: false, tier2: true },
+        engines: { tier2: judge([bad]) },
+      }),
+    ).rejects.toThrow(/stub-t2/);
+  });
 });
 
 describe("cluster-strictest action resolution", () => {

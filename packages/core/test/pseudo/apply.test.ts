@@ -144,7 +144,65 @@ describe("applyActions", () => {
 
   it("is the identity on empty findings", async () => {
     const result = await applyActions("hello world", [], newVault(), "conv1", ir);
-    expect(result).toEqual({ text: "hello world", blocked: false, applied: [] });
+    expect(result).toEqual({ text: "hello world", blocked: false, applied: [], skipped: [] });
+  });
+
+  /**
+   * `applied` covers only the spans that were rewritten, so a caller holding an
+   * ApplyResult knows WHAT was blocked (it has the findings) but not WHERE the
+   * blocked span sits in the text it is about to render -- the offsets it has
+   * are into the original, and every rewrite before them moved the text. The
+   * only way to recover them from `applied` alone is to replay the deltas by
+   * hand, which is Plan 6's review sheet re-deriving something the forward pass
+   * already knew for free. `skipped` reports it: same text, shifted offsets.
+   */
+  describe("skipped spans", () => {
+    // Both skipped spans deliberately sit AFTER a length-changing rewrite
+    // ([REDACTED:aws-key] is 18 chars against a 20-char key, so everything to
+    // its right moves by -2). An identity mapping would pass otherwise.
+    const skipText = "key AKIAIOSFODNN7EXAMPLE then Globex and ABCPD1234E end";
+    const at = (needle: string) => skipText.indexOf(needle);
+
+    const mixed: ResolvedFinding[] = [
+      findingAt(skipText, at("AKIA"), at("AKIA") + 20, "redact", "aws-key"),
+      findingAt(skipText, at("Globex"), at("Globex") + 6, "block", "client-name"),
+      findingAt(skipText, at("ABCPD"), at("ABCPD") + 10, "allow", "in-pan"),
+    ];
+
+    it("reports block and allow spans at their position in the REWRITTEN text", async () => {
+      const result = await applyActions(skipText, mixed, newVault(), "conv1", ir);
+      expect(result.skipped.map((s) => [s.entityType, s.action])).toEqual([
+        ["client-name", "block"],
+        ["in-pan", "allow"],
+      ]);
+      for (const s of result.skipped) {
+        // The defining property: identical text, shifted offsets.
+        expect(result.text.slice(s.newStart, s.newEnd)).toBe(skipText.slice(s.start, s.end));
+        // ...and the shift is real, so this is not an accidental identity.
+        expect(s.newStart).toBe(s.start - 2);
+        expect(s.newEnd - s.newStart).toBe(s.end - s.start);
+      }
+      expect(result.blocked).toBe(true);
+    });
+
+    it("keeps skipped spans out of applied, and rewritten spans out of skipped", async () => {
+      const result = await applyActions(skipText, mixed, newVault(), "conv1", ir);
+      expect(result.applied.map((a) => a.entityType)).toEqual(["aws-key"]);
+      expect(result.skipped.map((s) => s.entityType)).not.toContain("aws-key");
+    });
+
+    // A block span before any rewrite must not pick up a phantom shift.
+    it("reports an unshifted span when nothing before it was rewritten", async () => {
+      const text = "Globex then key AKIAIOSFODNN7EXAMPLE end";
+      const findings: ResolvedFinding[] = [
+        findingAt(text, 0, 6, "block", "client-name"),
+        findingAt(text, text.indexOf("AKIA"), text.indexOf("AKIA") + 20, "redact", "aws-key"),
+      ];
+      const result = await applyActions(text, findings, newVault(), "conv1", ir);
+      expect(result.skipped).toEqual([
+        { start: 0, end: 6, newStart: 0, newEnd: 6, entityType: "client-name", action: "block" },
+      ]);
+    });
   });
 
   it("keeps referential integrity across messages in one conversation", async () => {
@@ -174,5 +232,65 @@ describe("applyActions", () => {
     const forged = findings.map((f) => ({ ...f, action: "pseudonymize" as const }));
     expect(forged.some((f) => f.entityType === "aws-key")).toBe(true);
     await expect(applyActions(text, forged, vault, "conv1", ir)).rejects.toThrow(/never be pseudonymized/);
+  });
+
+  /**
+   * The forward assembly assumes the DetectionResult contract (spans disjoint,
+   * sorted, in bounds). Violating it did not fail — it silently emitted REAL
+   * text out of a function whose whole job is that no real text survives, which
+   * is the worst possible failure mode for this layer and invisible from the
+   * outside because the returned `applied` records stay internally consistent.
+   * Measured before the guard existed, on "SECRETVALUE tail":
+   *
+   * - overlap [0,10) then [5,8) -> "[REDACTED:aws-key][REDACTED:aws-key]LUE tail":
+   *   the cursor regressed (slice(10,5) === ""), then jumped to 8, so chars 8-9
+   *   of a span the policy said to redact were re-emitted verbatim.
+   * - start -4 on "hello world" -> "hello w[REDACTED:aws-key] world": JS reads a
+   *   negative slice index from the END, so the replacement landed in an
+   *   unrelated position and the whole original string survived around it.
+   * - end 500 on "short" -> "[REDACTED:aws-key]": the tail was swallowed silently.
+   *
+   * A throw is the only safe answer: there is no partial result to forward
+   * (same argument as the vault-refusal test above).
+   */
+  describe("span-sanity guard", () => {
+    it("throws on overlapping findings instead of re-emitting the covered text", async () => {
+      const text = "SECRETVALUE tail";
+      const findings = [findingAt(text, 0, 10, "redact"), findingAt(text, 5, 8, "redact")];
+      const run = applyActions(text, findings, newVault(), "conv1", ir);
+      await expect(run).rejects.toThrow(/\[5, 8\)/);
+      // The message has to name the offending producer, or a hallucinating
+      // tier-1 engine is diagnosed by reading apply.ts instead of the error.
+      await expect(applyActions(text, findings, newVault(), "conv2", ir)).rejects.toThrow(/hand-built/);
+      await expect(applyActions(text, findings, newVault(), "conv3", ir)).rejects.toThrow(/aws-key/);
+    });
+
+    it("throws on a span that runs past the end of the text", async () => {
+      const text = "short";
+      const bad = { ...findingAt(text, 0, text.length, "redact"), end: 500 };
+      await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(/past text length 5/);
+    });
+
+    it("throws on a negative start", async () => {
+      const text = "hello world";
+      const bad = { ...findingAt(text, 0, 5, "redact"), start: -4 };
+      await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(/negative start/);
+    });
+
+    it("throws on an inverted span", async () => {
+      const text = "hello world";
+      const bad = { ...findingAt(text, 0, 5, "redact"), start: 5, end: 2 };
+      await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(/end before start/);
+    });
+
+    // The guard tracks the previous finding's end, not the rewrite cursor, so a
+    // span overlapping a BLOCKED one is caught too -- block leaves the cursor
+    // where it was, so a cursor-based check cannot see this collision at all,
+    // and the skipped-span offsets reported below would be silently wrong.
+    it("throws when a rewritten span overlaps a blocked one", async () => {
+      const text = "SECRETVALUE tail";
+      const findings = [findingAt(text, 0, 10, "block"), findingAt(text, 5, 8, "redact")];
+      await expect(applyActions(text, findings, newVault(), "conv1", ir)).rejects.toThrow(/\[5, 8\)/);
+    });
   });
 });

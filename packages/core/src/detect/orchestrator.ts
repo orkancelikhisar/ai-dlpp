@@ -31,7 +31,24 @@ const ACTION_RANK: Record<Action, number> = { allow: 0, pseudonymize: 1, redact:
 
 /**
  * Bring every raw finding under the IR's authority before anything downstream
- * reads it. Two things happen, both of them refusals to trust a producer:
+ * reads it. Three things happen, all of them refusals to trust a producer:
+ *
+ * 0. The span must be in range, non-empty, and must actually hold the text the
+ *    producer reported. `types.ts` states `text === message.slice(start, end)`
+ *    as a contract and `SpanTagger` tells implementers to re-derive it, but
+ *    nothing enforced it, and a tokenizer-backed model breaks it routinely.
+ *    Everything downstream is offsets-first -- `applyActions` rewrites BY SPAN,
+ *    so a drifted finding sends a neighbouring word to the vault and leaves the
+ *    real value sitting in the message, and merge/cluster order by offsets that
+ *    describe nothing. Zero-width is rejected with the out-of-range cases: tier
+ *    0 never emits one and it is meaningless downstream (an empty real value the
+ *    vault refuses to mint, or a redaction marker spliced in where nothing was
+ *    detected). Tier 0 cannot trip any of this -- it slices the message itself.
+ *
+ *    Neither message quotes the finding's text or the message's. A finding's
+ *    text is precisely the sensitive string this system exists to keep out of
+ *    places it may be logged, and an exception message is such a place; the
+ *    source, entityType, span and the two lengths locate the bug without it.
  *
  * 1. An entityType that is not declared in the IR is a designed rejection. Tier
  *    0 cannot produce one (the schema validates rule.entityType at load), but a
@@ -46,8 +63,21 @@ const ACTION_RANK: Record<Action, number> = { allow: 0, pseudonymize: 1, redact:
  * Pure: producers' objects are never mutated, and one is copied only when its
  * severity actually disagrees with the IR.
  */
-function normalizeFindings(ir: PolicyIr, findings: Finding[]): Finding[] {
+function normalizeFindings(ir: PolicyIr, text: string, findings: Finding[]): Finding[] {
   return findings.map((f) => {
+    if (!(f.start >= 0 && f.start < f.end && f.end <= text.length)) {
+      throw new Error(
+        `finding from source "${f.source}" (${f.entityType}) has an out-of-range span ` +
+          `[${f.start}, ${f.end}) over a ${text.length}-character message`,
+      );
+    }
+    if (f.text !== text.slice(f.start, f.end)) {
+      throw new Error(
+        `finding from source "${f.source}" (${f.entityType}) reports text that does not match its span ` +
+          `[${f.start}, ${f.end}): ${f.text.length} characters reported, ${f.end - f.start} in the span ` +
+          `(producers must re-derive text as message.slice(start, end))`,
+      );
+    }
     const entity = ir.entityTypes.find((e) => e.id === f.entityType);
     if (entity === undefined) {
       throw new Error(`finding from source "${f.source}" names unknown entityType "${f.entityType}"`);
@@ -180,7 +210,7 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     const started = performance.now();
     const found = runTier0(ir, text, segments);
     timings.tier0Ms = performance.now() - started;
-    raw.push(...normalizeFindings(ir, found));
+    raw.push(...normalizeFindings(ir, text, found));
   }
 
   if (config.tier1 && engines?.tier1 !== undefined) {
@@ -194,7 +224,7 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     const started = performance.now();
     const found = await engines.tier1.tag(taggable, ir);
     timings.tier1Ms = performance.now() - started;
-    raw.push(...normalizeFindings(ir, found));
+    raw.push(...normalizeFindings(ir, text, found));
   }
 
   if (config.tier2 && engines?.tier2 !== undefined) {
@@ -218,7 +248,7 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     const started = performance.now();
     const found = await engines.tier2.judge(segments, ir, [...raw]);
     timings.tier2Ms = performance.now() - started;
-    raw.push(...normalizeFindings(ir, found));
+    raw.push(...normalizeFindings(ir, text, found));
   }
 
   // The per-cluster composition recipe documented in merge.ts: cluster once,
