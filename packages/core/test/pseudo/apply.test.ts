@@ -191,6 +191,29 @@ describe("applyActions", () => {
       expect(result.skipped.map((s) => s.entityType)).not.toContain("aws-key");
     });
 
+    // One preceding rewrite cannot distinguish "accumulates every delta" from
+    // "remembers the last one" -- they agree at n=1. Two rewrites with
+    // DIFFERENT deltas separate them: [REDACTED:aws-key] is 18 characters over
+    // a 20-character key (-2) and [REDACTED:generic-secret] is 25 over a
+    // 10-character token (+15), so the correct cumulative shift is +13 and
+    // every plausible wrong answer (-2, +15, 0) is a different number.
+    it("accumulates the shift across several rewrites of differing length", async () => {
+      const text = "key AKIAIOSFODNN7EXAMPLE tok SECRETTOKN then Globex and ABCPD1234E end";
+      const span = (needle: string) => [text.indexOf(needle), text.indexOf(needle) + needle.length] as const;
+      const findings: ResolvedFinding[] = [
+        findingAt(text, ...span("AKIAIOSFODNN7EXAMPLE"), "redact", "aws-key"),
+        findingAt(text, ...span("SECRETTOKN"), "redact", "generic-secret"),
+        findingAt(text, ...span("Globex"), "block", "client-name"),
+        findingAt(text, ...span("ABCPD1234E"), "allow", "in-pan"),
+      ];
+      const result = await applyActions(text, findings, newVault(), "conv1", ir);
+      expect(result.skipped).toHaveLength(2);
+      for (const s of result.skipped) {
+        expect(result.text.slice(s.newStart, s.newEnd)).toBe(text.slice(s.start, s.end));
+        expect(s.newStart).toBe(s.start + 13);
+      }
+    });
+
     // A block span before any rewrite must not pick up a phantom shift.
     it("reports an unshifted span when nothing before it was rewritten", async () => {
       const text = "Globex then key AKIAIOSFODNN7EXAMPLE end";
@@ -291,6 +314,59 @@ describe("applyActions", () => {
       const text = "SECRETVALUE tail";
       const findings = [findingAt(text, 0, 10, "block"), findingAt(text, 5, 8, "redact")];
       await expect(applyActions(text, findings, newVault(), "conv1", ir)).rejects.toThrow(/\[5, 8\)/);
+    });
+
+    /**
+     * The guard's first form was written as four NEGATED comparisons, which is
+     * the shape that lets exactly the values with no ordering through: every
+     * comparison against NaN is false, so a non-numeric offset satisfied all
+     * four and reached `slice`. Measured on "0123456789 tail", redacting:
+     *
+     * - `start: NaN` (or a JSON-borne `null`) -> "[REDACTED:aws-key] tail":
+     *   `slice(0, NaN)` is "", so the ten characters before the span vanish
+     *   from a message the caller believes was only rewritten.
+     * - `end: NaN`/`null` -> "[REDACTED:aws-key]0123456789 tail": the marker is
+     *   emitted AND the whole original survives after it -- a leak, not a
+     *   swallow, and one that looks like a successful redaction.
+     * - `[2.5, 6.5)` -> "01[REDACTED:aws-key]6789 tail": slice truncates, so
+     *   characters 2-6 were rewritten while `applied` reports [2.5, 6.5) --
+     *   offsets no consumer can trust.
+     *
+     * Rewritten as a single positive predicate: real integers, in range,
+     * non-empty, disjoint from what came before. Anything that is not a number
+     * fails the integer test rather than sliding through a comparison.
+     */
+    it("throws on a zero-width span", async () => {
+      const text = "hello world";
+      const bad = { ...findingAt(text, 0, 5, "redact"), start: 5, end: 5 };
+      await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(/zero-width/);
+    });
+
+    it("throws on non-numeric offsets instead of slicing with them", async () => {
+      const text = "0123456789 tail";
+      const base = findingAt(text, 0, 10, "redact");
+      const cases: ResolvedFinding[] = [
+        { ...base, start: NaN },
+        { ...base, end: NaN },
+        // What a finding deserialized from JSON carries: `undefined` does not
+        // survive a round trip, and a producer that omitted a field yields null.
+        { ...base, start: null as unknown as number },
+        { ...base, end: null as unknown as number },
+        { ...base, start: undefined as unknown as number },
+      ];
+      for (const bad of cases) {
+        await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(
+          /non-integer offsets/,
+        );
+      }
+    });
+
+    it("throws on fractional offsets", async () => {
+      const text = "0123456789 tail";
+      const bad = { ...findingAt(text, 0, 10, "redact"), start: 2.5, end: 6.5 };
+      await expect(applyActions(text, [bad], newVault(), "conv1", ir)).rejects.toThrow(
+        /non-integer offsets/,
+      );
     });
   });
 });

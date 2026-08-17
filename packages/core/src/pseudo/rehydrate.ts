@@ -62,6 +62,23 @@ export function surrogatePattern(map: Map<string, string>): RegExp | undefined {
   return new RegExp(`(?<![0-9])(?:${alts.join("|")})(?![0-9])`, "g");
 }
 
+/**
+ * The longest surrogate in the map, and part of the public API rather than an
+ * internal of the transform below.
+ *
+ * Adapters need it to reason about streaming cost before wiring one up:
+ * `createRehydrateTransform` holds back up to this many characters at every
+ * chunk boundary so a surrogate split across two chunks is still matched, and
+ * that holdback is the latency a token appears to gain on its way to the user.
+ * An adapter deciding whether to stream at all, or sizing its own buffers
+ * around one, is reading this number.
+ *
+ * `surrogatePattern` is deliberately NOT exported alongside it: the compiled
+ * alternation encodes this layer's matching rules (longest-first ordering, the
+ * digit boundary on both edges), all of which belong to `rehydrateText` and
+ * `createRehydrateTransform` rather than to their callers -- who would also be
+ * holding a stateful `g`-flagged instance they can quietly diverge with.
+ */
 export function maxSurrogateLength(map: Map<string, string>): number {
   let max = 0;
   for (const s of map.keys()) max = Math.max(max, s.length);

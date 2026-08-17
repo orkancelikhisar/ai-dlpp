@@ -65,6 +65,19 @@ const ACTION_RANK: Record<Action, number> = { allow: 0, pseudonymize: 1, redact:
  */
 function normalizeFindings(ir: PolicyIr, text: string, findings: Finding[]): Finding[] {
   return findings.map((f) => {
+    // Integrality first, and not folded into the range check below: the range
+    // check is NaN-safe (comparisons against NaN are false, so the positive
+    // predicate fails) but NOT null-safe, because `null` coerces to 0 -- so
+    // `null >= 0` is true, `slice(null, end)` is `slice(0, end)`, and a null
+    // start used to clear the text-fidelity check as well and reach the merge
+    // sorting as 0. An offset must be a real integer before any ordering
+    // question about it means anything.
+    if (!(Number.isInteger(f.start) && Number.isInteger(f.end))) {
+      throw new Error(
+        `finding from source "${f.source}" (${f.entityType}) has non-integer offsets: ` +
+          `[${f.start}, ${f.end})`,
+      );
+    }
     if (!(f.start >= 0 && f.start < f.end && f.end <= text.length)) {
       throw new Error(
         `finding from source "${f.source}" (${f.entityType}) has an out-of-range span ` +

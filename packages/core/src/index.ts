@@ -33,20 +33,8 @@ export {
   type ApplyResult,
   type SkippedSpan,
 } from "./pseudo/apply.js";
-export {
-  createRehydrateTransform,
-  /**
-   * Exported for adapters, which need it to reason about the streaming
-   * transform's cost before they wire one up: `createRehydrateTransform` holds
-   * back up to this many characters at every chunk boundary so a surrogate
-   * split across two chunks is still matched, and that holdback is the latency
-   * a token appears to gain on its way to the user. An adapter deciding whether
-   * to stream at all, or sizing its own buffers around one, is reading this
-   * number. `surrogatePattern` is deliberately NOT exported alongside it: the
-   * compiled alternation encodes this layer's matching rules (longest-first
-   * ordering, the digit boundary on both edges), all of which belong to
-   * `rehydrateText`/`createRehydrateTransform` rather than to their callers.
-   */
-  maxSurrogateLength,
-  rehydrateText,
-} from "./pseudo/rehydrate.js";
+// `maxSurrogateLength` is here for adapters sizing the streaming holdback, and
+// `surrogatePattern` is deliberately absent -- the reasoning for both lives on
+// `maxSurrogateLength` itself, where hover and declaration emit will show it
+// (JSDoc on a brace-list specifier reaches neither).
+export { createRehydrateTransform, maxSurrogateLength, rehydrateText } from "./pseudo/rehydrate.js";

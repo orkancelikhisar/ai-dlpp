@@ -70,6 +70,14 @@ export interface ApplyResult {
  *   unrelated position with the whole original surviving around it.
  * - **Out-of-range end.** Swallows the tail: the gap copy after the last span
  *   is empty, so text nobody looked at disappears from the message.
+ * - **Zero-width.** Splices a redaction marker into the message at a point
+ *   where nothing was detected, or hands the vault an empty value to mint.
+ * - **Non-numeric.** A NaN, a JSON-borne `null`, an omitted field: `slice`
+ *   coerces rather than complains. `start: NaN` swallows everything between the
+ *   cursor and the span; `end: NaN` emits the marker and then the WHOLE
+ *   original after it -- a leak wearing the shape of a successful redaction.
+ * - **Fractional.** `slice` truncates, so [2.5, 6.5) rewrites characters 2-6
+ *   while `applied` reports 2.5 and 6.5: offsets no consumer can trust.
  *
  * Compared against `lastEnd` -- the previous finding's end, whatever its action
  * -- rather than the rewrite `cursor`. The two are equal for rewritten spans,
@@ -77,20 +85,30 @@ export interface ApplyResult {
  * blind to a rewrite landing inside a blocked span: that mangles the blocked
  * text and silently falsifies the `skipped` offsets reported below.
  *
- * Zero-width spans are NOT rejected here; `normalizeFindings` already refuses
- * them at the pipeline entrance, where the text needed to judge them lives.
+ * `normalizeFindings` rejects most of this at the pipeline entrance, and this
+ * guard is NOT a delegation to it. `applyActions` is an exported entrance in
+ * its own right: findings can be hand-built, replayed from storage, or
+ * deserialized from a worker message, none of which passed through `detect`.
  */
+function spanViolation(text: string, f: ResolvedFinding, lastEnd: number): string | undefined {
+  // Positive conditions, each negated once, and the integer test FIRST. The
+  // original form was four negated comparisons chained with `||`, which admits
+  // exactly the values that have no ordering: every comparison against NaN is
+  // false, so a non-numeric offset satisfied all four and reached `slice`.
+  // Ordering is only total once both offsets are known to be real integers.
+  if (!(Number.isInteger(f.start) && Number.isInteger(f.end))) return "non-integer offsets";
+  if (!(f.start >= 0)) return "negative start";
+  if (f.start === f.end) return "zero-width span";
+  if (!(f.start < f.end)) return "end before start";
+  if (!(f.end <= text.length)) return `end past text length ${text.length}`;
+  if (!(f.start >= lastEnd)) {
+    return `starts before the previous span ended (${lastEnd}); findings must be pairwise disjoint`;
+  }
+  return undefined;
+}
+
 function assertSpanSane(text: string, f: ResolvedFinding, lastEnd: number): void {
-  const violation =
-    f.start < 0
-      ? "negative start"
-      : f.end < f.start
-        ? "end before start"
-        : f.end > text.length
-          ? `end past text length ${text.length}`
-          : f.start < lastEnd
-            ? `starts before the previous span ended (${lastEnd}); findings must be pairwise disjoint`
-            : undefined;
+  const violation = spanViolation(text, f, lastEnd);
   if (violation === undefined) return;
   throw new Error(
     `applyActions: invalid span [${f.start}, ${f.end}) for entityType "${f.entityType}" ` +

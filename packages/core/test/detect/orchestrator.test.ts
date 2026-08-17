@@ -170,6 +170,30 @@ describe("finding normalization", () => {
     await expect(run(f)).rejects.toThrow(/out-of-range span/);
   });
 
+  /**
+   * The range check is NaN-safe by construction (every comparison against NaN
+   * is false, so the positive predicate fails), but `null` is a different
+   * animal: it coerces to 0, so `null >= 0` is TRUE and `null < 6` is TRUE, and
+   * `slice(null, 6)` is `slice(0, 6)` -- which means a null start cleared the
+   * text-fidelity check too and reached the merge, where it sorts as 0. It
+   * could not leak (applyActions rejects it), but it was diagnosed a stage late
+   * and under the wrong name. An offset must be an integer before any ordering
+   * question about it means anything.
+   */
+  it("rejects offsets that are not integers", async () => {
+    const cases = [
+      { start: null as unknown as number, end: 6, text: "Globex" },
+      { start: 0, end: null as unknown as number, text: "" },
+      { start: NaN, end: 6, text: "Globex" },
+      { start: 0.5, end: 6, text: "Globex" },
+    ];
+    for (const c of cases) {
+      await expect(run(finding({ ...c, entityType: "client-name" }))).rejects.toThrow(
+        /non-integer offsets/,
+      );
+    }
+  });
+
   it("validates tier-2 findings on the same terms", async () => {
     const bad = finding({ start: 0, end: 6, text: "Globe", entityType: "client-name", tier: 2, source: "stub-t2" });
     await expect(
