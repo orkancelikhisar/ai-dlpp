@@ -368,5 +368,54 @@ describe("applyActions", () => {
         /non-integer offsets/,
       );
     });
+
+    /**
+     * The other half of the Finding contract: `text === message.slice(start,
+     * end)`. `normalizeFindings` enforces it at the pipeline entrance, and the
+     * argument for repeating it here is the same one the span half rests on --
+     * `applyActions` is an exported entrance in its own right, and findings can
+     * be hand-built, replayed from storage, or deserialized from a worker
+     * message without ever passing through `detect`.
+     *
+     * The damage is action-dependent, and the guard is deliberately NOT:
+     *
+     * - `pseudonymize` reads `f.text` and mints it as the REAL value. A drifted
+     *   finding stores the wrong real, and the outbound message is fine (the
+     *   span is fully replaced either way) -- the corruption surfaces one turn
+     *   later, when rehydration splices the drifted text into the user's view
+     *   as though the model had said it.
+     * - `block`/`allow` do not read `f.text` here, but `skipped` exists so a
+     *   review sheet can render WHAT is blocked next to WHERE it sits; that
+     *   render reads the finding's text. Drift shows the user the wrong string
+     *   as the reason their message cannot send, at offsets pointing elsewhere.
+     * - `redact` alone is genuinely harmless: the span is replaced by a marker
+     *   built from the entityType, and `f.text` is never read.
+     *
+     * Enforced for all four anyway. Exempting the one harmless branch buys
+     * nothing and costs a rule that has to be re-derived on every read, and
+     * `redact` is precisely the branch a policy edit flips to `pseudonymize` --
+     * at which point a latent drift that was "harmless" becomes a vault-
+     * poisoning bug with no code change to point at.
+     */
+    it("throws when a finding's text disagrees with its span", async () => {
+      const text = "Globex renewed the contract.";
+      const drifted = { ...findingAt(text, 0, 6, "pseudonymize", "client-name"), text: "Globe" };
+      const run = () => applyActions(text, [drifted], newVault(), "conv1", ir);
+      await expect(run()).rejects.toThrow(/text does not match the span/);
+      await expect(run()).rejects.toThrow(/hand-built/);
+      // Value-free, like every other message this guard emits: a finding's text
+      // is the sensitive string, and an exception is a loggable place.
+      await expect(run()).rejects.not.toThrow(/Globe/);
+    });
+
+    it("enforces text fidelity on every action, not just the branch that reads it", async () => {
+      const text = "Globex renewed the contract.";
+      for (const action of ["pseudonymize", "redact", "block", "allow"] as const) {
+        const drifted = { ...findingAt(text, 0, 6, action, "client-name"), text: "Globe" };
+        await expect(applyActions(text, [drifted], newVault(), "conv1", ir)).rejects.toThrow(
+          /text does not match the span/,
+        );
+      }
+    });
   });
 });

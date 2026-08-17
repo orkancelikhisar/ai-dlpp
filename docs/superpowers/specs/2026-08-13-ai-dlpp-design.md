@@ -202,6 +202,8 @@ IR carries `failMode: open | closed` (per-provider overridable) and `latencyBudg
 
 ### 5.4 Vault + rehydration
 
+> **Implementation note (Plan 2, shipped):** two details below are superseded by what was built — the seed-key formula (now salted with a per-install secret, D1) and the streaming holdback (the `maxSurrogateLen − 1` sketch was replaced after two review rounds). The design intent in this section is unchanged and still governs; for current behaviour read the Deviations log in `docs/superpowers/plans/2026-08-14-02-vault-pseudonymization.md` before implementing against these paragraphs.
+
 - **Surrogates are format-preserving fakes** ("Priya Sharma" → "Anjali Verma"; PAN → structurally-valid fake PAN; client "Globex" → "Vantor"), not markers like ⟦P1⟧ — markers get mangled by the model and destroy answer utility. Deterministic per conversation: surrogate = seeded generator keyed on `hash(conversationId ‖ realValue)` → referential integrity across turns.
 - **Credentials are never pseudonymized** — only redacted or blocked. A format-valid fake API key is a lie waiting to be pasted somewhere.
 - **Storage:** IndexedDB; values AES-GCM-encrypted (WebCrypto), key in `chrome.storage.session` (evaporates on browser close; exportable deliberately for the harness). Honest framing: this is a reversible mapping table — encryption at rest is hygiene; the security property is that real values never leave.

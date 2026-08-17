@@ -85,7 +85,24 @@ export interface ApplyResult {
  * blind to a rewrite landing inside a blocked span: that mangles the blocked
  * text and silently falsifies the `skipped` offsets reported below.
  *
- * `normalizeFindings` rejects most of this at the pipeline entrance, and this
+ * Also enforced: the other half of the Finding contract, `text ===
+ * message.slice(start, end)`. The damage from drift is action-dependent and
+ * this check deliberately is not. `pseudonymize` reads `f.text` and mints it as
+ * the REAL value, so a drifted finding leaves the outbound message perfectly
+ * clean -- the span is fully replaced either way -- and corrupts the vault
+ * instead: measured, a [0,6) finding over "Globex renewed the contract."
+ * carrying the text "Globe" sent "Ironvale renewed the contract." (no leak),
+ * stored `Ironvale -> Globe`, and rehydrated a later turn to "I contacted Globe
+ * today.", showing the user a mangled version of their own client's name one
+ * turn after the mistake. `block`/`allow` do not read `f.text` here, but
+ * `skipped` exists so a review sheet can render WHAT is blocked beside WHERE it
+ * sits, and that render reads it. `redact` alone is genuinely harmless -- the
+ * marker is built from the entityType. Exempting that one branch buys nothing
+ * and costs a rule that must be re-derived on every read, and `redact` is
+ * exactly the branch a policy edit flips to `pseudonymize`, at which point a
+ * latent drift becomes a vault-poisoning bug with no code change to blame.
+ *
+ * `normalizeFindings` rejects all of this at the pipeline entrance, and this
  * guard is NOT a delegation to it. `applyActions` is an exported entrance in
  * its own right: findings can be hand-built, replayed from storage, or
  * deserialized from a worker message, none of which passed through `detect`.
@@ -101,6 +118,13 @@ function spanViolation(text: string, f: ResolvedFinding, lastEnd: number): strin
   if (f.start === f.end) return "zero-width span";
   if (!(f.start < f.end)) return "end before start";
   if (!(f.end <= text.length)) return `end past text length ${text.length}`;
+  // Only meaningful once the offsets above are known to slice something.
+  if (f.text !== text.slice(f.start, f.end)) {
+    return (
+      `text does not match the span: ${f.text.length} characters reported, ` +
+      `${f.end - f.start} in the span (producers must re-derive text as message.slice(start, end))`
+    );
+  }
   if (!(f.start >= lastEnd)) {
     return `starts before the previous span ended (${lastEnd}); findings must be pairwise disjoint`;
   }

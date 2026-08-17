@@ -18,6 +18,7 @@ import type { Finding } from "./types.js";
  *   per-cluster merge:  for (const cluster of clusterOverlapping(raw)) {
  *                         const winners = mergeFindings(cluster);
  *                         // action = strictest over `cluster`, applied to `winners`
+                         // (orchestrator.ts then adjusts PER winner: see winnerAction)
  *                       }
  *   identity-map join:  const byMember = new Map(clusterOverlapping(raw)
  *                         .flatMap((c) => c.map((m) => [m, c] as const)));

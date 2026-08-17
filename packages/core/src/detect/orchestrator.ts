@@ -101,7 +101,9 @@ function normalizeFindings(ir: PolicyIr, text: string, findings: Finding[]): Fin
 
 /**
  * The strictest action over a whole overlap CLUSTER, which is the action every
- * winner from that cluster carries.
+ * winner from that cluster carries (except where `winnerAction` escalates it
+ * per winner -- a neverPseudonymize winner handed `pseudonymize` becomes
+ * `redact`; this function's answer is the cluster's, not the last word).
  *
  * Why not simply resolveAction(winner) -- what the plan's snippet did: merge
  * resolution is severity-first, so a critical `generic-secret` entropy run whose
