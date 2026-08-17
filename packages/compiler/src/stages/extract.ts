@@ -89,9 +89,32 @@ export function normalizeForQuoteMatch(s: string): string {
 }
 
 /**
+ * Shortest normalized quote that can ground a rule. Without a floor the gate
+ * proves only that some characters appear somewhere: "PAN" grounds against a
+ * document that says "PAN card numbers are forbidden", and "the" grounds against
+ * every policy ever written — a model returning one-word quotes would clear the
+ * anti-hallucination gate having grounded nothing, which is the failure mode
+ * that looks like a pass.
+ *
+ * 24 is a floor, not a target. The shortest clause in the authored suite is 63
+ * characters (P-FIN §2.2, "Aadhaar numbers must never be sent to an external AI
+ * assistant."), so real quotes clear this by 2.6x and the floor only catches
+ * fragments. It is deliberately not tuned up to "sentence length": a real clause
+ * from some future policy could be short, and rejecting a genuine quote is a
+ * silent policy downgrade — the expensive direction of this trade.
+ */
+export const MIN_QUOTE_CHARS = 24;
+
+/**
  * The anti-hallucination gate. Case sensitivity is deliberate: a model that
  * changed "PAN" to "pan" did not copy the document, it paraphrased it, and a
  * paraphrase is exactly the failure this gate exists to catch.
+ *
+ * Matching is substring, not word-boundary, so a quote of "PANCAKE" grounds
+ * against a document containing "PANCAKES". Accepted knowingly: a model that
+ * quoted a 24-character prefix of a real word demonstrably read the document,
+ * and the alternative (boundary-anchored matching) would reject genuine quotes
+ * that begin or end mid-token after the model trimmed a clause.
  */
 export function groundQuotes<T extends { id: string; sourceQuote: string }>(
   document: string,
@@ -105,6 +128,17 @@ export function groundQuotes<T extends { id: string; sourceQuote: string }>(
     const needle = normalizeForQuoteMatch(candidate.sourceQuote);
     if (needle.length === 0) {
       rejected.push({ id: candidate.id, kind, reason: "sourceQuote is empty" });
+    } else if (needle.length < MIN_QUOTE_CHARS) {
+      // Length is checked before presence, and reported as its own reason: a
+      // fragment and an invention need different fixes (quote the whole sentence
+      // vs. stop making rules up), and a short quote that happens to appear is
+      // still a fragment. The length is safe to name; the quote itself is not
+      // echoed, per the error-message convention.
+      rejected.push({
+        id: candidate.id,
+        kind,
+        reason: `sourceQuote too short to ground a rule (${needle.length} chars, minimum ${MIN_QUOTE_CHARS})`,
+      });
     } else if (!haystack.includes(needle)) {
       rejected.push({ id: candidate.id, kind, reason: "sourceQuote not found in policy document" });
     } else {

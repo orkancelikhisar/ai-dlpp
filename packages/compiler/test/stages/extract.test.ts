@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { extract, groundQuotes, normalizeForQuoteMatch } from "../../src/stages/extract.js";
+import {
+  MIN_QUOTE_CHARS,
+  extract,
+  groundQuotes,
+  normalizeForQuoteMatch,
+} from "../../src/stages/extract.js";
 import { FixtureLlmClient } from "../../src/llm/fixture.js";
 import { loadTestFixtures } from "../fixtures/index.js";
 
@@ -48,6 +53,38 @@ describe("groundQuotes", () => {
   it("rejects an empty or whitespace-only quote", () => {
     const { rejected } = groundQuotes(POLICY, [{ id: "blank", sourceQuote: "   " }]);
     expect(rejected[0]!.reason).toMatch(/empty/i);
+  });
+
+  it("rejects a fragment that would ground against any document", () => {
+    // "PAN" is present in POLICY, so bare substring matching grounds it — while
+    // demonstrating nothing. Taken to its limit the model could quote "the" and
+    // clear the gate against every policy ever written.
+    const { grounded, rejected } = groundQuotes(POLICY, [{ id: "fragment", sourceQuote: "PAN" }]);
+    expect(grounded).toEqual([]);
+    expect(rejected[0]!.reason).toMatch(/too short/i);
+    expect(rejected[0]!.reason).toContain(String(MIN_QUOTE_CHARS));
+  });
+
+  it("reports a fragment distinctly from an invention, because the fix differs", () => {
+    // Too-short means "quote the whole sentence"; not-found means "you made this
+    // up". A short quote that is also absent reports too-short: quoting the
+    // sentence is the first thing to try either way.
+    const [short, absent] = groundQuotes(POLICY, [
+      { id: "short", sourceQuote: "pan" },
+      { id: "absent", sourceQuote: "Blood type must never be shared with anyone" },
+    ]).rejected;
+    expect(short!.reason).toMatch(/too short/i);
+    expect(absent!.reason).toMatch(/not found/i);
+  });
+
+  it("accepts a quote exactly at the floor and rejects the character below it", () => {
+    const doc = `A clause reading ${"z".repeat(40)} and no more.`;
+    expect(
+      groundQuotes(doc, [{ id: "at-floor", sourceQuote: "z".repeat(MIN_QUOTE_CHARS) }]).grounded,
+    ).toHaveLength(1);
+    expect(
+      groundQuotes(doc, [{ id: "under", sourceQuote: "z".repeat(MIN_QUOTE_CHARS - 1) }]).rejected,
+    ).toHaveLength(1);
   });
 });
 
