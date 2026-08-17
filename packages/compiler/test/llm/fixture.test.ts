@@ -13,6 +13,12 @@ describe("requestHash", () => {
 
   it("changes when any field changes", () => {
     const base = requestHash(req);
+    // system is pinned explicitly: without this assertion, dropping `system`
+    // from the hash entirely passes every other test in this file (the
+    // boundary test varies `user`, and the FixtureLlmClient tests key their
+    // maps with requestHash itself, so they stay self-consistent under any
+    // hash). Two prompts differing only in system would then share a fixture.
+    expect(requestHash({ ...req, system: "other" })).not.toBe(base);
     expect(requestHash({ ...req, user: "other" })).not.toBe(base);
     expect(requestHash({ ...req, schemaName: "Other" })).not.toBe(base);
     expect(requestHash({ ...req, maxTokens: 101 })).not.toBe(base);
@@ -42,5 +48,12 @@ describe("FixtureLlmClient", () => {
   it("rejects a fixture that does not match the schema", async () => {
     const client = new FixtureLlmClient(new Map([[requestHash(req), { answer: 42 }]]));
     await expect(client.complete(req, Shape)).rejects.toThrow(/fixture.*schema/i);
+  });
+
+  it("names the hash in the schema-mismatch error too, not just on a miss", async () => {
+    // Both error contracts are symmetric: whichever you hit, the hash tells you
+    // which fixture file to fix.
+    const client = new FixtureLlmClient(new Map([[requestHash(req), { answer: 42 }]]));
+    await expect(client.complete(req, Shape)).rejects.toThrow(new RegExp(requestHash(req)));
   });
 });
