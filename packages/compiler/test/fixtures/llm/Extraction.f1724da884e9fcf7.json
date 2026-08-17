@@ -1,0 +1,38 @@
+{
+  "entityTypes": [
+    {
+      "id": "client-name",
+      "tier": 1,
+      "nlDefinition": "The name of a client organisation — a company, fund or institution the firm does business with — as it appears in running prose.",
+      "examples": ["Meridian Capital Partners", "Northwind Securities Ltd"],
+      "counterExamples": ["the client", "our counterparty", "Mumbai"],
+      "severity": "high",
+      "surrogateKind": "org-name",
+      "sourceQuote": "Client organisation names must be pseudonymized before transmission."
+    },
+    {
+      "id": "blood-type",
+      "tier": 0,
+      "nlDefinition": "An ABO/Rh blood group such as O+ or AB-, which is special-category health data.",
+      "examples": ["O+", "AB-", "A positive"],
+      "counterExamples": ["Type A behaviour", "B2B"],
+      "severity": "critical",
+      "sourceQuote": "Patient blood type must never be shared with any external service."
+    }
+  ],
+  "rules": [],
+  "semanticPredicates": [],
+  "actions": [
+    {
+      "entityType": "client-name",
+      "action": "pseudonymize",
+      "sourceQuote": "Client organisation names must be pseudonymized before transmission."
+    },
+    {
+      "entityType": "blood-type",
+      "action": "block",
+      "sourceQuote": "Patient blood type must never be shared with any external service."
+    }
+  ],
+  "failMode": "closed"
+}

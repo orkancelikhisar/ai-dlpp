@@ -48,7 +48,7 @@ export class FixtureLlmClient implements LlmClient {
       // leaves that reader with nowhere to go.
       throw new Error(
         `no fixture for request ${hash} (schema ${request.schemaName}); ` +
-          `write test/fixtures/llm/${hash}.json by hand, ` +
+          `write test/fixtures/llm/${request.schemaName}.${hash}.json by hand, ` +
           `or record live via scripts/record-fixtures.ts (Task 9)`,
       );
     }

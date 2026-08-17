@@ -1,0 +1,48 @@
+{
+  "entityTypes": [
+    {
+      "id": "in-pan",
+      "tier": 0,
+      "nlDefinition": "An Indian Permanent Account Number: the ten-character taxpayer identifier issued by the Income Tax Department, written as five letters, four digits and a check letter, where the fourth letter encodes the holder type.",
+      "examples": ["AAAPZ1234C", "ABCPE5678K", "BNZPM2501F"],
+      "counterExamples": ["ABCDE1234F", "AAAPZ1234", "AAAPZ12345", "PAN application form"],
+      "severity": "critical",
+      "surrogateKind": "id-number",
+      "sourceQuote": "PAN card numbers must never be shared with any external service."
+    },
+    {
+      "id": "client-name",
+      "tier": 1,
+      "nlDefinition": "The name of a client organisation — a company, fund or institution the firm does business with — as it appears in running prose rather than in a fixed field.",
+      "examples": ["Meridian Capital Partners", "Northwind Securities Ltd", "Acme Logistics Pvt Ltd"],
+      "counterExamples": ["the client", "our counterparty", "Microsoft Word", "Mumbai"],
+      "severity": "high",
+      "surrogateKind": "org-name",
+      "sourceQuote": "Client organisation names must be pseudonymized before transmission."
+    }
+  ],
+  "rules": [
+    {
+      "id": "in-pan-format",
+      "entityType": "in-pan",
+      "regex": "\\b[A-Z]{5}[0-9]{4}[A-Z]\\b",
+      "validator": "pan-structure",
+      "contextBoost": ["PAN", "permanent account number", "income tax", "card number"],
+      "sourceQuote": "PAN card numbers must never be shared with any external service."
+    }
+  ],
+  "semanticPredicates": [],
+  "actions": [
+    {
+      "entityType": "in-pan",
+      "action": "redact",
+      "sourceQuote": "PAN card numbers must never be shared with any external service."
+    },
+    {
+      "entityType": "client-name",
+      "action": "pseudonymize",
+      "sourceQuote": "Client organisation names must be pseudonymized before transmission."
+    }
+  ],
+  "failMode": "closed"
+}
