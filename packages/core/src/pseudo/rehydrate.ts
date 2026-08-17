@@ -112,19 +112,35 @@ export function rehydrateText(text: string, map: Map<string, string>): string {
  * emitted, `pending` alone can no longer see it. The buffer therefore keeps one
  * already-emitted raw character at its head (`carry`), used only as regex left
  * context and never re-emitted — emission starts at `base`, not 0. One character
- * is enough because the lookbehind inspects exactly one. No match can BEGIN at
- * the carry: it is either the last character of a match already replaced (the
- * scan resumes after it) or a character emitted only because every match that
- * could start there was fully visible and settled — so the `start < base` guard
- * below is an invariant check, not a code path.
+ * is enough because the lookbehind inspects exactly one.
+ *
+ * **Scan anchoring.** The scan starts at `base`, not 0, because a key CAN begin
+ * at the carry — after "AB" is replaced, its raw "B" survives as the carry, and
+ * a key "BC" happily matches across the replacement boundary. `String.replace`
+ * resumes AFTER a replaced match (and a carry emitted as plain text was only
+ * emitted because nothing settleable started there), so such a match must be
+ * excluded — but excluded by ANCHORING, never by skip-and-continue: skipping a
+ * yielded match advances the iterator past its whole span, silently swallowing
+ * a shorter key inside it ("C" in the {AB, BC, C} case — a lost rehydration the
+ * tests pin). Anchoring makes carry-region matches unrepresentable while keys
+ * starting at `base` are still found, and the lookbehind still sees the carry:
+ * lookarounds examine the subject string, not the scan start.
  *
  * Cost is O(buffer) per chunk, and `pending` never exceeds `maxLen` (emission
  * stops at `buffer.length - maxLen` unless a settled replacement carried the
  * cursor past it, which only shortens the remainder). A long non-matching stream
  * therefore costs one pass over each chunk plus a bounded window, with no
- * unbounded growth.
+ * unbounded growth. Output chunks are UTF-16 code-unit slices: an emission
+ * boundary can split a surrogate pair, so only the CONCATENATION of chunks is
+ * guaranteed well-formed — a consumer doing strict-USV per-chunk work must
+ * buffer accordingly (TextEncoderStream and JSON stringification are fine).
  */
 export function createRehydrateTransform(map: Map<string, string>): TransformStream<string, string> {
+  // Snapshot: the transform is a pure function of the map at construction.
+  // The pattern and maxLen are frozen below anyway, so a live reference buys
+  // nothing — while a caller deleting an entry mid-stream would turn a held-back
+  // match's lazy get() into literal "undefined" in user-visible text.
+  map = new Map(map);
   const pattern = surrogatePattern(map);
   // Nothing to match: hand chunks straight through, preserving chunk identity.
   if (!pattern) {
@@ -154,13 +170,17 @@ export function createRehydrateTransform(map: Map<string, string>): TransformStr
     let cursor = base; // buffer consumed into `out` so far
     let deferFrom = atEnd ? buffer.length : visibleFrom;
 
-    // matchAll, never an exec loop: it iterates a clone and leaves this
-    // instance's lastIndex alone, so every call scans from the start.
-    for (const m of buffer.matchAll(pattern)) {
+    // Anchored at `base` (see "Scan anchoring" above): matchAll copies the
+    // clone's lastIndex as its starting position and never mutates the shared
+    // `pattern`, so carry-region matches are unrepresentable and no cross-call
+    // lastIndex state exists. Never exclude by skip-and-continue here — the
+    // iterator would advance past the skipped span and swallow shorter keys.
+    const anchored = new RegExp(pattern.source, pattern.flags);
+    anchored.lastIndex = base;
+    for (const m of buffer.matchAll(anchored)) {
       const surrogate = m[0]!;
       const start = m.index;
       const end = start + surrogate.length;
-      if (start < base) continue; // invariant: unreachable (see docstring)
       if (!(atEnd || (end < buffer.length && start <= visibleFrom))) {
         // Unsettled. Provably start >= visibleFrom, so this min never actually
         // moves deferFrom; it is written out so the holdback is locally evident

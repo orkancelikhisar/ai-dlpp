@@ -166,6 +166,93 @@ describe("left digit boundary across a chunk seam (carry)", () => {
 });
 
 /**
+ * Replacement consumes its span: `String.replace` resumes scanning AFTER a
+ * replaced match, so a key that begins at the last consumed character must not
+ * fire across that boundary — but a key that begins right AFTER the consumed
+ * span must still be found, even when the boundary falls at the carry. The
+ * original guard-and-skip implementation got the first half right and silently
+ * lost the second: skipping a carry-straddling match let the iterator advance
+ * past it, and a shorter key inside the skipped span was never examined.
+ */
+describe("scan resume at the carry boundary", () => {
+  const two = new Map([["AB", "x"], ["BC", "y"]]);
+  const three = new Map([["AB", "x"], ["BC", "y"], ["C", "z"]]);
+
+  it("does not re-match into a replaced region across the carry", async () => {
+    // After AB → x, the raw "B" survives only as the carry; BC must not fire
+    // across the replacement boundary — String.replace would never see it.
+    expect(await pump(["AB", "C"], two)).toBe("xC");
+    expect(await pump(["ABC"], two)).toBe("xC");
+  });
+
+  it("still finds a shorter key beginning right after the replaced span", async () => {
+    // The divergence the guard-and-skip design missed: with C also a key,
+    // rehydrateText gives "xz" (AB → x, resume at 2, C → z). Skipping the
+    // carry-straddling BC must not swallow the C behind it.
+    expect(await pump(["AB", "C"], three)).toBe("xz");
+    expect(await pump(["ABC"], three)).toBe("xz");
+    expect(rehydrateText("ABC", three)).toBe("xz"); // the reference the above mirrors
+  });
+
+  it("agrees with rehydrateText at every split point of the overlap text", async () => {
+    const text = "ABCABC ABC";
+    const expected = rehydrateText(text, three);
+    for (let i = 1; i < text.length; i++) {
+      expect(await pump([text.slice(0, i), text.slice(i)], three), `split at ${i}`).toBe(expected);
+    }
+  });
+});
+
+/**
+ * The map is snapshotted at construction: the transform is a pure function of
+ * the map as it stood when the stream began. Mid-stream vault changes are
+ * invisible by design — the response can only echo surrogates that were sent —
+ * and a deletion must never splice literal "undefined" into user-visible text.
+ */
+describe("map capture at construction", () => {
+  it("a deletion after construction does not corrupt a held-back match", async () => {
+    const live = new Map([["Vantor", "Globex"]]);
+    const transform = createRehydrateTransform(live);
+    const writer = transform.writable.getWriter();
+    const reader = transform.readable.getReader();
+    const parts: string[] = [];
+    const readAll = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+      }
+    })();
+    await writer.write("met Vantor"); // held back: possible longer alternative
+    live.delete("Vantor");
+    await writer.write(" today.");
+    await writer.close();
+    await readAll;
+    expect(parts.join("")).toBe("met Globex today.");
+  });
+
+  it("an addition after construction is ignored", async () => {
+    const live = new Map([["Vantor", "Globex"]]);
+    const transform = createRehydrateTransform(live);
+    const writer = transform.writable.getWriter();
+    const reader = transform.readable.getReader();
+    const parts: string[] = [];
+    const readAll = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+      }
+    })();
+    live.set("today", "SURPRISE");
+    await writer.write("met Vantor today.");
+    await writer.close();
+    await readAll;
+    expect(parts.join("")).toBe("met Globex today.");
+  });
+});
+
+/**
  * The named tests above pin the cases we reasoned about; this one guards the
  * cases we did not. The transform's whole contract is "same answer as
  * rehydrateText, whatever the chunking", so it can be tested as a differential
@@ -188,10 +275,11 @@ describe("differential property vs rehydrateText", () => {
     new Map([["12", "X"], ["128", "YY"], ["8", "Z"]]),
     new Map([["x(", "PAREN"], ["x", "EX"], ["1", "ONE"]]),
     new Map([["AB", "A"], ["ABAB", "B"], ["B", "AB"]]), // replacements that re-spell keys
+    new Map([["AB", "x"], ["BC", "y"], ["C", "z"]]), // carry-straddling key over a shorter one
   ];
   const tokens = [
     "A", "B", "AB", "ABAB", "ABA", "Vantor", "Vantor 2", "Vanto", "x(", "x",
-    "8", "12", "128", "1", "2", "0", " ", " ", "no", ".",
+    "8", "12", "128", "1", "2", "0", " ", " ", "no", ".", "C", "BC",
   ];
 
   it("agrees on 2000 seeded random texts, maps and chunkings", async () => {
