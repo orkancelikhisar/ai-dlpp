@@ -31,7 +31,21 @@
       "vendor": "DeepSeek",
       "hostingRegion": "cn",
       "enterpriseAgreement": false,
-      "aliases": ["deepseek", "chinese-hosted", "foreign-hosted"]
+      "aliases": ["deepseek"]
+    }
+  ],
+  "categories": [
+    {
+      "id": "non-enterprise",
+      "description": "Every provider the firm holds no enterprise agreement with. P-FIN 5.1 is a blanket clause and turns on this attribute, not on any vendor name; carrying 'non-enterprise' as one vendor's alias would narrow the firm's broadest prohibition to that vendor.",
+      "aliases": ["non-enterprise", "non enterprise", "without an enterprise agreement"],
+      "match": { "enterpriseAgreement": false }
+    },
+    {
+      "id": "chinese-hosted",
+      "description": "Every provider whose hostingRegion is cn. Stated as an attribute rather than as a synonym for the one China-hosted vendor in the manifest today, so a second one is covered the day it is added.",
+      "aliases": ["chinese-hosted", "china-hosted", "hosted in china"],
+      "match": { "hostingRegionIn": ["cn"] }
     }
   ]
 }
