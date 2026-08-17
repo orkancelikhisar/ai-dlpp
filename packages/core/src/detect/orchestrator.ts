@@ -120,12 +120,22 @@ function normalizeFindings(ir: PolicyIr, text: string, findings: Finding[]): Fin
  * sensitive. Chains long enough for this to feel surprising are themselves a
  * signal the message is dense with entities.
  *
- * Semantic predicates (ir.semanticPredicates) have no entityType, so they have
- * no entityType -> action path and cannot be resolved here at all. The open
- * decision is whether the compiler mints shadow entityTypes for them (Plan 3) or
- * Finding grows a `predicateId` that resolution consults (Plan 5); either way it
- * lands in this function. Recorded here so tier 2 does not quietly acquire an
- * action of `allow` by default when it starts emitting predicate findings.
+ * Semantic predicates (ir.semanticPredicates) have no entityType of their own,
+ * and this function is keyed entirely by entityType. DECIDED by Plan 3, closing
+ * the choice parked here since Plan 1: the compiler mints a SHADOW entityType
+ * per predicate -- `pred:<predicateId>`, tier 2, redact, neverPseudonymize --
+ * carried in ir.entityTypes and ir.actions.default like any other. The rejected
+ * alternative (a `Finding.predicateId` field consulted by resolution) and the
+ * reasoning for both live in packages/compiler/src/stages/predicates.ts.
+ *
+ * So nothing in this file changes: a predicate finding names its shadow id in
+ * `entityType`, resolveAction resolves it -- provider overrides included -- and
+ * winnerAction reads its neverPseudonymize like any other entityType's.
+ *
+ * The remaining obligation is the PRODUCER's: tier-2 engines (Plan 5) must emit
+ * `entityType: "pred:<id>"`, not the bare predicate id. Getting that wrong is
+ * loud rather than silent -- normalizeFindings throws on an entityType the IR
+ * does not contain -- which is what this note originally existed to guarantee.
  */
 function strictestAction(ir: PolicyIr, provider: string, cluster: Finding[]): Action {
   // clusterOverlapping never emits an empty cluster, so this seed is always
