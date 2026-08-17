@@ -1,0 +1,37 @@
+{
+  "manifestVersion": "1",
+  "providers": [
+    {
+      "id": "chatgpt",
+      "displayName": "OpenAI ChatGPT",
+      "vendor": "OpenAI",
+      "hostingRegion": "us",
+      "enterpriseAgreement": false,
+      "aliases": ["chatgpt", "openai", "gpt", "gpt-4", "gpt-5"]
+    },
+    {
+      "id": "claude",
+      "displayName": "Anthropic Claude",
+      "vendor": "Anthropic",
+      "hostingRegion": "us",
+      "enterpriseAgreement": true,
+      "aliases": ["claude", "anthropic", "claude enterprise"]
+    },
+    {
+      "id": "gemini",
+      "displayName": "Google Gemini",
+      "vendor": "Google",
+      "hostingRegion": "us",
+      "enterpriseAgreement": false,
+      "aliases": ["gemini", "google", "bard"]
+    },
+    {
+      "id": "deepseek",
+      "displayName": "DeepSeek",
+      "vendor": "DeepSeek",
+      "hostingRegion": "cn",
+      "enterpriseAgreement": false,
+      "aliases": ["deepseek", "chinese-hosted", "foreign-hosted"]
+    }
+  ]
+}
