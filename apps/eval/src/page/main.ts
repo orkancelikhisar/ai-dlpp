@@ -14,9 +14,16 @@ export interface DetectRequest {
 }
 
 /**
- * The page's whole API surface. Playwright reaches detection ONLY through this,
- * so the harness cannot accidentally measure a re-implementation: everything
- * below `detect` is core, imported unmodified.
+ * The page's whole API surface: every spec reaches detection through this, and
+ * everything below `detect` is core, imported unmodified from the package root
+ * exactly as the extension will import it.
+ *
+ * A CONVENTION, not a sandbox. The property is frozen and non-writable below,
+ * so a spec cannot swap the implementation out from under the page -- but
+ * nothing stops one importing @sih/core (or anything else) into the browser
+ * context and measuring that instead. Keeping the harness honest about what it
+ * measures is a review obligation; this interface is only what makes the
+ * intended path the easy one.
  */
 export interface SihPageApi {
   detect(request: DetectRequest): Promise<DetectionResult>;
@@ -33,18 +40,35 @@ declare global {
   }
 }
 
-// Parse at module scope, so a malformed IR fails before `__sih` is published
-// and the driver's wait times out instead of a spec seeing an API that throws
-// on first use.
+// Parsed at module scope so a malformed IR fails BEFORE `__sih` is published,
+// rather than a spec receiving an API that throws on first use. The cost is
+// that the failure reaches the driver only as a pageerror -- `openHarness` in
+// smoke.spec.ts listens for exactly that and re-throws it with the message.
 const ir = loadPolicyIr(irJson);
 
-window.__sih = {
-  // The request is destructured and forwarded field by field rather than spread:
-  // `engines` stays absent here, so a spec cannot smuggle a stub detector across
-  // the evaluate boundary and have the harness report it as core's numbers.
+const api: SihPageApi = {
+  // Destructured and forwarded field by field rather than spread, so the set of
+  // things a spec can influence is exactly the three fields of DetectRequest and
+  // is visible in one line.
+  //
+  // `engines` is absent because tier 0 needs none -- NOT as a permanent rule.
+  // Task 10 wires a real tier-1 engine in here, and when it does the engine must
+  // be constructed in the page (module-level, loaded once, named in the result
+  // so the record says which engine produced the numbers) rather than passed in
+  // through DetectRequest: an engine crossing the evaluate boundary is a stub by
+  // construction, and the harness would report its latency as core's.
   detect: ({ text, provider, config }) => detect({ ir, provider, text, config }),
 };
 
-// Not what the driver waits on -- `__sih` is -- but it makes a headed run and a
-// screenshot on failure say whether the module reached its end.
+// Non-writable and non-configurable, not just assigned. Reassigning
+// `window.__sih` from a spec would redirect every later measurement in that
+// worker to something that is not core, and silently.
+Object.defineProperty(window, "__sih", {
+  value: Object.freeze(api),
+  writable: false,
+  configurable: false,
+});
+
+// Not what the driver waits on -- `__sih` is -- but it makes a headed run and
+// the only-on-failure screenshot say whether the module reached its end.
 document.getElementById("status")!.textContent = "ready";

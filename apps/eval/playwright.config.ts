@@ -6,7 +6,18 @@ export default defineConfig({
   // glob would otherwise pick those up and run them in a browser worker.
   testDir: "test",
   testMatch: "**/*.spec.ts",
-  use: { baseURL: "http://localhost:5178" },
+  // A stray committed `test.only` greens the suite by running one test and
+  // skipping the rest, which on a harness whose whole job is producing numbers
+  // is worse than a red build.
+  forbidOnly: !!process.env["CI"],
+  use: {
+    baseURL: "http://localhost:5178",
+    // The page writes a #status div and surfaces pageerrors; both are only
+    // legible after the fact through these. `openHarness` in smoke.spec.ts
+    // promises the screenshot, so it has to actually be produced.
+    screenshot: "only-on-failure",
+    trace: "on-first-retry",
+  },
   webServer: {
     command: "pnpm vite",
     port: 5178,
