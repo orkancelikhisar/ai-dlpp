@@ -1,0 +1,32 @@
+{
+  "entityTypes": [
+    {
+      "id": "customer-identifier",
+      "tier": 0,
+      "nlDefinition": "An identifier that names a customer of the organisation in its own systems.",
+      "examples": ["CUST-004182", "REF 7781204"],
+      "counterExamples": ["ticket 4182", "invoice 2026-04"],
+      "severity": "high",
+      "surrogateKind": "id-number",
+      "sourceQuote": "Customer identifiers must not be sent to an external AI assistant."
+    }
+  ],
+  "rules": [
+    {
+      "id": "customer-identifier-format",
+      "entityType": "customer-identifier",
+      "regex": "\\b(?:CUST|REF)[ -]?[0-9]{6}\\b",
+      "contextBoost": ["customer", "reference"],
+      "sourceQuote": "Customer identifiers must not be sent to an external AI assistant."
+    }
+  ],
+  "semanticPredicates": [],
+  "actions": [
+    {
+      "entityType": "customer-identifier",
+      "action": "redact",
+      "sourceQuote": "Customer identifiers must not be sent to an external AI assistant."
+    }
+  ],
+  "failMode": "closed"
+}
