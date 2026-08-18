@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadPolicyIr } from "@sih/core";
+import { loadPolicyIr, resolveAction } from "@sih/core";
 import { clauseLocator, emitIr, policyHash, UNMARKED_CLAUSE } from "../../src/stages/emit.js";
 import { mintShadowEntityTypes } from "../../src/stages/predicates.js";
 
@@ -162,5 +162,104 @@ describe("emitIr", () => {
       quote: CLIENT_QUOTE,
     });
     expect(() => loadPolicyIr(JSON.stringify(ir))).not.toThrow();
+  });
+});
+
+/**
+ * Coordinator review, after Task 8 shipped. Found by resolving every entityType
+ * against every provider on the real p-fin compile and reading the matrix: all
+ * eight authored entities blocked on DeepSeek, and the shadow predicate came
+ * back `redact` — while P-FIN §5.3 says "no Firm information of any kind may be
+ * sent to DeepSeek".
+ *
+ * Structural, not a fixture omission: extraction keys actions by entityType, a
+ * semantic predicate is not one until its shadow is minted downstream, so a
+ * provider clause can never name it. Provider-conditioned behaviour is the
+ * point of this compiler, and an entire data class was silently exempt.
+ */
+describe("emitIr — provider clauses and shadow entityTypes", () => {
+  const predicate = () => ({
+    id: "relationship-disclosure",
+    nlPredicate: "The message reveals that a named organisation is a client.",
+    scope: "message" as const,
+    severity: "high" as const,
+    sourceQuote: CLIENT_QUOTE,
+  });
+
+  const withShadow = (providerOverrides: Record<string, Record<string, string>>) => {
+    const minted = mintShadowEntityTypes([predicate()]);
+    return {
+      document: DOC,
+      entityTypes: [accountEntity()],
+      rules: [accountRule()],
+      semanticPredicates: [predicate()],
+      shadowEntityTypes: minted.entityTypes,
+      actions: {
+        default: { "account-id": "block" as const, ...minted.defaultActions },
+        providerOverrides,
+      },
+      failMode: "closed" as const,
+    };
+  };
+
+  const shadowId = mintShadowEntityTypes([predicate()]).entityTypes[0]!.id;
+
+  it("extends a provider clause to a shadow the clause could not name", () => {
+    // MUTATION: not extending at all (the shipped behaviour) leaves the shadow
+    // on its `redact` default under a provider the policy blocks outright, and
+    // every one of the plan's seven tests still passes.
+    const { ir } = emitIr(withShadow({ deepseek: { "account-id": "block" } }) as never);
+    const loaded = loadPolicyIr(JSON.stringify(ir));
+    expect(resolveAction(loaded, shadowId, "deepseek")).toBe("block");
+    // Untouched where the policy states no clause: inheritance is per provider,
+    // never a blanket escalation.
+    expect(resolveAction(loaded, shadowId, "claude")).toBe("redact");
+  });
+
+  it("never loosens a shadow, even when every stated clause is laxer", () => {
+    // The dangerous direction. A shadow is neverPseudonymize and the IR schema
+    // rejects that pairing, so an inherited `pseudonymize` would also make the
+    // compiler emit an IR its own loader refuses.
+    const { ir } = emitIr(withShadow({ gemini: { "account-id": "pseudonymize" } }) as never);
+    const loaded = loadPolicyIr(JSON.stringify(ir));
+    expect(resolveAction(loaded, shadowId, "gemini")).toBe("redact");
+    expect(ir.actions.providerOverrides?.["gemini"]?.[shadowId]).toBeUndefined();
+    expect(() => loadPolicyIr(JSON.stringify(ir))).not.toThrow();
+  });
+
+  it("inherits the strictest stated clause, not the first one it reads", () => {
+    // Needs TWO surviving entities whose clauses differ, and the laxer one
+    // first. Written initially with a second id that reconcile drops as
+    // dangling, which made the strictest also the only one and the assertion
+    // unfalsifiable — keeping the first would have passed it.
+    const input = withShadow({
+      chatgpt: { "account-id": "redact", "client-name": "block" },
+    }) as never as ReturnType<typeof withShadow>;
+    const withTwo = {
+      ...input,
+      entityTypes: [
+        accountEntity(),
+        { ...accountEntity(), id: "client-name", sourceQuote: CLIENT_QUOTE },
+      ],
+      actions: {
+        ...input.actions,
+        default: { ...input.actions.default, "client-name": "pseudonymize" as const },
+      },
+    };
+    const { ir } = emitIr(withTwo as never);
+    expect(Object.keys(ir.actions.providerOverrides?.["chatgpt"] ?? {})).toContain("client-name");
+    const loaded = loadPolicyIr(JSON.stringify(ir));
+    expect(resolveAction(loaded, shadowId, "chatgpt")).toBe("block");
+  });
+
+  it("reports every inheritance, since the document never named the shadow", () => {
+    // This is the one place the compiler applies a clause to something the
+    // policy did not literally name. Silence here would be the compiler
+    // inventing policy invisibly.
+    const { warnings } = emitIr(withShadow({ deepseek: { "account-id": "block" } }) as never);
+    const inherited = warnings.filter((w) => /inherited/i.test(w));
+    expect(inherited).toHaveLength(1);
+    expect(inherited[0]).toContain(shadowId);
+    expect(inherited[0]).toContain("deepseek");
   });
 });

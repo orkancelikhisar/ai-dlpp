@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ACTION_RANK } from "@sih/core";
 import type {
   Action,
   EntityType,
@@ -202,6 +203,87 @@ function toPredicate(candidate: PredicateCandidate): SemanticPredicate {
  * never happen is dropping it silently — every drop lands in `dropped`, which
  * the report prints beside the anti-hallucination gate's own rejections.
  */
+/**
+ * Strictness ordering is imported, not restated: a second copy would let the
+ * compiler emit a policy the runtime resolves differently, and the two drifting
+ * apart is precisely the bug no test in either package would see.
+ */
+function stricter(a: Action, b: Action): Action {
+  return ACTION_RANK[a] >= ACTION_RANK[b] ? a : b;
+}
+
+/**
+ * Extend each provider's clause to the shadow entityTypes.
+ *
+ * Provider clauses are extracted keyed by entityType, and a semantic predicate
+ * is not an entityType when extraction runs — its shadow is minted afterwards.
+ * So a clause like P-FIN §5.3 ("no Firm information of any kind may be sent to
+ * DeepSeek") reaches every authored entityType and silently misses the
+ * predicate class, leaving the predicate to resolve to its default while the
+ * policy says block. Provider-conditioned behaviour is the point of this
+ * compiler; a whole data class quietly exempt from it is a correctness bug, not
+ * a rough edge.
+ *
+ * The extension is deliberately narrow and can only ever tighten:
+ *
+ * - A shadow's override for provider P is the STRICTEST action any authored
+ *   entityType carries for P. A predicate exists to catch the disclosures the
+ *   identifier rules miss, so it is at least as sensitive as the entities the
+ *   policy names — inheriting anything laxer than the strictest would let the
+ *   semantic class be the weak edge of the policy.
+ * - It is applied only when that is strictly stricter than the shadow's own
+ *   default, so this never loosens a predicate and never writes an override
+ *   that says nothing.
+ * - `pseudonymize` can never be the result: shadows are `neverPseudonymize`
+ *   and the IR schema rejects that pairing outright. `stricter(..., default)`
+ *   guarantees it, since every shadow default is `redact`.
+ *
+ * Every extension is reported. This is the one place the compiler applies a
+ * clause to something the document did not literally name, so it says so.
+ */
+function extendOverridesToShadows(
+  providerOverrides: Record<string, Record<string, Action>>,
+  shadowIds: readonly string[],
+  defaults: Readonly<Record<string, Action>>,
+): { extended: Record<string, Record<string, Action>>; warnings: string[] } {
+  const warnings: string[] = [];
+  if (shadowIds.length === 0) return { extended: providerOverrides, warnings };
+
+  for (const providerId of Object.keys(providerOverrides)) {
+    const overrides = providerOverrides[providerId]!;
+    // Strictest across the AUTHORED entities only: folding in shadows already
+    // extended in an earlier iteration would let one provider's clause seep
+    // into another's.
+    let strictest: Action | undefined;
+    for (const entityId of Object.keys(overrides)) {
+      if (shadowIds.includes(entityId)) continue;
+      const action = overrides[entityId]!;
+      strictest = strictest === undefined ? action : stricter(strictest, action);
+    }
+    if (strictest === undefined) continue;
+
+    for (const shadowId of shadowIds) {
+      const fallback = Object.hasOwn(defaults, shadowId) ? defaults[shadowId]! : "redact";
+      // This comparison is the whole loosening guard. Writing the override only
+      // when it is STRICTER than what the shadow already resolves to means a
+      // laxer stated clause changes nothing, and `pseudonymize` can never be
+      // written for a shadow (whose default is `redact`) — which matters
+      // because the IR schema rejects pseudonymize on a neverPseudonymize
+      // entityType, so emitting it would produce an IR this compiler's own
+      // loader refuses.
+      if (ACTION_RANK[strictest] <= ACTION_RANK[fallback]) continue;
+      overrides[shadowId] = strictest;
+      warnings.push(
+        `provider override "${providerId}" → "${shadowId}" was inherited from the strictest ` +
+          `clause the policy states for "${providerId}" (${strictest}): provider clauses are ` +
+          `written against named entity classes, and a semantic predicate is not one, so the ` +
+          `clause would otherwise not reach it — review that this is what the policy intends`,
+      );
+    }
+  }
+  return { extended: providerOverrides, warnings };
+}
+
 function reconcile(
   input: EmitInput,
   entityIds: ReadonlySet<string>,
@@ -290,6 +372,13 @@ export function emitIr(input: EmitInput): EmitResult {
   ];
   const entityIds = new Set(entityTypes.map((e) => e.id));
   const { rules, defaults, providerOverrides, dropped, warnings } = reconcile(input, entityIds);
+  const shadowIds = input.shadowEntityTypes.map((s) => s.id);
+  const { warnings: inheritWarnings } = extendOverridesToShadows(
+    providerOverrides,
+    shadowIds,
+    defaults,
+  );
+  warnings.push(...inheritWarnings);
 
   const clauseOf = clauseLocator(input.document);
   const provenance = emptyMap<Provenance>();

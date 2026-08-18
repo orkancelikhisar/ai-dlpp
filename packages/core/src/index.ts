@@ -8,7 +8,7 @@ export { segmentText, type Segment, type SegmentKind } from "./segment/segment.j
 export { getValidator, hasValidator, shannonEntropy, type Validator } from "./detect/validators.js";
 export { runTier0 } from "./detect/tier0.js";
 export { mergeFindings, clusterOverlapping } from "./detect/merge.js";
-export { detect, type DetectInput, type Detector } from "./detect/orchestrator.js";
+export { ACTION_RANK, detect, type DetectInput, type Detector } from "./detect/orchestrator.js";
 export type * from "./detect/types.js";
 
 // -- pseudonymization layer (spec §5.4) ------------------------------------

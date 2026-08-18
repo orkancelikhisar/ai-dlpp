@@ -27,7 +27,18 @@ import type { DetectionResult, DetectorEngines, Finding, ResolvedFinding, TierCo
  * policy. `allow` is the identity, which is why an empty fold would return it --
  * see strictestAction, which never folds over an empty cluster.
  */
-const ACTION_RANK: Record<Action, number> = { allow: 0, pseudonymize: 1, redact: 2, block: 3 };
+/**
+ * Action strictness. Exported because the compiler resolves the same ordering
+ * when it extends a provider clause to a shadow entityType, and a second copy
+ * of this table would let the compiler emit a policy the runtime resolves
+ * differently.
+ */
+export const ACTION_RANK: Record<Action, number> = {
+  allow: 0,
+  pseudonymize: 1,
+  redact: 2,
+  block: 3,
+};
 
 /**
  * Bring every raw finding under the IR's authority before anything downstream
