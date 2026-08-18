@@ -14,10 +14,20 @@ export interface LlmRequest {
 }
 
 /**
+ * The schema a response is validated against.
+ *
+ * Aliased rather than written as `z.ZodType<T>` at every use site so that code
+ * OUTSIDE this package can implement `LlmClient` without resolving zod itself —
+ * `scripts/record-fixtures.ts` lives at the repo root, where pnpm's strict
+ * layout puts zod out of reach, and it needs this signature to wrap a client.
+ */
+export type LlmSchema<T> = z.ZodType<T>;
+
+/**
  * The compiler's ONLY route to a frontier model (spec §3.2: the sole place a
  * cloud model is called, and it never sees user data). Injectable so tests
  * replay committed fixtures and never touch the network.
  */
 export interface LlmClient {
-  complete<T>(request: LlmRequest, schema: z.ZodType<T>): Promise<T>;
+  complete<T>(request: LlmRequest, schema: LlmSchema<T>): Promise<T>;
 }
