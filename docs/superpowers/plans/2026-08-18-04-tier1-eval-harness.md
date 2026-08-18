@@ -449,7 +449,7 @@ export function toJsonl(records: readonly RunRecord[]): string {
 }
 ```
 
-`corpora/fixtures/smoke.jsonl` — 12 hand-authored items, one per line. Six must be negatives with `"gold": []`, six positives whose gold spans quote their text exactly. Cover: a PAN in prose, an AWS key in a code fence, a value in a `key=value` line, a client name in prose (tier-1, `entityType: "client-name"`), a multi-line message, and a message containing an emoji before the span (so any UTF-16 offset bug surfaces here rather than in Task 6). Example line:
+`corpora/fixtures/smoke.jsonl` — hand-authored items, one per line. At least six negatives with `"gold": []` and six positives whose gold spans quote their text exactly. (Task 2 shipped 13: seven negatives, six positives — the extra negative carries a non-client proper noun so tier-1 over-firing is measurable at all.) Cover: a PAN in prose, an AWS key in a code fence, a value in a `key=value` line, a client name in prose (tier-1, `entityType: "client-name"`), a multi-line message, and a message containing an emoji before the span (so any UTF-16 offset bug surfaces here rather than in Task 6). Example line:
 
 ```json
 {"id":"pos-pan-prose","text":"Client sent his PAN HGRPS4821M for the KYC file.","policy":"p-fin","gold":[{"start":20,"end":30,"text":"HGRPS4821M","entityType":"in-pan","action":"block"}]}
