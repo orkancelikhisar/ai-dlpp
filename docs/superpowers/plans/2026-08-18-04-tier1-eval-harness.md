@@ -1844,6 +1844,11 @@ loadTier1(options: { backend: "wasm" | "webgpu"; modelId?: string }): Promise<vo
 
 `loadTier1` constructs the tokenizer and session from `@sih/tier1` and stores the tagger in a module-level variable; `detect` then passes `engines: { tier1: tagger }` when `config.tier1` is set. Serve the ONNX from `packages/tier1/models/` — add a Vite alias or static-serve directory so the page fetches it over HTTP exactly as the extension will.
 
+**Two facts established in Task 1 that this task depends on — do not rediscover them the hard way:**
+
+- **`server.fs.allow` in `apps/eval/vite.config.ts` REPLACES Vite's default allow-list, it does not extend it.** After Task 1 the resolved list is exactly `[src/page, fixtures, vite/dist/client]`; a `/@fs/` fetch anywhere else returns **403**, verified. `packages/core` is reachable today only because module-graph resolution adds it to `safeModulePaths`, which does not help a runtime `fetch()`. A runtime fetch of the ONNX weights from `packages/tier1/models/` will 403 until that directory is added to `fs.allow`. Importing the model through Vite (`?url`) instead sidesteps this entirely — prefer that unless you need the raw fetch.
+- **`channel: "chromium"` in `playwright.config.ts` is load-bearing for the WebGPU arm.** Measured on the real COOP/COEP page: Playwright's bundled headless shell exposes `navigator.gpu` but `requestAdapter()` resolves **null**, while `channel: "chromium"` returns a real adapter. onnxruntime-web reads a null adapter as "no WebGPU" and falls back to WASM **silently** — so without this the webgpu arm would report WASM latency under WebGPU's name, which is exactly the runtime substitution spec §2.2 forbids. `backendAvailable("webgpu")` must therefore check `requestAdapter()` resolving non-null, not merely `navigator.gpu !== undefined`.
+
 Add `@sih/tier1` to `apps/eval` dependencies.
 
 **Do not commit model weights.** If `models/` is empty, `loadTier1` must throw a message naming `scripts/fetch-models.ts`, and the Playwright test should fail with that message rather than a 404.
