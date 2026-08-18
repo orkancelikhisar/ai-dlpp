@@ -147,8 +147,14 @@ export interface SelfTestCase {
   readonly kind: "positive" | "negative";
   /** Model-generated, never lifted from the policy — see SYSTEM rule 1. */
   readonly text: string;
-  /** What the real runtime did with it. A positive wants true, a negative false. */
+  /** True when a finding under THIS entityType survived resolution. */
   readonly detected: boolean;
+  /**
+   * Set on a positive that no finding of its own entityType covered, but which
+   * some OTHER entityType did catch — the value is detected and acted on, under
+   * a different label. Absent means nothing caught it at all.
+   */
+  readonly shadowedBy?: string;
   /** Always CORPUS_TAG. Carried per case so a case stays excludable once split from its report. */
   readonly corpusTag: string;
 }
@@ -159,16 +165,37 @@ export interface SelfTestEntityReport {
   /** Cases executed. Zero when the entity was skipped. */
   readonly positives: number;
   readonly negatives: number;
+  /** Positives detected under this entityType's own label. */
   readonly caught: number;
+  /**
+   * Positives caught by a DIFFERENT entityType instead. Overlap resolution
+   * keeps one finding per span by severity, so a value matched by two entities
+   * surfaces under the stricter one and this entity's label never appears.
+   */
+  readonly shadowed: number;
   readonly falsePositives: number;
   /**
-   * `caught / positives`, and `undefined` when there is no denominator —
-   * skipped, or the model returned no positives. Undefined means UNMEASURED and
-   * is deliberately not collapsed to 0: a reader charting a skipped tier-1
-   * entity at 0% recall would be reading a false alarm, which is the exact
-   * failure this stage's skip rule exists to prevent.
+   * LEAK-PREVENTION recall: `(caught + shadowed) / positives`. Shadowed
+   * positives count as caught because they ARE caught — the runtime found the
+   * value and resolved an action for it — and this is the number that
+   * corresponds to the project's headline metric.
+   *
+   * `undefined` when there is no denominator — skipped, or the model returned
+   * no positives. Undefined means UNMEASURED and is deliberately not collapsed
+   * to 0: a reader charting a skipped tier-1 entity at 0% recall would be
+   * reading a false alarm, which is the exact failure this stage's skip rule
+   * exists to prevent.
    */
   readonly recall?: number;
+  /**
+   * `caught / positives` — how often this entity's own label survives. Below
+   * `recall` exactly when something shadowed it. Reported separately because
+   * the two answer different questions: `recall` asks whether the value leaks,
+   * `labelRecall` asks whether the policy author's rule for THIS class is the
+   * one that fires, which decides which surrogate and which clause citation the
+   * user sees.
+   */
+  readonly labelRecall?: number;
   readonly fpRate?: number;
   readonly skipped: boolean;
   readonly skipReason?: string;
@@ -210,20 +237,33 @@ function fmt(fraction: number): string {
 }
 
 /**
- * One case through the real pipeline. `some` over the resolved findings, so a
- * case counts as detected only if a finding SURVIVED overlap resolution under
- * this entityType — the same set the rewriter would act on. Reading the raw
- * pre-merge findings instead would credit the policy with catches the runtime
- * then discards.
+ * One case through the real pipeline.
+ *
+ * `some` over the RESOLVED findings, so a case counts only if a finding
+ * survived overlap resolution — the same set the rewriter acts on. Reading the
+ * raw pre-merge findings instead would credit the policy with catches the
+ * runtime then discards.
+ *
+ * Returns the shadowing entityType when this entity's own label is absent but
+ * something else fired. Collapsing that to a plain miss would report "caught
+ * nothing" for a value the runtime caught and blocked — see `shadowed`.
  */
-async function detectsEntity(ir: PolicyIr, entityTypeId: string, text: string): Promise<boolean> {
+async function classify(
+  ir: PolicyIr,
+  entityTypeId: string,
+  text: string,
+): Promise<{ detected: boolean; shadowedBy?: string }> {
   const { findings } = await detect({
     ir,
     provider: SELFTEST_PROVIDER,
     text,
     config: { tier0: true, tier1: false, tier2: false },
   });
-  return findings.some((f) => f.entityType === entityTypeId);
+  if (findings.some((f) => f.entityType === entityTypeId)) return { detected: true };
+  // First in resolved order: findings come back sorted by start offset, so this
+  // is the leftmost survivor rather than an arbitrary one.
+  const other = findings[0];
+  return other === undefined ? { detected: false } : { detected: false, shadowedBy: other.entityType };
 }
 
 /**
@@ -246,22 +286,35 @@ async function scoreEntity(
 
   const cases: SelfTestCase[] = [];
   let caught = 0;
+  let shadowed = 0;
   let falsePositives = 0;
 
   for (const text of generated.positives) {
-    const detected = await detectsEntity(ir, entity.id, text);
+    const { detected, shadowedBy } = await classify(ir, entity.id, text);
     if (detected) caught += 1;
-    cases.push({ entityType: entity.id, kind: "positive", text, detected, corpusTag: CORPUS_TAG });
+    else if (shadowedBy !== undefined) shadowed += 1;
+    cases.push({
+      entityType: entity.id,
+      kind: "positive",
+      text,
+      detected,
+      ...(shadowedBy === undefined ? {} : { shadowedBy }),
+      corpusTag: CORPUS_TAG,
+    });
   }
   for (const text of generated.negatives) {
-    const detected = await detectsEntity(ir, entity.id, text);
+    // A hard negative that fires some OTHER entity is not this entity's false
+    // positive; per-entity fpRate would otherwise inherit every neighbour's
+    // over-firing and no longer point at the rule a reader has to fix.
+    const { detected } = await classify(ir, entity.id, text);
     if (detected) falsePositives += 1;
     cases.push({ entityType: entity.id, kind: "negative", text, detected, corpusTag: CORPUS_TAG });
   }
 
   const positives = generated.positives.length;
   const negatives = generated.negatives.length;
-  const recall = positives === 0 ? undefined : caught / positives;
+  const recall = positives === 0 ? undefined : (caught + shadowed) / positives;
+  const labelRecall = positives === 0 ? undefined : caught / positives;
   const fpRate = negatives === 0 ? undefined : falsePositives / negatives;
 
   /**
@@ -279,9 +332,27 @@ async function scoreEntity(
     );
   } else if (recall < RECALL_THRESHOLD) {
     warnings.push(
-      `self-test: entityType "${entity.id}" recall ${fmt(recall)} (${caught}/${positives} ` +
-        `generated positives detected) is below threshold ${RECALL_THRESHOLD} — its rules do not ` +
-        `match the values its own definition describes`,
+      `self-test: entityType "${entity.id}" recall ${fmt(recall)} (${caught + shadowed}/${positives} ` +
+        `generated positives caught by any entityType) is below threshold ${RECALL_THRESHOLD} — ` +
+        `these values reach the provider, so no rule in the policy matches what this ` +
+        `entity's own definition describes`,
+    );
+  }
+  if (shadowed > 0) {
+    /**
+     * Deliberately NOT worded as a threshold breach, and deliberately not
+     * gated on one. Shadowing does not mean the policy leaks — the value was
+     * found and an action was resolved for it — so calling it a failure would
+     * be the same cry-wolf this stage avoids for tier 1/2. It is still worth
+     * saying: the surviving label decides which surrogate the user sees and
+     * which clause the UI cites, so an author whose entity is shadowed half the
+     * time has written a rule that mostly does not speak.
+     */
+    warnings.push(
+      `self-test: entityType "${entity.id}" was shadowed on ${shadowed}/${positives} ` +
+        `generated positives — another entityType won the span under overlap resolution, so ` +
+        `the value is still caught but this entity's label, surrogate, and cited clause do ` +
+        `not appear`,
     );
   }
   if (fpRate === undefined) {
@@ -304,8 +375,10 @@ async function scoreEntity(
       positives,
       negatives,
       caught,
+      shadowed,
       falsePositives,
       ...(recall === undefined ? {} : { recall }),
+      ...(labelRecall === undefined ? {} : { labelRecall }),
       ...(fpRate === undefined ? {} : { fpRate }),
       skipped: false,
     },
@@ -340,6 +413,7 @@ export async function runSelfTest(client: LlmClient, ir: PolicyIr): Promise<Self
         positives: 0,
         negatives: 0,
         caught: 0,
+        shadowed: 0,
         falsePositives: 0,
         skipped: true,
         skipReason,

@@ -166,6 +166,68 @@ describe("runSelfTest (properties the plan's five do not pin)", () => {
  * IR's keys happened to arrive in, because within one process that order is
  * stable and the fixtures were recorded against it.
  */
+/**
+ * Coordinator review, after Task 7 shipped. The plan specifies "a positive
+ * counts as caught if any finding carries that entityType", and the implementer
+ * followed it — then hit a case where a real PAN in `pan_number=VALUE` glues
+ * into one entropy run that `generic-secret` (critical) wins over `in-pan`
+ * (high), and edited the corpus so the case would not arise.
+ *
+ * That is the wrong lever. `pan_number=VALUE` is how a PAN really appears in a
+ * config line, the runtime CATCHES it and resolves `block` for it (cluster
+ * resolution keeps the strictest action across the overlap, so the action is
+ * right even though the label is not this entity's), and scoring it as a missed
+ * positive makes the warning assert something false. Tuning corpus data until
+ * the number looks better is the bias this project's carrier certification
+ * exists to prevent elsewhere; it does not get a pass here.
+ */
+describe("positives caught under a different label", () => {
+  const ir = loadPolicyIr(JSON.stringify(minimalCompiledIr()));
+  const run = () => runSelfTest(new FixtureLlmClient(loadTestFixtures()), ir);
+
+  it("counts a shadowed positive as prevented, and says which entity took it", async () => {
+    // MUTATION: scoring a shadowed positive as a plain miss (the shipped
+    // behaviour) leaves in-pan recall at 0.95 — still above 0.8, so every plan
+    // test passes while the report claims a value that is caught and blocked
+    // was missed.
+    const report = await run();
+    const pan = report.entities.find((e) => e.entityType === "in-pan")!;
+    expect(pan.shadowed).toBe(1);
+    expect(pan.recall).toBe(1);
+    // MUTATION: folding shadowed into `caught` also gives recall 1 — and loses
+    // the fact that in-pan's own rule never fires there.
+    expect(pan.labelRecall).toBeLessThan(pan.recall!);
+
+    const shadowedCase = report.cases.find((c) => c.entityType === "in-pan" && c.shadowedBy);
+    expect(shadowedCase?.kind).toBe("positive");
+    expect(shadowedCase?.detected).toBe(false);
+    expect(shadowedCase?.shadowedBy).toBe("generic-secret");
+  });
+
+  it("still scores a positive nothing caught as a genuine miss", async () => {
+    // The distinction has to cut both ways, or it is just a way of never
+    // reporting a failure.
+    const report = await run();
+    const legacy = report.entities.find((e) => e.entityType === "legacy-employee-id")!;
+    expect(legacy.recall).toBe(0);
+    expect(legacy.shadowed).toBe(0);
+    expect(report.cases.filter((c) => c.entityType === "legacy-employee-id")).not.toContainEqual(
+      expect.objectContaining({ shadowedBy: expect.anything() }),
+    );
+  });
+
+  it("does not word shadowing as a threshold breach", async () => {
+    // MUTATION: wording the shadow note with "below threshold" passes every
+    // other test here and makes the plan's below-threshold assertion pass even
+    // when no entity is actually weak — the real alarm stops being findable.
+    const report = await run();
+    const shadow = report.warnings.filter((w) => /shadowed/i.test(w));
+    expect(shadow).toHaveLength(1);
+    expect(shadow[0]).not.toMatch(/below threshold/i);
+    expect(shadow[0]).toContain("in-pan");
+  });
+});
+
 describe("self-test prompt determinism", () => {
   const entity: EntityType = {
     id: "in-pan",
