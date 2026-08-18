@@ -27,6 +27,11 @@ export interface DetectRequest {
  */
 export interface SihPageApi {
   detect(request: DetectRequest): Promise<DetectionResult>;
+  /**
+   * sha256 of the IR artifact this page loaded, lowercase hex. Async because it
+   * is a WebCrypto digest; see `policyHash` below for why it is not `ir.policyHash`.
+   */
+  policyHash(): Promise<string>;
 }
 
 declare global {
@@ -46,6 +51,43 @@ declare global {
 // smoke.spec.ts listens for exactly that and re-throws it with the message.
 const ir = loadPolicyIr(irJson);
 
+/**
+ * sha256 of `irJson` -- the exact bytes of the IR file this page loaded -- NOT
+ * `ir.policyHash`.
+ *
+ * The immediate reason is that this fixture's `policyHash` is the literal string
+ * "test-hash" while RunRecordSchema requires /^[0-9a-f]{64}$/, so forwarding the
+ * field would make every record of every arm invalid. The lasting reason
+ * survives that fixture being replaced by a compiled policy: `ir.policyHash` is
+ * the hash of the policy DOCUMENT the IR was compiled from, and a record has to
+ * answer "which IR produced these numbers". One document compiled by two
+ * compiler versions yields two different IRs carrying the same `policyHash`.
+ *
+ * Hashing the raw TEXT rather than a re-serialization of the parsed IR is what
+ * makes the answer checkable from outside the browser. MEASURED: for the current
+ * fixture this returns
+ * cf82e7e925ef6b80036f96225d056516ad1bd885efcb0b6264f903e9fae8271a, which is
+ * exactly what `shasum -a 256 apps/eval/fixtures/minimal-ir.json` prints -- so
+ * someone holding only a JSONL file can confirm the artifact instead of taking
+ * the record's word for it. test/run.spec.ts asserts that equality on every run.
+ *
+ * The cost is that a whitespace-only reformat of the file changes the hash while
+ * the IR is semantically identical. That is the direction to err in: it can call
+ * two identical IRs different, never two different IRs the same.
+ *
+ * Computed once at module scope and handed out as a promise rather than awaited
+ * here. A top-level await would turn this file into an async module, and I have
+ * not measured whether a rejected async module evaluation still reaches
+ * Playwright's `pageerror` listener -- which `openHarness` in smoke.spec.ts
+ * relies on to report a malformed IR by name. Keeping the module synchronous
+ * leaves that path exactly as Task 1 left it.
+ */
+const policyHash = crypto.subtle
+  .digest("SHA-256", new TextEncoder().encode(irJson))
+  .then((digest) =>
+    Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join(""),
+  );
+
 const api: SihPageApi = {
   // Destructured and forwarded field by field rather than spread, so the set of
   // things a spec can influence is exactly the three fields of DetectRequest and
@@ -58,6 +100,7 @@ const api: SihPageApi = {
   // through DetectRequest: an engine crossing the evaluate boundary is a stub by
   // construction, and the harness would report its latency as core's.
   detect: ({ text, provider, config }) => detect({ ir, provider, text, config }),
+  policyHash: () => policyHash,
 };
 
 // Non-writable and non-configurable, not just assigned. Reassigning

@@ -69,10 +69,20 @@ export const RunRecordSchema = z
     /** The corpus item's `policy` name, carried through. See CorpusItemSchema. */
     policy: z.string().min(1),
     /**
-     * sha256 of the policy document the IR was compiled from. Required, not
-     * optional: an arm's numbers are meaningless without knowing exactly which
-     * compiled policy produced them, and "which IR was that?" is unanswerable
-     * after the fact.
+     * sha256 of the IR ARTIFACT that ran, lowercase hex: the bytes of the JSON
+     * the page loaded, hashed by the page itself (apps/eval/src/page/main.ts).
+     *
+     * NOT `PolicyIr.policyHash`, which is the compiler's hash of the policy
+     * DOCUMENT and answers a different question -- one document compiled by two
+     * compiler versions yields two different IRs carrying the same value, and
+     * the numbers came from an IR, not from prose.
+     *
+     * Required, not optional: an arm's numbers are meaningless without knowing
+     * exactly which compiled policy produced them, and "which IR was that?" is
+     * unanswerable after the fact. Hashing the artifact's own bytes is also what
+     * makes the answer checkable from outside the browser -- `shasum -a 256` on
+     * the IR file reproduces it, so a reader can confirm the provenance instead
+     * of taking the record's word for it.
      */
     policyHash: z.string().regex(/^[0-9a-f]{64}$/),
     arm: z.string().min(1),

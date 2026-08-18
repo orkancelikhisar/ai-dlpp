@@ -176,7 +176,8 @@ handle is safe either way, and now `splitlines()` is too.
 - **`policy` is a NAME, not a hash.** It says which policy *document* an item's
   gold was written against, because the same PAN is `block` under one policy and
   `allow` under another. The exact IR is pinned on the record instead
-  (`policyHash`). Nothing records which IR an *item's labels* were written
+  (`policyHash`, the sha256 of the IR JSON the page loaded — see *The run
+  loop* below). Nothing records which IR an *item's labels* were written
   against, so a policy edited without relabelling its corpus fails silently —
   change the `policy` name whenever labels stop matching the prose.
 - **`entityType` is unvalidated here.** It is an id from the IR, the same
@@ -200,6 +201,44 @@ span is the secret value alone, while tier 0 reports the whole
 kv line is one candidate run (`tier0.ts` documents that over-inclusion as
 intended). The gold labels what must be protected, not what the current detector
 happens to emit, so a scorer has to match spans by overlap rather than equality.
+
+## The run loop
+
+`src/driver/run.ts` turns a corpus into records. `runArm(page, spec)` sends every
+item through `window.__sih.detect` and returns one `RunRecord` per item, in
+corpus order. It computes **no metrics** — that half of the §2.2 boundary is
+Plan 8's Python.
+
+Four behaviours worth knowing before calling it:
+
+- **It does not navigate.** It asserts `window.__sih` exists and throws
+  otherwise. The caller owns page state, because a later task loads a tier-1
+  model into the page *before* calling this, and a `goto()` here would discard it
+  and measure a tier-0 run under a tier-1 arm label — a full JSONL file nothing
+  downstream could tell apart from a real one.
+- **Items run one at a time**, in corpus order. Latency is a reported metric, so
+  concurrent inference on one GPU would measure contention rather than the model;
+  stable order makes two runs diffable line by line.
+- **An item that throws is recorded, not dropped**, with `error` set and
+  `findings` empty. An arm that dies on item 300 of 1500 must not report as a
+  complete run of 299 items, which scores as a much better arm than it is.
+  `detect` throws whole, so a thrown item has no timings at all — read `error`
+  before reading `tier0Ms`, where `0` means "nothing was measured".
+- **`policyHash` is the sha256 of the IR artifact the page loaded**, not the
+  IR's own `policyHash` field. That field is the compiler's hash of the policy
+  *document*; a record has to answer *which IR* produced these numbers, and one
+  document compiled by two compiler versions gives two IRs carrying the same
+  value. Hashing the file's bytes also makes it checkable from outside the
+  browser: `shasum -a 256 apps/eval/fixtures/minimal-ir.json` prints exactly what
+  lands on the record. The cost is that a whitespace-only reformat changes the
+  hash while the IR is semantically identical — the safe direction, since it can
+  call two identical IRs different but never two different IRs the same.
+  `runArm` checks the digest once, up front, rather than letting
+  `RunRecordSchema` reject every row after the arm has already run.
+
+`ArmSpec.backend` is copied onto every record and today verified by nothing:
+nothing under `packages/core/src` reads `TierConfig.backend`. Do not read a
+record's `backend` as evidence of what executed until the WebGPU arm lands.
 
 ## Two config decisions worth knowing before you edit
 
