@@ -363,3 +363,91 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
     expect((JSON.parse(lines[0]!) as { text: string }).text).toBe("before after end");
   });
 });
+
+/**
+ * Degenerate findings spans.
+ *
+ * The hole was real: with neither `.min(1)` on a finding's text nor an explicit
+ * `start < end`, all three of {start:999,end:1}, {start:5,end:5} and
+ * {start:8,end:3} were ACCEPTED as findings (each with text "") while gold
+ * rejected every one -- slice() clamps an inverted or zero-width range to ""
+ * rather than throwing, and "" equals a claimed text of "".
+ *
+ * The two guards are REDUNDANT WITH EACH OTHER, which is worth stating because
+ * the mutation results look wrong otherwise. Given the refine's other two
+ * clauses: if start >= end then slice is "" so the text must be "", which
+ * .min(1) refuses; and if the text is non-empty then start < end follows from
+ * the slice comparison. MEASURED: removing either guard alone leaves all of
+ * these tests green, and removing BOTH fails them. Both are kept anyway --
+ * .min(1) so this schema and GoldSpanSchema read identically rather than
+ * relying on a reader to derive the equivalence, and `start < end` so the
+ * intent is stated instead of emerging from slice() semantics.
+ */
+describe("findings cannot carry a degenerate span", () => {
+  const base = {
+    schemaVersion: 1 as const,
+    runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+    arm: "t0", backend: "wasm" as const, provider: "claude",
+    text: "hello world", findings: [], gold: [],
+    timings: { tier0Ms: 0 }, error: null,
+  };
+  const span = (start: number, end: number, text: string) => ({
+    start, end, text, entityType: "in-pan",
+    severity: "high", tier: 0, source: "pan-rule", confidence: 0.9, action: "block",
+  });
+  const accepts = (s: object) => RunRecordSchema.safeParse({ ...base, findings: [s] }).success;
+
+  it("rejects an empty finding text, as gold already did", () => {
+    expect(accepts(span(5, 5, ""))).toBe(false);
+  });
+
+  it("rejects inverted offsets, which slice() would otherwise clamp to nothing", () => {
+    // The out-of-range start in the second case is the one worth noticing: it
+    // never surfaces anywhere, because the clamped slice agrees before any
+    // bounds check on `start` is reached.
+    expect(accepts(span(8, 3, ""))).toBe(false);
+    expect(accepts(span(999, 1, ""))).toBe(false);
+  });
+
+  it("still accepts a well-formed span, so the guards are not simply refusing everything", () => {
+    expect(accepts(span(0, 5, "hello"))).toBe(true);
+  });
+
+  it("applies the same start < end rule to gold on a record", () => {
+    expect(
+      RunRecordSchema.safeParse({ ...base, gold: [{ start: 8, end: 3, text: "", entityType: "in-pan", action: "block" }] }).success,
+    ).toBe(false);
+  });
+});
+
+describe("corpus composition the README makes claims about", () => {
+  const items = loadCorpus(readFileSync(join(FIXTURES, "smoke.jsonl"), "utf8"));
+
+  it("keeps a negative carrying proper nouns that are not clients", () => {
+    // README.md's tier-1 precision paragraph rests entirely on this item: it is
+    // the only negative containing capitalized non-client tokens, so without it
+    // a tagger that fires on every proper noun scores a clean sweep on the
+    // negatives and the README's claim becomes false silently.
+    const item = items.find((i) => i.id === "neg-proper-nouns-not-clients");
+    expect(item).toBeDefined();
+    expect(item!.gold).toEqual([]);
+    // Capitalized tokens that are not sentence-initial -- what a span tagger is
+    // tempted by. Asserted as a count rather than by name so rewording the item
+    // stays cheap while emptying it of proper nouns does not.
+    const midSentenceCaps = item!.text.match(/(?<!^)(?<![.!?]\s)\b[A-Z][a-z]+/g) ?? [];
+    expect(midSentenceCaps.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps the tier-1 gold values out of the IR's own examples", () => {
+    // Contamination guard: minimal-ir.json lists examples per entityType, and a
+    // model prompted from the IR would be handed any gold value that appears
+    // there. Reads the IR rather than hardcoding "Globex", so adding an example
+    // to the fixture that collides with the corpus fails here.
+    const ir = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "fixtures", "minimal-ir.json"), "utf8"),
+    ) as { entityTypes: Array<{ examples: string[] }> };
+    const examples = new Set(ir.entityTypes.flatMap((e) => e.examples));
+    const contaminated = items.flatMap((i) => i.gold.filter((g) => examples.has(g.text)).map((g) => `${i.id}:${g.text}`));
+    expect(contaminated).toEqual([]);
+  });
+});

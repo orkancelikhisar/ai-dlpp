@@ -35,8 +35,15 @@ export const RecordFindingSchema = z.object({
    * Exactly `text.slice(start, end)` on this record's own `text`. Enforced by
    * the refine at the bottom of RunRecordSchema, so it is a real cross-check a
    * non-JS reader can run rather than a claim.
+   *
+   * `.min(1)` matches GoldSpanSchema.text and is load-bearing rather than
+   * symmetry for its own sake: without it a degenerate span walks straight
+   * through that refine, because `slice()` returns "" for any inverted or
+   * zero-width range and "" compares equal to a claimed text of "". MEASURED on
+   * the version without it, all three ACCEPTED as findings while gold rejected
+   * every one: {start:999,end:1}, {start:5,end:5}, {start:8,end:3}.
    */
-  text: z.string(),
+  text: z.string().min(1),
   /** An entityType id from the IR that ran -- same namespace as a gold span's. */
   entityType: z.string().min(1),
   severity: z.enum(["low", "medium", "high", "critical"]),
@@ -110,7 +117,15 @@ export const RunRecordSchema = z
   .refine(
     (r) =>
       [...r.findings, ...r.gold].every(
-        (s) => s.end <= r.text.length && r.text.slice(s.start, s.end) === s.text,
+        (s) =>
+          // `start < end` is checked explicitly, not left to the slice
+          // comparison. `end` being positive was meant to bar degenerate spans
+          // and an inverted `start` walks around it: slice() clamps an inverted
+          // range to "" rather than throwing, so {start:999,end:1} agrees with
+          // a claimed text of "" and an out-of-range start never surfaces.
+          s.start < s.end &&
+          s.end <= r.text.length &&
+          r.text.slice(s.start, s.end) === s.text,
       ),
     { message: "a span's offsets do not hold the text it names" },
   );

@@ -125,8 +125,21 @@ text.encode('utf-16-le')[66:86].decode('utf-16-le')  # -> 'ABCPT1234H'  correct
 smoke corpus a reader that slices `str` directly gets **6 of 7 spans right and
 silently corrupts the seventh** — it fails toward wrong numbers rather than
 crashing, and Plan 7's real corpus is ShareChat conversations, which certainly
-contain emoji. A Python reader must index via
-`text.encode('utf-16-le')[2*start:2*end].decode('utf-16-le')`.
+contain emoji. A Python reader must index via UTF-16, **passing
+`surrogatepass`**:
+
+```python
+text.encode('utf-16-le', 'surrogatepass')[2*start:2*end] \
+    .decode('utf-16-le', 'surrogatepass')
+```
+
+The error handler is not optional garnish. A `text` may contain a **lone
+surrogate** — scraped chat truncated mid-emoji produces them, which is Plan 7's
+exact input — and it survives the whole trip: `JSON.stringify` emits it escaped
+as `\ud800`, valid JSON that `json.loads` parses happily. Measured, a bare
+`text.encode('utf-16-le')` then raises
+`UnicodeEncodeError: 'utf-16-le' codec can't encode character '\ud800'`. With
+`surrogatepass` the same string encodes and slices normally.
 
 Every span also carries its own `text`, which is exactly what the offsets should
 select. That is the recovery path and the cross-check: verify indexing on every
@@ -134,6 +147,29 @@ span read and abort on the first disagreement rather than scoring against
 fiction. `test/record.test.ts` pins this with the emoji item, so removing the
 astral characters from the corpus fails the suite rather than quietly disarming
 the check.
+
+### A record is self-contained
+
+Every run record carries `text`, the message its offsets index into, copied from
+the corpus item. **Scoring needs no join back to the corpus**: a reader holds the
+spans and the string to check them against, so the UTF-16 cross-check above is
+runnable from one line of JSONL. `RunRecordSchema` enforces it on the way out —
+every finding AND every gold span must satisfy `start < end`, `end <= len(text)`
+and `text.slice(start, end) == span.text` — so a record whose spans were built
+against a different message is rejected at write time rather than mis-scored
+later. (The one case this cannot catch: a swap onto a text that coincidentally
+holds the same slice at the same offsets.)
+
+Carrying the message costs roughly +23% at this corpus's ~93 B mean message and
++112% at a 500 B mean; the projected worst case for a full Plan 7/8 run
+(1,500 items × 8 arms × 3 policies) is around 35 MB, for a file Python reads
+once, sequentially.
+
+`toJsonl` also escapes **U+2028 and U+2029**. `JSON.stringify` leaves both raw —
+they are legal unescaped JSON string content — while Python's `str.splitlines()`
+treats them as line terminators, so a record containing one would split into two
+fragments that both fail `json.loads`. Splitting on `"\n"` or iterating the file
+handle is safe either way, and now `splitlines()` is too.
 
 ### Reading the files: three things the schemas do not enforce
 
