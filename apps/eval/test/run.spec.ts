@@ -176,7 +176,9 @@ test("refuses an unprepared page rather than silently measuring a blank one", as
   ).rejects.toThrow(/not prepared/i);
 });
 
-test("stamps every record with the sha256 of the IR artifact the page loaded", async ({ page }) => {
+test("stamps every record with both the IR artifact's digest and the IR's own policy hash", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.waitForFunction(() => window.__sih !== undefined);
   const items = loadCorpus(readFileSync(join(FIXTURES, "smoke.jsonl"), "utf8"));
@@ -191,16 +193,29 @@ test("stamps every record with the sha256 of the IR artifact the page loaded", a
 
   // Computed in Node, from the bytes on disk, and deliberately NOT from
   // anything the page handed back. That is the whole property being pinned: a
-  // record's policyHash must be reproducible from outside the browser --
+  // record's irHash must be reproducible from outside the browser --
   // `shasum -a 256 apps/eval/fixtures/minimal-ir.json` prints this same value --
   // so "these numbers came from that artifact" is auditable rather than
   // asserted. Recomputing it from the page's own IR text would prove only that
   // sha256 is a function.
   const expected = createHash("sha256").update(readFileSync(IR_FIXTURE)).digest("hex");
-  expect(records.map((r) => r.policyHash)).toEqual([expected, expected]);
+  expect(records.map((r) => r.irHash)).toEqual([expected, expected]);
+
+  // And the IR's OWN policyHash, carried verbatim beside it. The two fields
+  // answer different questions -- which artifact ran, versus which policy
+  // document it was compiled from -- so a record that dropped this one would
+  // break the document -> IR -> numbers chain. Read out of the fixture rather
+  // than written here, so it is the artifact's claim and not this file's.
+  const declared = (JSON.parse(readFileSync(IR_FIXTURE, "utf8")) as { policyHash: string })
+    .policyHash;
+  expect(records.map((r) => r.policyHash)).toEqual([declared, declared]);
+  // The placeholder that made a single field impossible, asserted rather than
+  // described: this value is real in the fixture, and it is not a digest.
+  expect(declared).toBe("test-hash");
+  expect(records[0]!.irHash).not.toBe(records[0]!.policyHash);
 });
 
-test("refuses a page whose policyHash is not a digest, before running the corpus", async ({
+test("refuses a page whose irHash is not a digest, before running the corpus", async ({
   page,
 }) => {
   // The hash is identical on every record in an arm, so a bad one invalidates
@@ -215,8 +230,9 @@ test("refuses a page whose policyHash is not a digest, before running the corpus
       value: {
         detect: () => Promise.reject(new Error("detect must not be reached")),
         // The IR fixture's literal `policyHash` field, which is what forwarding
-        // `ir.policyHash` straight through would put on every record.
-        policyHash: () => Promise.resolve("test-hash"),
+        // `ir.policyHash` into `irHash` would put on every record.
+        irHash: () => Promise.resolve("test-hash"),
+        policyHash: () => "test-hash",
       },
     });
   });
@@ -230,5 +246,5 @@ test("refuses a page whose policyHash is not a digest, before running the corpus
       config: { tier0: true, tier1: false, tier2: false },
       items: [{ id: "a", text: "hello", policy: "p-fin", gold: [] }],
     }),
-  ).rejects.toThrow(/policyHash/);
+  ).rejects.toThrow(/irHash/);
 });

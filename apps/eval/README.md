@@ -176,10 +176,11 @@ handle is safe either way, and now `splitlines()` is too.
 - **`policy` is a NAME, not a hash.** It says which policy *document* an item's
   gold was written against, because the same PAN is `block` under one policy and
   `allow` under another. The exact IR is pinned on the record instead
-  (`policyHash`, the sha256 of the IR JSON the page loaded — see *The run
-  loop* below). Nothing records which IR an *item's labels* were written
-  against, so a policy edited without relabelling its corpus fails silently —
-  change the `policy` name whenever labels stop matching the prose.
+  (`irHash`, the sha256 of the IR JSON the page loaded), alongside the IR's own
+  `policyHash` — see *A record carries two hashes* below. Nothing records which
+  IR an *item's labels* were written against, so a policy edited without
+  relabelling its corpus fails silently — change the `policy` name whenever
+  labels stop matching the prose.
 - **`entityType` is unvalidated here.** It is an id from the IR, the same
   namespace as `Finding.entityType`, but this module never loads an IR. A typo
   surfaces as an entity scoring 0 recall, not as a load error, so a scorer
@@ -224,21 +225,45 @@ Four behaviours worth knowing before calling it:
   complete run of 299 items, which scores as a much better arm than it is.
   `detect` throws whole, so a thrown item has no timings at all — read `error`
   before reading `tier0Ms`, where `0` means "nothing was measured".
-- **`policyHash` is the sha256 of the IR artifact the page loaded**, not the
-  IR's own `policyHash` field. That field is the compiler's hash of the policy
-  *document*; a record has to answer *which IR* produced these numbers, and one
-  document compiled by two compiler versions gives two IRs carrying the same
-  value. Hashing the file's bytes also makes it checkable from outside the
-  browser: `shasum -a 256 apps/eval/fixtures/minimal-ir.json` prints exactly what
-  lands on the record. The cost is that a whitespace-only reformat changes the
-  hash while the IR is semantically identical — the safe direction, since it can
-  call two identical IRs different but never two different IRs the same.
-  `runArm` checks the digest once, up front, rather than letting
-  `RunRecordSchema` reject every row after the arm has already run.
+- **It stamps two different hashes**, described in its own section below.
 
-`ArmSpec.backend` is copied onto every record and today verified by nothing:
-nothing under `packages/core/src` reads `TierConfig.backend`. Do not read a
-record's `backend` as evidence of what executed until the WebGPU arm lands.
+`ArmSpec.backend` is copied onto every record and today verified by **nothing**.
+The chain from that label to what executed is broken in two places, and fixing
+either alone would still leave it unbacked: `runArm` never plumbs `spec.backend`
+into `spec.config` (the config is forwarded to `detect` untouched), and nothing
+under `packages/core/src` reads `TierConfig.backend` in the first place. Do not
+read a record's `backend` as evidence of what executed until the WebGPU arm
+lands — that task confirms which execution provider actually initialized rather
+than labelling.
+
+### A record carries two hashes
+
+They answer different questions and neither replaces the other.
+
+`irHash` is the **sha256 of the IR artifact the page loaded** — the bytes of the
+JSON file, hashed in the page. It answers *which IR produced these numbers*.
+`shasum -a 256 apps/eval/fixtures/minimal-ir.json` prints exactly what lands on
+the record, so the provenance is checkable from outside the browser. The cost is
+that a whitespace-only reformat changes it while the IR is semantically
+identical — the safe direction, since it can call two identical IRs different but
+never two different IRs the same. `runArm` checks the digest once, up front,
+rather than letting `RunRecordSchema` reject every row after the arm has run.
+
+`policyHash` is the IR's own field carried **verbatim** — the compiler's sha256
+of the policy *document* (`packages/compiler/src/stages/emit.ts`). It answers
+*which prose that IR was compiled from*, restoring the document → IR → numbers
+chain that `irHash` alone cannot.
+
+`policyHash` cannot stand in for `irHash`, and the reason is stronger than
+compiler version drift: compilation is **model-driven**, so the same document
+compiled twice by the same compiler can yield two different IRs carrying the same
+`policyHash`. It identifies the input, never the artifact.
+
+Only `irHash` is constrained to `/^[0-9a-f]{64}$/`. `policyHash` is any non-empty
+string, exactly as strict as core's own `PolicyIrSchema`, because it is copied
+from whatever IR the page loaded and a hand-written fixture legitimately carries
+a placeholder — `fixtures/minimal-ir.json` says `"test-hash"`. Tightening it
+would force that fixture to state the hash of a document that does not exist.
 
 ## Two config decisions worth knowing before you edit
 

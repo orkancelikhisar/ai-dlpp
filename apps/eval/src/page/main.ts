@@ -29,9 +29,17 @@ export interface SihPageApi {
   detect(request: DetectRequest): Promise<DetectionResult>;
   /**
    * sha256 of the IR artifact this page loaded, lowercase hex. Async because it
-   * is a WebCrypto digest; see `policyHash` below for why it is not `ir.policyHash`.
+   * is a WebCrypto digest; see `irHash` below for why this is not the IR's own
+   * `policyHash` field.
    */
-  policyHash(): Promise<string>;
+  irHash(): Promise<string>;
+  /**
+   * The loaded IR's `policyHash` field verbatim -- the compiler's hash of the
+   * policy DOCUMENT, which answers a different question from `irHash` and is
+   * carried alongside it rather than instead of it. Synchronous: a field read,
+   * not a digest.
+   */
+  policyHash(): string;
 }
 
 declare global {
@@ -52,16 +60,18 @@ declare global {
 const ir = loadPolicyIr(irJson);
 
 /**
- * sha256 of `irJson` -- the exact bytes of the IR file this page loaded -- NOT
- * `ir.policyHash`.
+ * sha256 of `irJson` -- the exact bytes of the IR file this page loaded. This is
+ * what a record's `irHash` carries; `ir.policyHash` is carried separately and
+ * verbatim, because the two answer different questions.
  *
- * The immediate reason is that this fixture's `policyHash` is the literal string
- * "test-hash" while RunRecordSchema requires /^[0-9a-f]{64}$/, so forwarding the
- * field would make every record of every arm invalid. The lasting reason
- * survives that fixture being replaced by a compiled policy: `ir.policyHash` is
- * the hash of the policy DOCUMENT the IR was compiled from, and a record has to
- * answer "which IR produced these numbers". One document compiled by two
- * compiler versions yields two different IRs carrying the same `policyHash`.
+ * The immediate reason they cannot be one field is that this fixture's
+ * `policyHash` is the literal string "test-hash" while a record's `irHash`
+ * requires /^[0-9a-f]{64}$/. The lasting reason survives that fixture being
+ * replaced by a compiled policy: `ir.policyHash` is the compiler's hash of the
+ * policy DOCUMENT, while a record has to answer "which IR produced these
+ * numbers". Compilation is model-driven, so the same document compiled twice by
+ * the same compiler can yield two different IRs carrying that identical
+ * `policyHash` -- it identifies the input, never the artifact.
  *
  * Hashing the raw TEXT rather than a re-serialization of the parsed IR is what
  * makes the answer checkable from outside the browser. MEASURED: for the current
@@ -82,7 +92,7 @@ const ir = loadPolicyIr(irJson);
  * relies on to report a malformed IR by name. Keeping the module synchronous
  * leaves that path exactly as Task 1 left it.
  */
-const policyHash = crypto.subtle
+const irHash = crypto.subtle
   .digest("SHA-256", new TextEncoder().encode(irJson))
   .then((digest) =>
     Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join(""),
@@ -100,7 +110,8 @@ const api: SihPageApi = {
   // through DetectRequest: an engine crossing the evaluate boundary is a stub by
   // construction, and the harness would report its latency as core's.
   detect: ({ text, provider, config }) => detect({ ir, provider, text, config }),
-  policyHash: () => policyHash,
+  irHash: () => irHash,
+  policyHash: () => ir.policyHash,
 };
 
 // Non-writable and non-configurable, not just assigned. Reassigning

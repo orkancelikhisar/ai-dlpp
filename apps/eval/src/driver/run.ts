@@ -7,12 +7,22 @@ export interface ArmSpec {
   runId: string;
   arm: string;
   /**
-   * Copied onto every record verbatim. MEASURED: nothing under
-   * packages/core/src reads `TierConfig.backend` -- grep finds only its
-   * declaration in detect/types.ts -- so today this is a label the caller
-   * asserts and nothing here can verify. Task 11 is what makes it mean
-   * something; until then do not read a record's `backend` as evidence of what
-   * executed.
+   * Copied onto every record verbatim, and today verified by nothing. The chain
+   * from this label to what actually executed is broken in TWO places, and
+   * repairing either one alone would still leave the label unbacked:
+   *
+   *   1. `runArm` never plumbs this into `spec.config`. `spec.config` is
+   *      forwarded to `detect` untouched, so the only backend core could ever
+   *      see is whatever the caller happened to put in `config.backend`, which
+   *      nothing here reconciles against this field.
+   *   2. MEASURED: nothing under packages/core/src reads `TierConfig.backend`
+   *      at all -- grep finds only its declaration in detect/types.ts -- so
+   *      even a faithfully plumbed value would reach no reader.
+   *
+   * So this is a label the caller asserts. Task 11 owns making it real, and
+   * does so by confirming which execution provider actually initialized rather
+   * than by labelling harder. Until then do not read a record's `backend` as
+   * evidence of what executed.
    */
   backend: "wasm" | "webgpu";
   provider: string;
@@ -36,7 +46,13 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
   if (!ready) {
     throw new Error("page is not prepared: navigate to '/' and await window.__sih before calling runArm");
   }
-  const policyHash = await page.evaluate(() => window.__sih!.policyHash());
+  // Both hashes in ONE evaluate, not two: they are read together, and a single
+  // round trip keeps this method's in-flight count at one so the sequential
+  // guarantee below stays observable.
+  const { irHash, policyHash } = await page.evaluate(async () => ({
+    irHash: await window.__sih!.irHash(),
+    policyHash: window.__sih!.policyHash(),
+  }));
   // Checked once, up front, rather than left to RunRecordSchema to reject the
   // same way 1,500 times. The hash is identical on every record in the arm, so
   // a bad one invalidates the whole output -- and learning that only after a GPU
@@ -44,9 +60,16 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
   // purpose: this is the producing side, and it should fail before the work
   // rather than after it. The value is not echoed because a malformed one can
   // be arbitrary page-supplied text; its length locates the bug.
-  if (!/^[0-9a-f]{64}$/.test(policyHash)) {
+  //
+  // `policyHash` gets no matching guard, deliberately. It is copied verbatim
+  // from the loaded IR and the schema only asks that it be non-empty, which
+  // core's own PolicyIrSchema already enforces at load
+  // (packages/core/src/policy/schema.ts, `policyHash: z.string().min(1)`) --
+  // so a guard here would be unreachable code standing in for a check that has
+  // already run.
+  if (!/^[0-9a-f]{64}$/.test(irHash)) {
     throw new Error(
-      `the page returned a policyHash that is not a sha256 digest (${policyHash.length} characters); ` +
+      `the page returned an irHash that is not a sha256 digest (${irHash.length} characters); ` +
         "every record in this arm would be rejected by RunRecordSchema",
     );
   }
@@ -79,6 +102,7 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       runId: spec.runId,
       itemId: item.id,
       policy: item.policy,
+      irHash,
       policyHash,
       arm: spec.arm,
       backend: spec.backend,

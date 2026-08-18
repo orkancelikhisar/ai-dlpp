@@ -35,7 +35,8 @@ describe("RunRecordSchema", () => {
       runId: "r1",
       itemId: "a",
       policy: "p-fin",
-      policyHash: "0".repeat(64),
+      irHash: "0".repeat(64),
+      policyHash: "1".repeat(64),
       arm: "t0",
       backend: "wasm",
       provider: "claude",
@@ -51,13 +52,23 @@ describe("RunRecordSchema", () => {
     expect(RunRecordSchema.safeParse(record).success).toBe(true);
   });
 
-  it("carries the policy hash, so a record can never be attributed to the wrong IR", () => {
-    const { policyHash: _omitted, ...withoutHash } = {
-      schemaVersion: 1, runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+  it("carries both hashes, so a record can never be attributed to the wrong IR", () => {
+    // Two fields because they answer two different questions, and neither is
+    // optional. `irHash` says which IR ARTIFACT ran; `policyHash` is the IR's
+    // own field, the compiler's hash of the policy DOCUMENT it was compiled
+    // from. Dropping either breaks the document -> IR -> numbers chain at a
+    // different link.
+    const complete = {
+      schemaVersion: 1, runId: "r1", itemId: "a", policy: "p-fin",
+      irHash: "0".repeat(64), policyHash: "1".repeat(64),
       arm: "t0", backend: "wasm", provider: "claude", text: "hello world", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null,
     };
-    expect(RunRecordSchema.safeParse(withoutHash).success).toBe(false);
+    expect(RunRecordSchema.safeParse(complete).success).toBe(true);
+    const { irHash: _noIrHash, ...withoutIrHash } = complete;
+    expect(RunRecordSchema.safeParse(withoutIrHash).success).toBe(false);
+    const { policyHash: _noPolicyHash, ...withoutPolicyHash } = complete;
+    expect(RunRecordSchema.safeParse(withoutPolicyHash).success).toBe(false);
   });
 });
 
@@ -119,7 +130,8 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     runId: "r1",
     itemId: "a",
     policy: "p-fin",
-    policyHash: "0".repeat(64),
+    irHash: "0".repeat(64),
+    policyHash: "1".repeat(64),
     arm: "t0",
     backend: "wasm" as const,
     provider: "claude",
@@ -138,15 +150,30 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     expect(RunRecordSchema.safeParse({ ...record, schemaVersion: 2 }).success).toBe(false);
   });
 
-  it("refuses a policyHash that is not a sha256 digest", () => {
+  it("refuses an irHash that is not a sha256 digest", () => {
     // MEASURED: relaxing the regex to a bare z.string() leaves all five
     // specified tests green, because the only hash the specified tests supply
     // is a well-formed one and the other test omits the field entirely.
     // "test-hash" is not hypothetical: it is the literal policyHash in
-    // apps/eval/fixtures/minimal-ir.json today, so whoever wires Task 3's
-    // page API must produce a real digest rather than forward that placeholder.
-    expect(RunRecordSchema.safeParse({ ...record, policyHash: "test-hash" }).success).toBe(false);
-    expect(RunRecordSchema.safeParse({ ...record, policyHash: "A".repeat(64) }).success).toBe(false);
+    // apps/eval/fixtures/minimal-ir.json today, and forwarding that placeholder
+    // as the artifact hash is exactly the mistake this regex exists to refuse.
+    expect(RunRecordSchema.safeParse({ ...record, irHash: "test-hash" }).success).toBe(false);
+    expect(RunRecordSchema.safeParse({ ...record, irHash: "A".repeat(64) }).success).toBe(false);
+  });
+
+  it("accepts a placeholder policyHash, because a hand-written IR legitimately has one", () => {
+    // The asymmetry between the two hash fields is deliberate and is half the
+    // reason they are two fields. `irHash` is computed by the harness from bytes
+    // it is holding, so it can always be a real digest and the strict regex
+    // costs nothing. `policyHash` is copied verbatim out of whatever IR the page
+    // loaded, and apps/eval/fixtures/minimal-ir.json carries the literal
+    // "test-hash" -- constraining this field to 64 hex would force that fixture
+    // to state a hash of a policy document that does not exist, i.e. make the
+    // harness lie so its own schema would pass. `min(1)` is exactly what core's
+    // PolicyIrSchema asks of the field (packages/core/src/policy/schema.ts:126),
+    // so this is as strict as the value's own source and no stricter.
+    expect(RunRecordSchema.safeParse({ ...record, policyHash: "test-hash" }).success).toBe(true);
+    expect(RunRecordSchema.safeParse({ ...record, policyHash: "" }).success).toBe(false);
   });
 
   it("requires error to be present, so a crashed item cannot be written as a clean one", () => {
@@ -232,7 +259,8 @@ describe("findings are validated to core's unions, like gold", () => {
     runId: "r1",
     itemId: "a",
     policy: "p-fin",
-    policyHash: "0".repeat(64),
+    irHash: "0".repeat(64),
+    policyHash: "1".repeat(64),
     arm: "t0",
     backend: "wasm" as const,
     provider: "claude",
@@ -303,7 +331,7 @@ describe("findings are validated to core's unions, like gold", () => {
 describe("the record's own text makes the cross-check executable", () => {
   const base = {
     schemaVersion: 1 as const,
-    runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+    runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
     arm: "t0", backend: "wasm" as const, provider: "claude",
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null,
@@ -349,7 +377,7 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
     // with "Unterminated string".
     const record = {
       schemaVersion: 1 as const,
-      runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+      runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
       arm: "t0", backend: "wasm" as const, provider: "claude",
       text: "before after end", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null,
@@ -386,7 +414,7 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
 describe("findings cannot carry a degenerate span", () => {
   const base = {
     schemaVersion: 1 as const,
-    runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+    runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
     arm: "t0", backend: "wasm" as const, provider: "claude",
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null,

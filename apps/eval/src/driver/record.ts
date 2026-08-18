@@ -5,6 +5,20 @@ import { GoldSpanSchema } from "./corpus.js";
  * Bump when a field is removed or its meaning changes. Plan 8's Python reads
  * this first and refuses a version it does not know, so a silently reshaped
  * record cannot be scored as if it were the old one.
+ *
+ * STILL 1 despite this shape having changed twice since the constant was
+ * written -- `text` was added, and the single `policyHash` became `irHash` plus
+ * a verbatim `policyHash`. That looks like the rule above being broken in the
+ * same file that states it, and is not, for one reason worth writing down
+ * rather than leaving to be re-derived: NO RECORD OF ANY EARLIER SHAPE HAS EVER
+ * BEEN WRITTEN. This schema landed before its only producer (`runArm` in
+ * driver/run.ts), and nothing in the repo calls `toJsonl` outside this module's
+ * own tests, so there is no file anywhere for a version 2 to be distinguished
+ * FROM. Bumping would advertise a compatibility boundary that does not exist
+ * and oblige Plan 8 to carry a reader for a shape nothing ever emitted.
+ *
+ * Version 1 therefore describes the only record shape that has ever existed.
+ * From the first run that writes a file, the rule above applies literally.
  */
 export const RECORD_SCHEMA_VERSION = 1;
 
@@ -72,19 +86,43 @@ export const RunRecordSchema = z
      * sha256 of the IR ARTIFACT that ran, lowercase hex: the bytes of the JSON
      * the page loaded, hashed by the page itself (apps/eval/src/page/main.ts).
      *
-     * NOT `PolicyIr.policyHash`, which is the compiler's hash of the policy
-     * DOCUMENT and answers a different question -- one document compiled by two
-     * compiler versions yields two different IRs carrying the same value, and
-     * the numbers came from an IR, not from prose.
+     * Named `irHash`, not `policyHash`, because `PolicyIr.policyHash` already
+     * exists and means something else -- it is the field directly below. Two
+     * different values sharing one name across one codebase would leave Plan 8
+     * joining a record to an IR, finding the two disagree, and having no way to
+     * tell an intended difference from corruption.
      *
      * Required, not optional: an arm's numbers are meaningless without knowing
-     * exactly which compiled policy produced them, and "which IR was that?" is
+     * exactly which compiled IR produced them, and "which IR was that?" is
      * unanswerable after the fact. Hashing the artifact's own bytes is also what
      * makes the answer checkable from outside the browser -- `shasum -a 256` on
      * the IR file reproduces it, so a reader can confirm the provenance instead
      * of taking the record's word for it.
      */
-    policyHash: z.string().regex(/^[0-9a-f]{64}$/),
+    irHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /**
+     * `PolicyIr.policyHash` carried verbatim -- the COMPILER's sha256 of the
+     * policy DOCUMENT (packages/compiler/src/stages/emit.ts). It restores the
+     * link `irHash` cannot: `irHash` says which IR ran, this says which prose
+     * that IR was compiled from, and scoring wants the whole
+     * document -> IR -> numbers chain.
+     *
+     * It cannot stand in for `irHash`, and the reason is stronger than compiler
+     * version drift: compilation is MODEL-DRIVEN, so the same document compiled
+     * twice by the same compiler can yield two different IRs both carrying this
+     * same value. It identifies the input, never the artifact.
+     *
+     * Deliberately NOT constrained to /^[0-9a-f]{64}$/ the way `irHash` is, even
+     * though a compiled IR's really is 64 hex. This value is copied out of
+     * whatever IR the page loaded, and a hand-written fixture legitimately
+     * carries a placeholder -- apps/eval/fixtures/minimal-ir.json says
+     * "test-hash". Tightening this would force that fixture to state the hash of
+     * a policy document that does not exist: the harness lying about its own
+     * provenance so its own schema would pass. `min(1)` is exactly what core's
+     * PolicyIrSchema requires of the field (packages/core/src/policy/schema.ts),
+     * so this is as strict as the value's own source and no stricter.
+     */
+    policyHash: z.string().min(1),
     arm: z.string().min(1),
     backend: z.enum(["wasm", "webgpu"]),
     provider: z.string().min(1),

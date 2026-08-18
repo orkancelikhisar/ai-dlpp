@@ -86,7 +86,7 @@ export const CorpusItemSchema = z
      *
      * Deliberately a NAME, not a hash: the corpus is authored by hand against a
      * policy in prose, and it must stay valid while that policy is recompiled.
-     * The exact IR is pinned on the RECORD instead (`policyHash`), which is the
+     * The exact IR is pinned on the RECORD instead (`irHash`), which is the
      * side that knows what actually ran. Nothing in this file records which IR
      * an item's labels were written against, so a policy edited without
      * relabelling its corpus fails silently -- a real gap, and the reason
