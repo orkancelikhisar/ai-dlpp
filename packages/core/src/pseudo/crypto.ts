@@ -25,7 +25,18 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-function base64ToBytes(b64: string): Uint8Array {
+/**
+ * Returns `Uint8Array<ArrayBuffer>`, not bare `Uint8Array`. Since TS 5.7 the bare
+ * name means `Uint8Array<ArrayBufferLike>`, which admits `SharedArrayBuffer` and
+ * is therefore NOT assignable to the DOM lib's `BufferSource` — so importVaultKey
+ * below fails to compile in any program that loads lib.dom, i.e. every program
+ * that actually runs this file. Core's own tsconfig is `lib: ["ES2022"]`, where
+ * @types/node's looser WebCrypto signatures accept it and the error never
+ * appears; the eval harness (apps/eval) is the first DOM-lib consumer to see it.
+ * The body already only ever builds a plain ArrayBuffer, so this narrows the
+ * declaration to the truth rather than changing behaviour.
+ */
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
