@@ -15,8 +15,12 @@ type MaybeWebGpu = { gpu?: { requestAdapter(): Promise<unknown> } };
  * module scope, so a PolicyLoadError leaves `__sih` unpublished -- and on its
  * own it fails as a bare timeout naming nothing. The real error exists only as
  * a `pageerror`, so collect those and re-throw with the message attached: a
- * malformed IR should say which rule or field is at fault, not spend 30 seconds
- * saying "timeout".
+ * malformed IR should say which rule or field is at fault, not merely report
+ * that something timed out.
+ *
+ * The wait is capped well under Playwright's 30s default because when it fires
+ * there is nothing left to wait for: main.ts either published `__sih` or threw,
+ * and which one is already settled by the time the page finishes loading.
  */
 async function openHarness(page: Page): Promise<void> {
   const pageErrors: Error[] = [];
@@ -50,13 +54,21 @@ test("core detects a tier-0 entity inside real Chrome", async ({ page }) => {
   const finding = result.findings[0]!;
 
   expect(finding.entityType).toBe("in-pan");
-  // Offsets are absolute into the message and must survive the page -> driver
-  // boundary intact. That boundary is Playwright's own protocol serialization,
-  // NOT structuredClone: the two differ on `undefined` (structuredClone
-  // preserves it, the protocol drops it), which is exactly the direction a
-  // dropped offset would fail in. Asserted as literals rather than recomputed
-  // from the input string -- deriving them here would re-implement in the
-  // driver the one thing the page exists to prove core still does.
+  // Offsets are absolute into the message, asserted as explicit literals and
+  // deliberately not recomputed from the input string: deriving them here would
+  // re-implement in the driver the one thing the page exists to prove core still
+  // does. What they defend against is the page, not the transport -- core's
+  // normalizeFindings enforces text === message.slice(start, end) INSIDE the
+  // page, but by the time a finding reaches the driver nothing about it is
+  // self-checking any more, and offsets that were never derived from the message
+  // at all arrive looking exactly like offsets that were. Only comparing against
+  // known-good values separates the two.
+  //
+  // The boundary is Playwright's protocol serialization rather than
+  // structuredClone, and an earlier version of this comment claimed the two
+  // differ on `undefined`. They do not: measured on 1.62.1, an own key holding
+  // `undefined` survives the protocol with the key intact, as it does through
+  // structuredClone. The transport is not the risk here.
   expect(finding.start).toBe(10);
   expect(finding.end).toBe(20);
   expect(finding.text).toBe("AFTPD1298Q");

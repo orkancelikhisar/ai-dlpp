@@ -12,11 +12,16 @@ export default defineConfig({
   forbidOnly: !!process.env["CI"],
   use: {
     baseURL: "http://localhost:5178",
-    // The page writes a #status div and surfaces pageerrors; both are only
-    // legible after the fact through these. `openHarness` in smoke.spec.ts
-    // promises the screenshot, so it has to actually be produced.
+    // `retain-on-failure`, NOT `on-first-retry`. There is no `retries` key
+    // here, so the default of 0 applies and a first retry never happens: run
+    // against the same induced failure, on-first-retry writes screenshot and
+    // error-context and no trace.zip, retain-on-failure writes the trace.
+    // Retries stay absent on purpose -- silently re-running a measurement is
+    // the wrong reflex for a harness whose output is numbers -- so the trace
+    // has to be earned on the first failure instead. `openHarness` in
+    // smoke.spec.ts promises the screenshot, so that half must land too.
     screenshot: "only-on-failure",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
   },
   webServer: {
     command: "pnpm vite",
