@@ -1189,6 +1189,20 @@ git add -A && git commit -m "feat(compiler): CLI, live Anthropic client, and com
 
 `sih-compile` turns any of the three authored policy documents into an IR that `loadPolicyIr` accepts, with every rule traceable to a verbatim policy quote, every model-authored regex proven non-catastrophic in bounded time, every validator name checked against core's fixed library, per-entity tier-0 coverage measured by the real runtime, and a markdown report a human can audit before shipping. Semantic predicates reach actions through minted shadow entityTypes, closing the decision parked since Plan 1. Tests never touch the network.
 
+**Deferred — Task 9 Step 5 (the live compile).** Everything above holds offline. What is NOT done: no policy has been compiled by a real frontier model, and `policies/compiled/` does not exist. `p-fin` compiles end to end against hand-authored fixtures; `p-med` and `p-corp` have no fixtures and do not compile at all.
+
+The open question this defers is the one the fixtures cannot answer: **given only a natural-language policy document, does a frontier model produce an IR that survives the anti-hallucination gate?** Every green test today exercises the compiler against responses a human wrote. The compiler is verified; the extraction prompt is not.
+
+Also unexecuted: `src/llm/anthropic.ts`. Its first live call will be its first test. If it fails, the likeliest causes are the beta/`fallbacks` pairing (a 400 the types cannot catch — see the Task 9 deviation) or `max_tokens` truncation on the extraction call, since Opus 5 thinks by default and `max_tokens` caps thinking and text together.
+
+To resume: set `ANTHROPIC_API_KEY` (the SDK has no Keychain support, so a Claude Code subscription does not reach it) and run
+
+```
+pnpm -C packages/compiler exec vite-node ../../scripts/record-fixtures.ts --yes
+```
+
+then review each `policies/compiled/*.report.md` by hand — the **Outbound-visible identifiers** and **Rejected candidates** sections especially — before committing. Note that recording OVERWRITES the hand-authored fixtures, so the coverage numbers recorded in the Task 7 and Task 8 deviation entries will need re-measuring afterwards; `git diff packages/compiler/test/fixtures/llm/` shows what moved. Nothing in Plans 4-8 depends on these IRs — they depend on the IR *format*, which is specified and tested.
+
 **Next plans:** 4 — tier-1 (ORT-web span tagger) + the Playwright eval harness; 5 — tier-2 (WebLLM judge) + the Approach-B baseline.
 
 ## Deviations log
