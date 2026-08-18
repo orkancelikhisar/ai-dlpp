@@ -36,14 +36,49 @@ loudly rather than quietly producing wrong numbers.
 ## Running
 
 ```bash
-pnpm -C apps/eval test        # playwright test
+pnpm -C apps/eval test        # vitest run && playwright test
 pnpm -C apps/eval typecheck   # tsc --noEmit
 pnpm -C apps/eval dev         # vite dev server on :5178, for poking by hand
 ```
 
-`playwright test` starts its own dev server and reuses one already listening on
-5178 outside CI. Specs are `test/*.spec.ts`; `test/*.test.ts` is reserved for
-vitest over the plain-Node parts of the harness.
+Two runners, one script, vitest first: it needs no browser and finishes in under
+a second, so a broken schema fails before Playwright spends time launching
+Chrome. Root `pnpm -r test` calls this script, so both suites run there too.
+
+Specs are `test/*.spec.ts` and vitest tests are `test/*.test.ts`, and each runner
+is pinned to its own half — `testMatch` in `playwright.config.ts`, `include` in
+`vitest.config.ts`. Both pins are load-bearing rather than tidiness. Measured:
+with vitest's default `include`, vitest collects `test/smoke.spec.ts` and fails
+it with Playwright's "did not expect test() to be called here", because
+Playwright's fixtures do not exist under vitest.
+
+`vitest.config.ts` is a separate file rather than a `test` key inside
+`vite.config.ts` because that file sets `root: "src/page"` for the browser
+harness. Measured: with only `vite.config.ts` present, vitest adopts that root
+and exits 1 with "No test files found".
+
+## The corpus
+
+`corpora/fixtures/smoke.jsonl` (repo root, not this app) is a 12-item
+hand-authored smoke corpus — 6 negatives with empty `gold`, 6 positives — used to
+exercise the harness end to end. It covers a PAN in prose, an AWS key in a code
+fence, a `key=value` line, a tier-1 client name in prose, a multi-line message,
+and a message with emoji before the span, that last one so a UTF-16 offset bug
+shows up here rather than in a run whose numbers someone believes.
+
+`src/driver/corpus.ts` and `src/driver/record.ts` are the TS half of the
+TypeScript/Python boundary in spec §2.2: this app emits JSONL and computes **no
+metrics**; scoring is Python's job and the file is the only thing crossing
+between them. `CorpusItemSchema` refuses any gold span whose offsets do not hold
+the text it names, which is the labelling equivalent of the span-fidelity
+invariant `normalizeFindings` enforces on findings.
+
+One known asymmetry, left as-is deliberately: in `pos-secret-key-value` the gold
+span is the secret value alone, while tier 0 reports the whole
+`SESSION_TOKEN=<secret>` run — the entropy alphabet contains `=` and `_`, so the
+kv line is one candidate run (`tier0.ts` documents that over-inclusion as
+intended). The gold labels what must be protected, not what the current detector
+happens to emit, so a scorer has to match spans by overlap rather than equality.
 
 ## Two config decisions worth knowing before you edit
 

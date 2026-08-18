@@ -6,5 +6,5 @@
     "moduleResolution": "bundler",
     "noEmit": true
   },
-  "include": ["src", "test", "playwright.config.ts", "vite.config.ts"]
+  "include": ["src", "test", "playwright.config.ts", "vite.config.ts", "vitest.config.ts"]
 }

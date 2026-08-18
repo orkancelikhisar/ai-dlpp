@@ -1,0 +1,170 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { CorpusItemSchema, loadCorpus } from "../src/driver/corpus.js";
+import { RunRecordSchema, toJsonl } from "../src/driver/record.js";
+
+const FIXTURES = join(import.meta.dirname, "..", "..", "..", "corpora", "fixtures");
+
+describe("corpus", () => {
+  it("loads the smoke corpus, rejecting any malformed line by number", () => {
+    const items = loadCorpus(readFileSync(join(FIXTURES, "smoke.jsonl"), "utf8"));
+    expect(items.length).toBeGreaterThanOrEqual(12);
+    expect(items.every((i) => CorpusItemSchema.safeParse(i).success)).toBe(true);
+  });
+
+  it("names the line number when a record is malformed", () => {
+    expect(() => loadCorpus('{"id":"a","text":"x","policy":"p-fin","gold":[]}\n{"id":\n')).toThrow(
+      /line 2/,
+    );
+  });
+
+  it("requires every gold span to quote the text it claims", () => {
+    // The corpus is ground truth. A gold span whose offsets do not hold the
+    // text it names would silently score every arm against fiction — the same
+    // failure normalizeFindings refuses for findings, applied to labels.
+    const bad = { id: "a", text: "hello world", policy: "p-fin", gold: [{ start: 0, end: 5, text: "WRONG", entityType: "client-name", action: "block" }] };
+    expect(CorpusItemSchema.safeParse(bad).success).toBe(false);
+  });
+});
+
+describe("RunRecordSchema", () => {
+  it("accepts a record carrying everything Plan 8 needs to score without re-running", () => {
+    const record = {
+      schemaVersion: 1,
+      runId: "r1",
+      itemId: "a",
+      policy: "p-fin",
+      policyHash: "0".repeat(64),
+      arm: "t0",
+      backend: "wasm",
+      provider: "claude",
+      findings: [{ start: 0, end: 5, text: "hello", entityType: "client-name", severity: "high", tier: 0, source: "rule", confidence: 0.9, action: "block" }],
+      gold: [{ start: 0, end: 5, text: "hello", entityType: "client-name", action: "block" }],
+      timings: { tier0Ms: 0.4 },
+      error: null,
+    };
+    expect(RunRecordSchema.safeParse(record).success).toBe(true);
+  });
+
+  it("carries the policy hash, so a record can never be attributed to the wrong IR", () => {
+    const { policyHash: _omitted, ...withoutHash } = {
+      schemaVersion: 1, runId: "r1", itemId: "a", policy: "p-fin", policyHash: "0".repeat(64),
+      arm: "t0", backend: "wasm", provider: "claude", findings: [], gold: [],
+      timings: { tier0Ms: 0 }, error: null,
+    };
+    expect(RunRecordSchema.safeParse(withoutHash).success).toBe(false);
+  });
+});
+
+/**
+ * The block above is the contract as specified. The block below closes gaps the
+ * specified tests demonstrably do not cover: each test here was written against
+ * a mutation that left all five of the tests above passing. Cited per test.
+ */
+describe("guards the specified tests leave open", () => {
+  const item = (gold: unknown) => ({ id: "a", text: "hello world", policy: "p-fin", gold });
+
+  it("rejects a gold span whose end runs past the end of the text", () => {
+    // MEASURED: deleting `g.end <= item.text.length` from the refine leaves all
+    // five specified tests green. String.slice CLAMPS rather than throwing, so
+    // slice(0, 9999) on "hello world" returns "hello world" and compares equal
+    // to a gold text of "hello world" -- the comparison alone cannot see that
+    // `end` was never a real offset. Python's str slicing clamps identically,
+    // so Plan 8 would inherit the same blind spot rather than catch it.
+    expect(CorpusItemSchema.safeParse(item([{ start: 0, end: 9999, text: "hello world", entityType: "in-pan", action: "block" }])).success).toBe(false);
+  });
+
+  it("rejects a zero-width gold span", () => {
+    // MEASURED: dropping `.min(1)` from GoldSpanSchema.text leaves all five
+    // specified tests green, and {start:5,end:5,text:""} then validates --
+    // slice(5,5) is "" and equals the claimed text, so the refine agrees. A
+    // zero-width label is not a detectable entity; it is a labelling slip that
+    // would count as a missed positive against every arm.
+    expect(CorpusItemSchema.safeParse(item([{ start: 5, end: 5, text: "", entityType: "in-pan", action: "block" }])).success).toBe(false);
+  });
+
+  it("rejects a negative start offset", () => {
+    // MEASURED: relaxing `start` from .nonnegative() to .int() leaves the other
+    // twelve tests green, because a negative index does not fail the refine --
+    // slice() rebases it from the end of the string, so {start:-11,end:5} on an
+    // 11-char text still yields "hello" and compares equal. A negative offset is
+    // not a position in the message under either JS or Python indexing rules.
+    expect(CorpusItemSchema.safeParse(item([{ start: -11, end: 5, text: "hello", entityType: "in-pan", action: "block" }])).success).toBe(false);
+  });
+
+  it("rejects a gold action outside the policy's action vocabulary", () => {
+    // MEASURED: widening the action enum to z.string() leaves all five
+    // specified tests green. The vocabulary is core's Action union plus "none",
+    // and a plausible-looking typo is exactly what a hand-authored corpus
+    // produces; unchecked it becomes a class Plan 8 silently never scores.
+    expect(CorpusItemSchema.safeParse(item([{ start: 0, end: 5, text: "hello", entityType: "in-pan", action: "blocked" }])).success).toBe(false);
+  });
+});
+
+describe("RunRecordSchema guards the specified tests leave open", () => {
+  const record = {
+    // `as const` rather than a bare 1: this fixture is passed to toJsonl, whose
+    // parameter is RunRecord, and z.literal narrows schemaVersion to exactly 1.
+    // Written as a literal rather than imported from RECORD_SCHEMA_VERSION so a
+    // version bump surfaces here as a compile error to think about, instead of
+    // the fixture silently following the constant it is meant to pin.
+    schemaVersion: 1 as const,
+    runId: "r1",
+    itemId: "a",
+    policy: "p-fin",
+    policyHash: "0".repeat(64),
+    arm: "t0",
+    backend: "wasm" as const,
+    provider: "claude",
+    findings: [],
+    gold: [],
+    timings: { tier0Ms: 0 },
+    error: null,
+  };
+
+  it("refuses a schemaVersion other than the one this module writes", () => {
+    // MEASURED: relaxing z.literal to z.number() leaves all five specified
+    // tests green. RECORD_SCHEMA_VERSION's own doc comment promises Plan 8
+    // refuses a version it does not know; without the literal, a future v2
+    // record parses here as if it were v1 and the promise is not kept.
+    expect(RunRecordSchema.safeParse({ ...record, schemaVersion: 2 }).success).toBe(false);
+  });
+
+  it("refuses a policyHash that is not a sha256 digest", () => {
+    // MEASURED: relaxing the regex to a bare z.string() leaves all five
+    // specified tests green, because the only hash the specified tests supply
+    // is a well-formed one and the other test omits the field entirely.
+    // "test-hash" is not hypothetical: it is the literal policyHash in
+    // apps/eval/fixtures/minimal-ir.json today, so whoever wires Task 3's
+    // page API must produce a real digest rather than forward that placeholder.
+    expect(RunRecordSchema.safeParse({ ...record, policyHash: "test-hash" }).success).toBe(false);
+    expect(RunRecordSchema.safeParse({ ...record, policyHash: "A".repeat(64) }).success).toBe(false);
+  });
+
+  it("requires error to be present, so a crashed item cannot be written as a clean one", () => {
+    // MEASURED: adding .optional() alongside .nullable() leaves all five
+    // specified tests green. Nullable-but-required is the whole point: null
+    // states "this item did not throw", whereas an absent key states nothing,
+    // and an arm that crashes on part of the corpus must not be indistinguishable
+    // from one that merely scored zero there.
+    const { error: _omitted, ...withoutError } = record;
+    expect(RunRecordSchema.safeParse(withoutError).success).toBe(false);
+  });
+
+  it("frames exactly one record per line and terminates the final line", () => {
+    // MEASURED: replacing the join("\n") + "\n" body with join(",") leaves all
+    // five specified tests green -- nothing referenced toJsonl at all. Plan 8
+    // reads this file line by line, so framing IS the format: a missing final
+    // newline drops the last record for a reader that requires terminated
+    // lines, and any separator but "\n" loses every record but the first.
+    const jsonl = toJsonl([record, { ...record, itemId: "b" }]);
+    expect(jsonl.endsWith("\n")).toBe(true);
+    const lines = jsonl.split("\n").filter((l) => l !== "");
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => (JSON.parse(l) as { itemId: string }).itemId)).toEqual(["a", "b"]);
+    // Round-trips through the schema, so the writer cannot emit a shape its own
+    // reader rejects.
+    expect(lines.every((l) => RunRecordSchema.safeParse(JSON.parse(l)).success)).toBe(true);
+  });
+});
