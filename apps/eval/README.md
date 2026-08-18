@@ -73,6 +73,37 @@ between them. `CorpusItemSchema` refuses any gold span whose offsets do not hold
 the text it names, which is the labelling equivalent of the span-fidelity
 invariant `normalizeFindings` enforces on findings.
 
+### Offsets are UTF-16 code units — Plan 8 must decode, not slice
+
+Every `start`/`end` in both schemas is a JavaScript string index: a **UTF-16
+code unit** offset, the unit `String.prototype.slice` takes. JS is the producing
+runtime and core's invariant is `text === message.slice(start, end)`, so offsets
+are UTF-16 from the moment a detector emits one. Do not "fix" this to code
+points — Tasks 6 and 10 build tier-1 span fidelity on the same invariant.
+
+Python's `str` is indexed by **code point**, so the two disagree by one unit per
+astral character (emoji, most non-BMP scripts) appearing earlier in the message.
+Measured on `pos-emoji-before-pan`, whose gold span is `[33,43)`:
+
+```python
+text[33:43]                                          # -> 'CPT1234H t'  WRONG
+text.encode('utf-16-le')[66:86].decode('utf-16-le')  # -> 'ABCPT1234H'  correct
+```
+
+`len(text)` is 60 there while the message is 62 code units long. Across the
+smoke corpus a reader that slices `str` directly gets **6 of 7 spans right and
+silently corrupts the seventh** — it fails toward wrong numbers rather than
+crashing, and Plan 7's real corpus is ShareChat conversations, which certainly
+contain emoji. A Python reader must index via
+`text.encode('utf-16-le')[2*start:2*end].decode('utf-16-le')`.
+
+Every span also carries its own `text`, which is exactly what the offsets should
+select. That is the recovery path and the cross-check: verify indexing on every
+span read and abort on the first disagreement rather than scoring against
+fiction. `test/record.test.ts` pins this with the emoji item, so removing the
+astral characters from the corpus fails the suite rather than quietly disarming
+the check.
+
 One known asymmetry, left as-is deliberately: in `pos-secret-key-value` the gold
 span is the secret value alone, while tier 0 reports the whole
 `SESSION_TOKEN=<secret>` run — the entropy alphabet contains `=` and `_`, so the

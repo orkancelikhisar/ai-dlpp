@@ -23,10 +23,22 @@ export const RunRecordSchema = z.object({
   arm: z.string().min(1),
   backend: z.enum(["wasm", "webgpu"]),
   provider: z.string().min(1),
+  /**
+   * Offsets here carry the SAME unit contract as gold spans: UTF-16 code units
+   * into the corpus item's text, not code points. GoldSpanSchema in corpus.ts
+   * documents it in full, including the measured Python failure and the
+   * `utf-16-le` decode a Python reader needs; findings arrive straight from
+   * core, whose invariant is `text === message.slice(start, end)`, so they are
+   * UTF-16 by construction and a scorer must compare them against gold in that
+   * same unit. `text` is the per-span cross-check.
+   */
   findings: z.array(
     z.object({
+      /** UTF-16 code-unit offset. See GoldSpanSchema in corpus.ts. */
       start: z.number().int().nonnegative(),
+      /** Exclusive UTF-16 code-unit offset. See GoldSpanSchema in corpus.ts. */
       end: z.number().int().positive(),
+      /** Exactly the message slice at [start, end) -- the non-JS reader's check. */
       text: z.string(),
       entityType: z.string(),
       severity: z.string(),
@@ -36,7 +48,10 @@ export const RunRecordSchema = z.object({
       action: z.string(),
     }),
   ),
-  /** Copied from the corpus item so a record scores standalone, without a join. */
+  /**
+   * Copied from the corpus item so a record scores standalone, without a join.
+   * Same UTF-16 code-unit offsets as it had in the corpus -- nothing rebases it.
+   */
   gold: z.array(GoldSpanSchema),
   timings: z.object({
     tier0Ms: z.number(),

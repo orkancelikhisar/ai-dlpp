@@ -168,3 +168,44 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     expect(lines.every((l) => RunRecordSchema.safeParse(JSON.parse(l)).success)).toBe(true);
   });
 });
+
+/**
+ * The offset UNIT, pinned by example. The schemas say offsets are UTF-16 code
+ * units; this is what makes that statement fail loudly instead of being prose
+ * nobody reruns. It is deliberately asserted against the shipped corpus rather
+ * than a synthetic string, because the risk is that someone later "fixes" the
+ * corpus to code-point offsets to make a Python reader work, which would break
+ * the JS producer and core's own span-fidelity invariant instead.
+ */
+describe("offset encoding contract", () => {
+  const items = loadCorpus(readFileSync(join(FIXTURES, "smoke.jsonl"), "utf8"));
+
+  it("keeps at least one item where the two offset units genuinely disagree", () => {
+    // Guards the guard: if every astral character were dropped from the corpus,
+    // the assertions below would still pass while testing nothing at all.
+    const disagreeing = items.filter((i) =>
+      i.gold.some((g) => [...i.text.slice(0, g.start)].length !== g.start),
+    );
+    expect(disagreeing.map((i) => i.id)).toContain("pos-emoji-before-pan");
+  });
+
+  it("stores UTF-16 code units, so a code-point reading of the same span is wrong", () => {
+    const item = items.find((i) => i.id === "pos-emoji-before-pan");
+    expect(item).toBeDefined();
+    const span = item!.gold[0]!;
+
+    // MEASURED with python3 on this corpus: `text[33:43]` returns "CPT1234H t"
+    // while `text.encode("utf-16-le")[66:86].decode("utf-16-le")` returns
+    // "ABCPT1234H". len(str) is 60 and len(utf-16-le)//2 is 62 -- the two astral
+    // emoji cost one extra code unit each. Across the whole corpus a reader that
+    // slices `str` directly gets 6 of 7 spans right and silently corrupts the
+    // seventh, which is failure toward wrong numbers rather than a crash.
+    expect([...item!.text.slice(0, span.start)].length).not.toBe(span.start);
+
+    // UTF-16 indexing recovers the span ...
+    expect(item!.text.slice(span.start, span.end)).toBe(span.text);
+    // ... and code-point indexing (what Python's str does) does not. Spreading a
+    // string iterates code points, so this is the same read Python performs.
+    expect([...item!.text].slice(span.start, span.end).join("")).not.toBe(span.text);
+  });
+});
