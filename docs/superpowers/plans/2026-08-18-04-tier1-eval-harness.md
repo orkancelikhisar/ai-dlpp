@@ -54,7 +54,7 @@ apps/eval/                       NEW
   playwright.config.ts
 
 scripts/fetch-models.ts          NEW — checksummed model download
-corpora/fixtures/smoke.jsonl     NEW — 12-item hand-authored corpus
+corpora/fixtures/smoke.jsonl     NEW — 13-item hand-authored corpus
 ```
 
 **Boundary discipline:** `apps/eval` emits JSONL and computes **no metrics**. Spec §2.2 makes the TS/Python boundary a JSONL file; scoring lives in `analysis/` (Plan 8). Harness tests assert on JSONL *contents*, never on a computed F1.
@@ -2012,7 +2012,7 @@ git add -A && git commit -m "feat(eval): arm matrix driver writing per-arm JSONL
 
 A GLiNER-class ONNX model runs inside real Chrome on both WASM and WebGPU, looking for exactly the entity classes the compiled policy declares at tier 1 — changing the policy changes what it looks for, with no retraining and no code change. Every span it produces survives `normalizeFindings` in the same `detect()` the extension will call. The Playwright harness runs an arm matrix over a JSONL corpus and writes JSONL records carrying findings, gold, timings, policy hash, and errors — the complete input Plan 8's Python needs, with no metric computed on the TypeScript side.
 
-**Explicitly NOT in this plan:** tier-2 (Plan 5), the Approach-B baseline (Plan 5), the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus is 12 hand-authored items whose only job is to prove the pipe carries data end to end.
+**Explicitly NOT in this plan:** tier-2 (Plan 5), the Approach-B baseline (Plan 5), the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus is 13 hand-authored items whose only job is to prove the pipe carries data end to end.
 
 **Three spec items deliberately deferred, found in the spec sweep for this plan — none are silent omissions:**
 
