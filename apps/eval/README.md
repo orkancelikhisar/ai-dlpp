@@ -59,12 +59,43 @@ and exits 1 with "No test files found".
 
 ## The corpus
 
-`corpora/fixtures/smoke.jsonl` (repo root, not this app) is a 12-item
-hand-authored smoke corpus — 6 negatives with empty `gold`, 6 positives — used to
+`corpora/fixtures/smoke.jsonl` (repo root, not this app) is a 13-item
+hand-authored smoke corpus — 7 negatives with empty `gold`, 6 positives — used to
 exercise the harness end to end. It covers a PAN in prose, an AWS key in a code
 fence, a `key=value` line, a tier-1 client name in prose, a multi-line message,
 and a message with emoji before the span, that last one so a UTF-16 offset bug
 shows up here rather than in a run whose numbers someone believes.
+
+> **This corpus is a pipe-integrity check. It cannot produce meaningful tier-1
+> accuracy numbers, in either direction.** Thirteen hand-written items is far
+> too small for a rate to mean anything, and they were authored to exercise
+> shapes — code fence, kv line, astral offsets — not to be representative of
+> anything. Do not quote a precision, recall or F1 from this file. Building a
+> corpus those numbers can come from is Plan 7's job; this one only proves the
+> pipe carries spans without corrupting them.
+
+Two known limits worth stating rather than discovering:
+
+- **`action: "none"` ships untested by the corpus.** It is in the gold enum, and
+  means "a span worth labelling that this policy deliberately permits" — the
+  distinction between a false positive and a correct-but-allowed detection. No
+  item exercises it, so a scorer's handling of that branch is unverified here.
+  (`test/record.test.ts` does assert the schema accepts it on gold and rejects
+  it on a finding.)
+- **Tier-1 precision is barely measurable.** `neg-proper-nouns-not-clients` is
+  the only negative containing proper nouns (a person, a city, a weekday, a
+  product), so it is the only item that can catch a tagger which fires on every
+  capitalized token. One item is enough to notice a grossly over-firing model
+  and nothing more.
+
+The tier-1 gold values are deliberately **not** the ones in
+`fixtures/minimal-ir.json`, whose `client-name` examples are `["Globex"]`. A
+model prompted from the IR would otherwise be handed the gold answer in its own
+prompt, and its recall here would be contamination rather than detection. The
+same applies to the AWS key: `AKIAIOSFODNN7EXAMPLE` is that IR's `aws-key`
+example, so the corpus uses a different (still obviously fake) value. Tier 0
+matches it by regex, so the example could not have inflated tier-0 recall, but
+any tier that sees entityType examples in a prompt would have had the answer.
 
 `src/driver/corpus.ts` and `src/driver/record.ts` are the TS half of the
 TypeScript/Python boundary in spec §2.2: this app emits JSONL and computes **no
@@ -103,6 +134,29 @@ span read and abort on the first disagreement rather than scoring against
 fiction. `test/record.test.ts` pins this with the emoji item, so removing the
 astral characters from the corpus fails the suite rather than quietly disarming
 the check.
+
+### Reading the files: three things the schemas do not enforce
+
+- **`policy` is a NAME, not a hash.** It says which policy *document* an item's
+  gold was written against, because the same PAN is `block` under one policy and
+  `allow` under another. The exact IR is pinned on the record instead
+  (`policyHash`). Nothing records which IR an *item's labels* were written
+  against, so a policy edited without relabelling its corpus fails silently —
+  change the `policy` name whenever labels stop matching the prose.
+- **`entityType` is unvalidated here.** It is an id from the IR, the same
+  namespace as `Finding.entityType`, but this module never loads an IR. A typo
+  surfaces as an entity scoring 0 recall, not as a load error, so a scorer
+  should report the gold entityTypes it saw and let a human spot an odd one.
+- **Gold spans are not sorted and not disjoint.** A message can carry two labels
+  at the same offsets, or nested ones. This is the opposite of
+  `DetectionResult.findings`, which core guarantees sorted and pairwise
+  disjoint, so a scorer must not walk the two arrays in lockstep and must sort
+  gold itself if it needs order.
+
+**Unknown keys are silently dropped** at every level — item, gold span, record.
+That is zod's default `strip`, not a decision made here, and it means a Plan 7
+corpus carrying extra provenance columns loses them without a word. Put
+provenance under `meta`, which keeps whatever it is given.
 
 One known asymmetry, left as-is deliberately: in `pos-secret-key-value` the gold
 span is the secret value alone, while tier 0 reports the whole
