@@ -991,13 +991,16 @@ export interface Tier1Label {
  * What settles it: one corpus, one policy, arms differing only in `labelForm`,
  * compared on span F1 (spec §6.4 metric 2).
  */
-export function buildLabels(ir: PolicyIr): Tier1Label[] {
+export function buildLabels(ir: PolicyIr, config: Tier1Config): readonly Tier1Label[] {
+  // `config` is REQUIRED, deliberately. A default here would let a caller that
+  // omits it run `id` labels while the run record reports `labelForm:
+  // "definition"` -- silently invalidating that arm with nothing to notice.
   return ir.entityTypes
     .filter((entity) => entity.tier === 1)
     .map((entity, classIndex) => ({
       classIndex,
       entityType: entity.id,
-      prompt: entity.id.replace(/-/g, " "),
+      prompt: promptFor(entity, config.labelForm),
     }));
 }
 ```
@@ -1710,11 +1713,13 @@ export class GlinerSpanTagger implements SpanTagger {
   constructor(
     private readonly session: OnnxSession,
     private readonly tokenizer: Tokenizer,
-    private readonly options: { threshold: number; maxWidth: number },
+    // The WHOLE Tier1Config, not a subset: `buildLabels` needs `labelForm`, and a
+    // narrower options bag is how an arm silently runs labels it did not configure.
+    private readonly options: Tier1Config,
   ) {}
 
   async tag(segments: Segment[], ir: PolicyIr, signal?: AbortSignal): Promise<Finding[]> {
-    const labels = buildLabels(ir);
+    const labels = buildLabels(ir, this.options);
     // No tier-1 entities is a legitimate policy (P-MED may have none), not an
     // error — and running a zero-class model would waste the budget to return
     // nothing.
@@ -1937,6 +1942,10 @@ Run: `pnpm -C apps/eval exec playwright test test/matrix.spec.ts`
 Expected: FAIL — cannot find module `../src/driver/main.js`.
 
 - [ ] **Step 3: Implement**
+
+**Before writing `main.ts`: the record's `config` field must carry the TIER-1 config, not just core's `TierConfig`.** As of Task 5 the ladder has six dimensions — `modelId × precision × backend × threshold × maxWidth × labelForm` — but `RunRecordSchema.config` records only `tier0/1/2`, `t1Model`, `t2Model`, `backend`. So two arms differing in `labelForm`, `threshold` or `maxWidth` emit **byte-identical config** in the JSONL, and Plan 8 cannot tell them apart. That is the same "intent recorded in place of fact" disease the record's own comment diagnoses for `backend`. Extend the schema to carry the resolved `Tier1Config` whenever tier 1 ran, and stamp the object the tagger was actually constructed with — not the one the caller intended.
+
+Note also that `labelForm` should be measured on ONE model and ONE policy rather than crossed into the full matrix: it is a question about label conditioning, not an axis of the accuracy-vs-latency ladder.
 
 `apps/eval/src/driver/main.ts`:
 ```ts
