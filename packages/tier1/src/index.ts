@@ -14,3 +14,4 @@ export {
   type Tier1LabelForm,
 } from "./config.js";
 export { buildLabels, type Tier1Label } from "./labels.js";
+export { spanFromTokens, type CharSpan, type TokenOffset } from "./offsets.js";
