@@ -973,14 +973,23 @@ export interface Tier1Label {
  * policy changes what the model looks for with no retraining and no code
  * change, because the labels are read out of the IR at inference time.
  *
- * The prompt is derived from the id rather than the nlDefinition. The
- * definition is a full sentence written for a frontier model at compile time
- * ("The name of a client organisation, including prospective clients and
- * counterparties"), and GLiNER's label encoder was trained on short noun
- * phrases; feeding it a sentence degrades span F1. Kebab-case is converted to
- * spaces so the encoder sees language. The nlDefinition is deliberately unused
- * here — if the ladder later wants a definition-conditioned arm, that is a
- * config variable and a separate measurement, not a silent change to this one.
+ * The prompt form is a CONFIG VARIABLE (`Tier1Config.labelForm`), defaulting to
+ * the id-derived phrase. Kebab-case becomes spaces so the model sees language.
+ *
+ * The default is chosen on measured token cost, NOT on a claim about the label
+ * encoder: an id renders to ~2 tokens while a real compiler-authored
+ * nlDefinition renders to 26-37, and label text shares one sequence with the
+ * message against the model's `max_len`, multiplied by the tier-1 class count.
+ *
+ * An earlier draft of this plan justified the choice by asserting that GLiNER's
+ * label encoder was trained on short noun phrases and that sentences degrade
+ * span F1. That was never measured, and Task 5 disproved its premise: both
+ * pinned `gliner_config.json` files carry `labels_encoder: null` — these
+ * checkpoints have no label encoder at all. Spec §4.1 names `{id, nlDefinition}`,
+ * so `id` alone is a genuine deviation, which is exactly why the form is a
+ * config value with all three arms reachable rather than a hardcoded choice.
+ * What settles it: one corpus, one policy, arms differing only in `labelForm`,
+ * compared on span F1 (spec §6.4 metric 2).
  */
 export function buildLabels(ir: PolicyIr): Tier1Label[] {
   return ir.entityTypes
