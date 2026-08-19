@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { EntityType, PolicyIr } from "@sih/core";
 import { buildLabels } from "../src/labels.js";
-import { DEFAULT_TIER1_CONFIG, TIER1_LABEL_FORMS } from "../src/config.js";
+import {
+  DEFAULT_TIER1_CONFIG,
+  TIER1_LABEL_FORMS,
+  type Tier1Config,
+  type Tier1LabelForm,
+} from "../src/config.js";
 
 /**
  * Verbatim from packages/compiler/test/fixtures/llm: what the compiler actually
@@ -25,6 +30,11 @@ const entity = (over: Partial<EntityType>): EntityType => ({
 
 const ir = (entityTypes: EntityType[]): PolicyIr => ({ entityTypes }) as PolicyIr;
 
+const cfg = (labelForm: Tier1LabelForm = DEFAULT_TIER1_CONFIG.labelForm): Tier1Config => ({
+  ...DEFAULT_TIER1_CONFIG,
+  labelForm,
+});
+
 describe("buildLabels", () => {
   it("includes only tier-1 entityTypes", () => {
     // Tier 0 already caught these deterministically. Handing them to the model
@@ -36,12 +46,16 @@ describe("buildLabels", () => {
         entity({ id: "in-pan", tier: 0 }),
         entity({ id: "pred:x", tier: 2 }),
       ]),
+      cfg(),
     );
     expect(labels.map((l) => l.entityType)).toEqual(["client-name"]);
   });
 
   it("maps class index to entityType id positionally", () => {
-    const labels = buildLabels(ir([entity({ id: "a", tier: 1 }), entity({ id: "b", tier: 1 })]));
+    const labels = buildLabels(
+      ir([entity({ id: "a", tier: 1 }), entity({ id: "b", tier: 1 })]),
+      cfg(),
+    );
     expect(labels[0]!.classIndex).toBe(0);
     expect(labels[1]!.classIndex).toBe(1);
     expect(labels.map((l) => l.entityType)).toEqual(["a", "b"]);
@@ -52,7 +66,12 @@ describe("buildLabels", () => {
     // unfiltered array leaves a gap wherever a tier-0 entity sat, so every
     // class above the gap decodes to the wrong entityType.
     const labels = buildLabels(
-      ir([entity({ id: "in-pan", tier: 0 }), entity({ id: "a", tier: 1 }), entity({ id: "b", tier: 1 })]),
+      ir([
+        entity({ id: "in-pan", tier: 0 }),
+        entity({ id: "a", tier: 1 }),
+        entity({ id: "b", tier: 1 }),
+      ]),
+      cfg(),
     );
     expect(labels.map((l) => l.classIndex)).toEqual([0, 1]);
   });
@@ -61,15 +80,15 @@ describe("buildLabels", () => {
     // The id is an identifier written for the IR's own key space. The default
     // label form spaces it so the model is prompted with words; the id itself
     // stays as the KEY the finding is emitted under, so only the prompt moves.
-    const labels = buildLabels(ir([entity({ id: "client-name" })]));
+    const labels = buildLabels(ir([entity({ id: "client-name" })]), cfg());
     expect(labels[0]!.prompt).toBe("client name");
     expect(labels[0]!.prompt).not.toContain("-");
   });
 
   it("returns an empty label set when the policy has no tier-1 entities", () => {
-    // Not an error: P-MED may legitimately have none, and the tagger must then
-    // skip inference entirely rather than call a model with zero classes.
-    expect(buildLabels(ir([entity({ tier: 0 })]))).toEqual([]);
+    // Not an error: a policy may legitimately declare none, and the tagger must
+    // then skip inference entirely rather than call a model with zero classes.
+    expect(buildLabels(ir([entity({ tier: 0 })]), cfg())).toEqual([]);
   });
 });
 
@@ -78,18 +97,12 @@ describe("buildLabels label form", () => {
     // spec 4.1 names `entityTypes[].{id, nlDefinition}` as the injected labels.
     // The default deviates from that, so the spec's own form has to stay
     // reachable as a config value rather than as a future rewrite of this file.
-    const labels = buildLabels(ir([entity({})]), {
-      ...DEFAULT_TIER1_CONFIG,
-      labelForm: "definition",
-    });
+    const labels = buildLabels(ir([entity({})]), cfg("definition"));
     expect(labels[0]!.prompt).toBe(CLIENT_NAME_DEFINITION);
   });
 
   it("carries both halves in the id-and-definition form", () => {
-    const labels = buildLabels(ir([entity({})]), {
-      ...DEFAULT_TIER1_CONFIG,
-      labelForm: "id-and-definition",
-    });
+    const labels = buildLabels(ir([entity({})]), cfg("id-and-definition"));
     expect(labels[0]!.prompt).toContain("client name");
     expect(labels[0]!.prompt).toContain(CLIENT_NAME_DEFINITION);
   });
@@ -99,27 +112,23 @@ describe("buildLabels label form", () => {
     // ir.actions and into ground truth. If the form leaked into entityType, two
     // arms of the same experiment would emit findings that cannot be compared.
     for (const labelForm of TIER1_LABEL_FORMS) {
-      const labels = buildLabels(ir([entity({ id: "client-name" })]), {
-        ...DEFAULT_TIER1_CONFIG,
-        labelForm,
-      });
+      const labels = buildLabels(ir([entity({ id: "client-name" })]), cfg(labelForm));
       expect(labels.map((l) => l.entityType), labelForm).toEqual(["client-name"]);
     }
   });
 
-  it("takes its default form from DEFAULT_TIER1_CONFIG, so the recorded config is the one that ran", () => {
-    // A hardcoded default here would let a run report labelForm X while the
-    // model was prompted with form Y -- the same class of defect the config
-    // suite guards for threshold and maxWidth.
+  it("renders a distinct prompt for every form, so a form is observable in what the model sees", () => {
+    // Two forms that rendered the same text would make an arm comparing them
+    // report a difference that cannot exist. Distinctness is what makes this
+    // ladder rung measurable at all.
+    //
+    // There is deliberately no test here that buildLabels' default form matches
+    // DEFAULT_TIER1_CONFIG: `config` is a required parameter, so there is no
+    // default to drift. That guarantee is now a compile error, not an assertion.
     const policy = ir([entity({})]);
-    const promptByForm = new Map(
-      TIER1_LABEL_FORMS.map((labelForm) => [
-        labelForm,
-        buildLabels(policy, { ...DEFAULT_TIER1_CONFIG, labelForm })[0]!.prompt,
-      ]),
+    const prompts = TIER1_LABEL_FORMS.map(
+      (labelForm) => buildLabels(policy, cfg(labelForm))[0]!.prompt,
     );
-    // Without this the assertion below would pass for a default that never moves.
-    expect(new Set(promptByForm.values()).size).toBe(TIER1_LABEL_FORMS.length);
-    expect(buildLabels(policy)[0]!.prompt).toBe(promptByForm.get(DEFAULT_TIER1_CONFIG.labelForm));
+    expect(new Set(prompts).size).toBe(TIER1_LABEL_FORMS.length);
   });
 });

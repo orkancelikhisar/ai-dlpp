@@ -12,7 +12,6 @@ export {
 export const TIER1_BACKENDS = ["wasm", "webgpu"] as const;
 export type Tier1Backend = (typeof TIER1_BACKENDS)[number];
 
-export const TIER1_LABEL_FORMS = ["id", "definition", "id-and-definition"] as const;
 /**
  * What text each tier-1 class is prompted with, built from one entityType:
  *
@@ -31,18 +30,30 @@ export const TIER1_LABEL_FORMS = ["id", "definition", "id-and-definition"] as co
  * base. The manifest's `inputNames` -- measured by parsing the ONNX graphs --
  * carry exactly one token-id input, `input_ids`, and no label-side input, so
  * label text has nowhere to go except the same sequence as the message text,
- * against the same `maxLen`. That per-class cost multiplies by the number of
- * tier-1 classes in the policy.
+ * against the same `maxLen`.
+ *
+ * That per-class cost multiplies by the number of tier-1 classes, and it runs
+ * into a second ceiling: `max_types` is 100 in all six pinned
+ * gliner_config.json files (measured), which is the class count these models
+ * were trained against. The two ceilings bind in opposite orders. Arithmetic on
+ * the token counts above, NOT an observed run: 100 classes cost ~200 tokens in
+ * the `id` form, so `max_types` binds first there; in the `definition` form
+ * they cost 2,600-3,700 tokens, which exceeds `maxLen` 2048 before any message
+ * text is added -- that sequence fills at roughly 55-78 classes depending on
+ * definition length. Neither ceiling is enforced here, because neither is this
+ * function's to enforce: whatever owns the graph and the tokenizer (Tasks 7 and
+ * 10) has to check both together, since which one binds depends on this field.
  *
  * UNVERIFIED: which form scores better. No inference runs in this package yet,
  * so nothing here has been scored, and no claim about the label encoder's
- * training distribution is being made -- note that both pinned
- * `gliner_config.json` files have `labels_encoder: null`, so there is no
- * separate label tower to reason about in the first place. What would settle
- * it: one corpus and one policy under arms differing only in this field,
+ * training distribution is being made -- note that all six pinned
+ * `gliner_config.json` files have `labels_encoder: null` (measured), so there
+ * is no separate label tower to reason about in the first place. What would
+ * settle it: one corpus and one policy under arms differing only in this field,
  * compared on span F1 (spec §6.4 metric 2). Until that runs, `id` is a default,
  * not a finding.
  */
+export const TIER1_LABEL_FORMS = ["id", "definition", "id-and-definition"] as const;
 export type Tier1LabelForm = (typeof TIER1_LABEL_FORMS)[number];
 
 export interface Tier1Config {
@@ -58,7 +69,7 @@ export interface Tier1Config {
    * `ModelEntry.spanMode` and the loader that consumes it.
    */
   readonly maxWidth: number;
-  /** How `buildLabels` renders each class's prompt. See `Tier1LabelForm`. */
+  /** How `buildLabels` renders each class's prompt. See `TIER1_LABEL_FORMS`. */
   readonly labelForm: Tier1LabelForm;
 }
 

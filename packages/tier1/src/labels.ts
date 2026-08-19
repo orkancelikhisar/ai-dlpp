@@ -1,5 +1,5 @@
 import type { EntityType, PolicyIr } from "@sih/core";
-import { DEFAULT_TIER1_CONFIG, type Tier1Config, type Tier1LabelForm } from "./config.js";
+import type { Tier1Config, Tier1LabelForm } from "./config.js";
 
 export interface Tier1Label {
   /** Position in the label array handed to the model; the model's class index. */
@@ -21,6 +21,8 @@ function promptFor(entity: EntityType, labelForm: Tier1LabelForm): string {
     case "definition":
       return entity.nlDefinition;
     case "id-and-definition":
+      // The ": " joiner is arbitrary and untested against any alternative; if
+      // this form ever wins an arm, the separator is its own open variable.
       return `${spacedId}: ${entity.nlDefinition}`;
   }
 }
@@ -38,20 +40,25 @@ function promptFor(entity: EntityType, labelForm: Tier1LabelForm): string {
  * entirely -- including either would spend a class on a decision that is not
  * this model's to make.
  *
+ * An empty return is a legitimate result, not an error: a policy may declare no
+ * tier-1 entityTypes at all. The caller must then skip inference rather than
+ * invoke a model with zero classes.
+ *
  * `classIndex` is assigned over the FILTERED list, because it addresses the
  * model's output axis rather than a position in the IR. It is the only thing
- * carrying a model output back to an `entityType`, so nothing downstream may
- * re-derive it from `ir.entityTypes` directly.
+ * carrying a model output back to an `entityType`, so the return is `readonly`:
+ * a consumer that sorted or spliced this array would break the
+ * position-to-classIndex correspondence with nothing to catch it.
  *
- * The prompt text is `config.labelForm`, not a constant: which form the model
- * does better with is UNVERIFIED here and is meant to be a rung of the ladder.
- * `Tier1LabelForm` carries the decision, the measurement behind it, and the
- * experiment that would settle it.
+ * `config` is required rather than defaulted. The prompt text is
+ * `config.labelForm` (see `TIER1_LABEL_FORMS` for the decision behind the
+ * default and the experiment that would settle it), and a defaulted parameter
+ * would let a caller that omits it run `id` labels under an arm whose record
+ * says `definition` -- an invalidated arm that no test could see. Passing the
+ * whole resolved config, rather than the one field, is what keeps the labels
+ * used and the config reported the same object.
  */
-export function buildLabels(
-  ir: PolicyIr,
-  config: Tier1Config = DEFAULT_TIER1_CONFIG,
-): Tier1Label[] {
+export function buildLabels(ir: PolicyIr, config: Tier1Config): readonly Tier1Label[] {
   return ir.entityTypes
     .filter((entity) => entity.tier === 1)
     .map((entity, classIndex) => ({
