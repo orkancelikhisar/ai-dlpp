@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { MODEL_MANIFEST, resolveTier1Config } from "../src/config.js";
+import {
+  DEFAULT_TIER1_CONFIG,
+  MODEL_MANIFEST,
+  modelFileUrl,
+  resolveTier1Config,
+} from "../src/config.js";
 
 describe("MODEL_MANIFEST", () => {
-  it("pins every model by sha256, not by tag", () => {
+  it("pins every file by sha256, not by tag", () => {
     // A HuggingFace tag is mutable. Weights that change under a fixed id would
     // silently invalidate every number already measured against them.
     for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
-      expect(entry.sha256, id).toMatch(/^[0-9a-f]{64}$/);
-      expect(entry.url, id).toMatch(/^https:\/\//);
-      expect(entry.bytes, id).toBeGreaterThan(0);
+      for (const [path, file] of Object.entries(entry.files)) {
+        expect(file.sha256, `${id}/${path}`).toMatch(/^[0-9a-f]{64}$/);
+        expect(file.bytes, `${id}/${path}`).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -17,6 +23,80 @@ describe("MODEL_MANIFEST", () => {
       expect.arrayContaining(["gliner-pii-edge", "gliner-pii-base"]),
     );
   });
+
+  it("resolves every file to an immutable commit sha, never a branch name", () => {
+    // MEASURED: gliner_config.json changed max_len 1024 -> 2048 in BOTH repos
+    // under a stable filename. A `main` url would have served the new file
+    // against weights whose hash never moved, so the revision is the pin that
+    // actually holds the model still.
+    for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
+      expect(entry.revision, id).toMatch(/^[0-9a-f]{40}$/);
+      for (const path of Object.keys(entry.files)) {
+        expect(modelFileUrl(entry, path), `${id}/${path}`).toBe(
+          `https://huggingface.co/${entry.repo}/resolve/${entry.revision}/${path}`,
+        );
+        expect(modelFileUrl(entry, path), `${id}/${path}`).toMatch(
+          /^https:\/\/huggingface\.co\/[^/]+\/[^/]+\/resolve\/[0-9a-f]{40}\//,
+        );
+      }
+    }
+  });
+
+  it("names each entry after the repo it pins, so an id cannot point at a sibling", () => {
+    // MEASURED: without this, swapping gliner-pii-edge's repo to the base repo
+    // passes the whole suite. The id is what every run record carries, so an id
+    // pointing at a sibling would mislabel every measurement taken under it.
+    for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
+      expect(entry.repo, id).toMatch(new RegExp(`/${id}-v[0-9.]+$`));
+    }
+  });
+
+  it("pins the files that define the model, not only the weights", () => {
+    // The weights alone do not determine behaviour: gliner_config.json carries
+    // max_len, max_width and span_mode, and the tokenizer decides where token
+    // boundaries -- and therefore span offsets -- fall.
+    for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
+      expect(Object.keys(entry.files), id).toEqual(
+        expect.arrayContaining([
+          entry.weightsPath,
+          "gliner_config.json",
+          "tokenizer.json",
+          "tokenizer_config.json",
+          "special_tokens_map.json",
+        ]),
+      );
+    }
+  });
+
+  it("records the graph inputs that differ between the two span modes", () => {
+    // MEASURED by parsing each ONNX graph: these two are not interchangeable
+    // rungs of one ladder. A loader written against the 4-input token_level
+    // graph cannot feed the 6-input markerV0 one.
+    const edge = MODEL_MANIFEST["gliner-pii-edge"];
+    const base = MODEL_MANIFEST["gliner-pii-base"];
+    expect(edge?.spanMode).toBe("token_level");
+    expect(base?.spanMode).toBe("markerV0");
+    expect(edge?.inputNames).toEqual([
+      "input_ids",
+      "attention_mask",
+      "words_mask",
+      "text_lengths",
+    ]);
+    expect(base?.inputNames).toEqual([
+      "input_ids",
+      "attention_mask",
+      "words_mask",
+      "text_lengths",
+      "span_idx",
+      "span_mask",
+    ]);
+  });
+
+  it("records the max_len that drifted upstream, so a re-pin has to restate it", () => {
+    for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
+      expect(entry.maxLen, id).toBe(2048);
+    }
+  });
 });
 
 describe("resolveTier1Config", () => {
@@ -24,6 +104,17 @@ describe("resolveTier1Config", () => {
     const config = resolveTier1Config({});
     expect(config.modelId).toBe("gliner-pii-edge");
     expect(config.backend).toBe("wasm");
+  });
+
+  it("pins the whole default config, since every field shapes a measured number", () => {
+    // threshold and maxWidth are experiment variables. A silent edit to either
+    // would move every reported number with nothing in the record to show it.
+    expect(DEFAULT_TIER1_CONFIG).toEqual({
+      modelId: "gliner-pii-edge",
+      backend: "wasm",
+      threshold: 0.5,
+      maxWidth: 12,
+    });
   });
 
   it("rejects a model id that is not in the manifest, naming what is available", () => {
@@ -39,6 +130,26 @@ describe("resolveTier1Config", () => {
     expect(() => resolveTier1Config({ modelId: "constructor" })).toThrow(/gliner-pii-edge/);
   });
 
+  it("treats an explicitly undefined override as not specified", () => {
+    // The matrix and CLI both build overrides positionally, so an unset option
+    // arrives as an own key holding undefined. A bare spread copies that over
+    // the default and turns "not specified" into a hard failure.
+    const config = resolveTier1Config({
+      modelId: undefined,
+      backend: undefined,
+      threshold: undefined,
+      maxWidth: undefined,
+    });
+    expect(config).toEqual(DEFAULT_TIER1_CONFIG);
+  });
+
+  it("rejects a threshold outside (0,1] rather than silently clamping", () => {
+    // A clamped threshold produces a run whose reported config does not match
+    // the config that ran — the single worst failure for a measurement tool.
+    expect(() => resolveTier1Config({ threshold: 0 })).toThrow(/threshold/);
+    expect(() => resolveTier1Config({ threshold: 1.5 })).toThrow(/threshold/);
+  });
+
   it("rejects a maxWidth that is not a positive integer", () => {
     // MEASURED: deleting the maxWidth guard entirely leaves the other tests
     // green. A fractional width silently changes how many spans GLiNER
@@ -47,10 +158,10 @@ describe("resolveTier1Config", () => {
     expect(() => resolveTier1Config({ maxWidth: 2.5 })).toThrow(/maxWidth/);
   });
 
-  it("rejects a threshold outside (0,1] rather than silently clamping", () => {
-    // A clamped threshold produces a run whose reported config does not match
-    // the config that ran — the single worst failure for a measurement tool.
-    expect(() => resolveTier1Config({ threshold: 0 })).toThrow(/threshold/);
-    expect(() => resolveTier1Config({ threshold: 1.5 })).toThrow(/threshold/);
+  it("rejects a backend outside the two the return type declares", () => {
+    // Without this guard the function returns a Tier1Config whose `backend` is
+    // a string the type says is impossible, and the run record would name a
+    // backend that was never executed.
+    expect(() => resolveTier1Config({ backend: "cuda" as never })).toThrow(/backend/);
   });
 });
