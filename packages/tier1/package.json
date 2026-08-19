@@ -1,0 +1,22 @@
+{
+  "name": "@sih/tier1",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.0",
+    "@sih/core": "workspace:*",
+    "onnxruntime-web": "^1.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.6.0",
+    "vite-node": "^3.2.4",
+    "vitest": "^3.0.0"
+  }
+}
