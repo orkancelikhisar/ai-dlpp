@@ -20,7 +20,14 @@ describe("MODEL_MANIFEST", () => {
 
   it("includes the primary and the ladder siblings the experiment matrix names", () => {
     expect(Object.keys(MODEL_MANIFEST)).toEqual(
-      expect.arrayContaining(["gliner-pii-edge", "gliner-pii-base"]),
+      expect.arrayContaining([
+        "gliner-pii-edge",
+        "gliner-pii-edge-fp16",
+        "gliner-pii-edge-uint8",
+        "gliner-pii-base",
+        "gliner-pii-base-fp16",
+        "gliner-pii-base-uint8",
+      ]),
     );
   });
 
@@ -47,7 +54,8 @@ describe("MODEL_MANIFEST", () => {
     // passes the whole suite. The id is what every run record carries, so an id
     // pointing at a sibling would mislabel every measurement taken under it.
     for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
-      expect(entry.repo, id).toMatch(new RegExp(`/${id}-v[0-9.]+$`));
+      const withoutPrecision = id.replace(/-(fp16|uint8)$/, "");
+      expect(entry.repo, id).toMatch(new RegExp(`/${withoutPrecision}-v[0-9.]+$`));
     }
   });
 
@@ -65,6 +73,35 @@ describe("MODEL_MANIFEST", () => {
           "special_tokens_map.json",
         ]),
       );
+    }
+  });
+
+  it("offers every precision as its own id, so the trade is selected not assumed", () => {
+    // fp32 base is 665 MB, which is not a realistic WASM load. Precision has to
+    // be a rung the matrix can select and report, not a choice buried in a
+    // loader, because accuracy-vs-latency across these IS the experiment.
+    const precisionsByRepo = new Map<string, string[]>();
+    for (const entry of Object.values(MODEL_MANIFEST)) {
+      precisionsByRepo.set(entry.repo, [
+        ...(precisionsByRepo.get(entry.repo) ?? []),
+        entry.precision,
+      ]);
+    }
+    expect(precisionsByRepo.size).toBe(2);
+    for (const [repo, precisions] of precisionsByRepo) {
+      expect([...precisions].sort(), repo).toEqual(["fp16", "fp32", "uint8"]);
+    }
+  });
+
+  it("ties each precision to the artifact upstream actually publishes for it", () => {
+    const published: Record<string, string> = {
+      fp32: "onnx/model.onnx",
+      fp16: "onnx/model_fp16.onnx",
+      uint8: "onnx/model_quint8.onnx",
+    };
+    for (const [id, entry] of Object.entries(MODEL_MANIFEST)) {
+      expect(entry.weightsPath, id).toBe(published[entry.precision]);
+      expect(Object.keys(entry.files), id).toContain(entry.weightsPath);
     }
   });
 

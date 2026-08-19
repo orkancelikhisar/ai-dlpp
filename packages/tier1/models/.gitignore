@@ -1,4 +1,4 @@
-# Weights are ~846 MB and never enter git; scripts/fetch-models.ts refills them.
+# Weights are ~1.5 GB and never enter git; scripts/fetch-models.ts refills them.
 # The negation is load-bearing: with a bare `*` this file ignores itself, so it
 # would never be committed and a fresh clone would have no ignore rule at all.
 *

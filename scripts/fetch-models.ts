@@ -11,13 +11,12 @@
  * while every source file here imports that way.)
  *
  * Public files, no credentials. They land in packages/tier1/models/<id>/, which
- * is gitignored -- the weights alone are ~846 MB and never enter git.
+ * is gitignored -- the six weight files alone are ~1.5 GB and never enter git.
  *
  * Safe to re-run: a file already present at its pinned size and hash is skipped
- * without touching the network. MEASURED, warm: the whole 12-file verify pass
- * is ~0.73 s wall, of which ~0.42 s is vite-node startup (a no-op script costs
- * the same) and ~0.33 s is sha256 over the 846 MB of weights. So the re-run
- * cost is dominated by process startup, not by hashing.
+ * without touching the network. MEASURED, warm: the whole verify pass over all
+ * six variants is ~1.05 s wall, of which ~0.42 s is vite-node startup (a no-op
+ * script costs the same) and the remainder is sha256 over ~1.5 GB of weights.
  *
  * ## Where trust comes from
  *
