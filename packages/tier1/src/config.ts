@@ -12,6 +12,39 @@ export {
 export const TIER1_BACKENDS = ["wasm", "webgpu"] as const;
 export type Tier1Backend = (typeof TIER1_BACKENDS)[number];
 
+export const TIER1_LABEL_FORMS = ["id", "definition", "id-and-definition"] as const;
+/**
+ * What text each tier-1 class is prompted with, built from one entityType:
+ *
+ * - `id` -- the entityType id with hyphens spaced out, e.g. `"client name"`.
+ * - `definition` -- the entityType's `nlDefinition`, verbatim.
+ * - `id-and-definition` -- both, joined. Spec §4.1 says the injected labels are
+ *   `entityTypes[].{id, nlDefinition}`, so this is that sentence read literally.
+ *
+ * DECISION: `id` is the default, which is a DEVIATION from spec §4.1. It is
+ * taken on cost grounds, not on accuracy grounds.
+ *
+ * The cost is measured. Tokenising with each pinned `tokenizer.json`, the `id`
+ * form of `client-name` is 2 tokens, while the three `nlDefinition` values the
+ * compiler actually produced for that same entityType (in
+ * packages/compiler/test/fixtures/llm) are 26-37 tokens on edge and 26-35 on
+ * base. The manifest's `inputNames` -- measured by parsing the ONNX graphs --
+ * carry exactly one token-id input, `input_ids`, and no label-side input, so
+ * label text has nowhere to go except the same sequence as the message text,
+ * against the same `maxLen`. That per-class cost multiplies by the number of
+ * tier-1 classes in the policy.
+ *
+ * UNVERIFIED: which form scores better. No inference runs in this package yet,
+ * so nothing here has been scored, and no claim about the label encoder's
+ * training distribution is being made -- note that both pinned
+ * `gliner_config.json` files have `labels_encoder: null`, so there is no
+ * separate label tower to reason about in the first place. What would settle
+ * it: one corpus and one policy under arms differing only in this field,
+ * compared on span F1 (spec §6.4 metric 2). Until that runs, `id` is a default,
+ * not a finding.
+ */
+export type Tier1LabelForm = (typeof TIER1_LABEL_FORMS)[number];
+
 export interface Tier1Config {
   readonly modelId: string;
   readonly backend: Tier1Backend;
@@ -25,6 +58,8 @@ export interface Tier1Config {
    * `ModelEntry.spanMode` and the loader that consumes it.
    */
   readonly maxWidth: number;
+  /** How `buildLabels` renders each class's prompt. See `Tier1LabelForm`. */
+  readonly labelForm: Tier1LabelForm;
 }
 
 export const DEFAULT_TIER1_CONFIG: Tier1Config = {
@@ -32,6 +67,7 @@ export const DEFAULT_TIER1_CONFIG: Tier1Config = {
   backend: "wasm",
   threshold: 0.5,
   maxWidth: 12,
+  labelForm: "id",
 };
 
 /**
@@ -65,6 +101,11 @@ export function resolveTier1Config(overrides: Partial<Tier1Config>): Tier1Config
   }
   if (!(Number.isInteger(config.maxWidth) && config.maxWidth > 0)) {
     throw new Error(`tier-1 maxWidth must be a positive integer, got ${config.maxWidth}`);
+  }
+  if (!TIER1_LABEL_FORMS.includes(config.labelForm)) {
+    throw new Error(
+      `tier-1 labelForm must be one of ${TIER1_LABEL_FORMS.join(", ")}, got ${config.labelForm}`,
+    );
   }
   return config;
 }

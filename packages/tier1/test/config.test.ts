@@ -144,13 +144,16 @@ describe("resolveTier1Config", () => {
   });
 
   it("pins the whole default config, since every field shapes a measured number", () => {
-    // threshold and maxWidth are experiment variables. A silent edit to either
-    // would move every reported number with nothing in the record to show it.
+    // threshold, maxWidth and labelForm are experiment variables. A silent edit
+    // to any of them would move every reported number with nothing in the
+    // record to show it. MEASURED: adding labelForm failed this assertion
+    // before it was restated here, which is the whole point of pinning it.
     expect(DEFAULT_TIER1_CONFIG).toEqual({
       modelId: "gliner-pii-edge",
       backend: "wasm",
       threshold: 0.5,
       maxWidth: 12,
+      labelForm: "id",
     });
   });
 
@@ -176,6 +179,7 @@ describe("resolveTier1Config", () => {
       backend: undefined,
       threshold: undefined,
       maxWidth: undefined,
+      labelForm: undefined,
     });
     expect(config).toEqual(DEFAULT_TIER1_CONFIG);
   });
@@ -193,6 +197,13 @@ describe("resolveTier1Config", () => {
     // enumerates, so an unvalidated value is a config that cannot be reproduced.
     expect(() => resolveTier1Config({ maxWidth: 0 })).toThrow(/maxWidth/);
     expect(() => resolveTier1Config({ maxWidth: 2.5 })).toThrow(/maxWidth/);
+  });
+
+  it("rejects a labelForm outside the three the return type declares", () => {
+    // labelForm decides the text every class is prompted with, so an unchecked
+    // value would reach buildLabels' switch, fall through every case and prompt
+    // the model with undefined while the run record named a real form.
+    expect(() => resolveTier1Config({ labelForm: "nl-definition" as never })).toThrow(/labelForm/);
   });
 
   it("rejects a backend outside the two the return type declares", () => {
