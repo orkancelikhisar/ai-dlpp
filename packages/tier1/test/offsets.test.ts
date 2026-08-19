@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { spanFromTokens, type TokenOffset } from "../src/offsets.js";
 
-/** Mirrors what a fast tokenizer's offset_mapping gives: [start, end) in JS string indices. */
+/**
+ * Builds an offset array in the shape a fast tokenizer's `offset_mapping` has.
+ * The VALUES here are JS string indices because that is what `spanFromTokens`
+ * requires; a real fast tokenizer does not hand you those -- see the measured
+ * note below, and the emoji tests, for what it hands you instead.
+ */
 const toks = (...pairs: [number, number][]): TokenOffset[] => pairs.map(([start, end]) => ({ start, end }));
 
 /**
@@ -72,6 +77,24 @@ describe("spanFromTokens", () => {
     const local = spanFromTokens(message.slice(segmentStart), toks([0, 4], [5, 9], [10, 14], [15, 20]), 1, 2)!;
     const absolute = { start: local.start + segmentStart, end: local.end + segmentStart, text: local.text };
     expect(message.slice(absolute.start, absolute.end)).toBe("Acme Corp");
+  });
+});
+
+describe("spanFromTokens: the span comes from the offsets, not from a search", () => {
+  it("resolves the LATER of two identical mentions", () => {
+    // MEASURED array. Without this test the whole file passes under an
+    // implementation that ignores `tokens` entirely and does
+    // `text.indexOf(<the value>)`, because no other message here repeats its
+    // entity. Text-search is precisely the drift normalizeFindings exists to
+    // catch: it returns offset 0 for the first mention no matter which one the
+    // model actually tagged, so applyActions rewrites the wrong occurrence and
+    // leaves the tagged one in the message.
+    const text = "Acme Corp emailed Acme Corp";
+    const measured = toks([0, 4], [4, 9], [9, 17], [17, 22], [22, 27]);
+    expect(text.indexOf("Acme Corp")).toBe(0);
+    expect(spanFromTokens(text, measured, 3, 4)).toEqual({ start: 18, end: 27, text: "Acme Corp" });
+    // ...and the earlier mention still resolves to the earlier offsets.
+    expect(spanFromTokens(text, measured, 0, 1)).toEqual({ start: 0, end: 9, text: "Acme Corp" });
   });
 });
 
@@ -148,6 +171,65 @@ describe("spanFromTokens: the pinned tokenizer's actual offset convention", () =
     });
   });
 
+  it("trims the zero-width separators JS \\s does not cover", () => {
+    // MEASURED, and the reason the trim class is derived from the tokenizer's
+    // fold behaviour rather than from JS `\s`. Encoding "call" + C + "Acme Corp"
+    // collapses C into the FOLLOWING token's offsets, (4, 9), identically for a
+    // space and for each of U+200B, U+200C and U+200D -- but `\s` contains
+    // none of the three. A `\s`-only trim returns "<ZWSP>Acme Corp" here while
+    // the visually identical U+FEFF case returns "Acme Corp": two vault keys
+    // for one name, reachable by anyone who can type an invisible character.
+    for (const separator of ["\u200b", "\u200c", "\u200d", "\ufeff"]) {
+      const text = `call${separator}Acme Corp`;
+      expect(spanFromTokens(text, toks([0, 4], [4, 9], [9, 14]), 1, 2)).toEqual({
+        start: 5,
+        end: 14,
+        text: "Acme Corp",
+      });
+    }
+  });
+
+  it("trims the non-ASCII separators the tokenizer folds", () => {
+    // MEASURED on the same shape: NBSP and IDEOGRAPHIC SPACE fold exactly as
+    // U+0020 does, so an ASCII-only trim class leaves them on the span.
+    for (const separator of ["\u00a0", "\u3000", "\u2009", "\u202f"]) {
+      const text = `call${separator}Acme Corp`;
+      expect(spanFromTokens(text, toks([0, 4], [4, 9], [9, 14]), 1, 2)).toEqual({
+        start: 5,
+        end: 14,
+        text: "Acme Corp",
+      });
+    }
+  });
+
+  it("leaves an INTERIOR separator alone", () => {
+    // MEASURED: "Acme" + NBSP + "Corp Ltd" tokenizes to (0,4) (4,9) (9,13).
+    // Both loops walk inward from an end and stop at the first character
+    // outside the class, so a separator inside the value is never reached --
+    // which is what makes trimming U+200D safe, since a ZWJ only carries
+    // meaning between two glyphs and a span's interior is never touched.
+    const text = "Acme\u00a0Corp Ltd";
+    expect(spanFromTokens(text, toks([0, 4], [4, 9], [9, 13]), 0, 1)).toEqual({
+      start: 0,
+      end: 9,
+      text: "Acme\u00a0Corp",
+    });
+  });
+
+  it("trims a run of separators, not just one", () => {
+    // CONSTRUCTED, not measured: the pinned tokenizer folds only the LAST
+    // separator of a run into the token (measured -- "call" + NBSP + ZWSP +
+    // "Acme" gives (5, 10), not (4, 10)). This is the array a tokenizer that
+    // folded the whole run would give, and it is the only thing in the file
+    // that drives either trim loop past a single iteration.
+    const text = "call \u200bAcme";
+    expect(spanFromTokens(text, toks([0, 4], [4, 10]), 1, 1)).toEqual({
+      start: 6,
+      end: 10,
+      text: "Acme",
+    });
+  });
+
   it("rejects a span anchored on a zero-width special token", () => {
     // MEASURED: TemplateProcessing wraps every encoding in [CLS] .. [SEP], and
     // both come back with offsets (0, 0). A span whose first index lands on
@@ -197,10 +279,11 @@ describe("spanFromTokens: the pinned tokenizer's actual offset convention", () =
     // NOT a measured array: the pinned tokenizer composes NFKC and reports
     // (0, 4) here (see the next test). This is the array a NON-normalising
     // tokenizer gives for the same string, and it is the case that catches a
-    // "helpful" normalize() on the way out. normalizeFindings compares
-    // f.text.length against end - start, so composing five code units into four
-    // fails the message outright -- the contract is the message's bytes, not a
-    // canonical form of them.
+    // "helpful" normalize() on the way out. normalizeFindings compares the
+    // STRINGS -- `f.text !== text.slice(f.start, f.end)` -- and throws; the
+    // lengths appear only in the message it throws, so a same-length
+    // substitution would fail just as hard. The contract is the message's own
+    // code units, not a canonical form of them.
     const text = "cafe\u0301 Ltd";
     const span = spanFromTokens(text, toks([0, 5], [5, 9]), 0, 0);
     expect(span!.text).toHaveLength(5);
@@ -209,25 +292,75 @@ describe("spanFromTokens: the pinned tokenizer's actual offset convention", () =
     expect(span!.text.normalize("NFC")).toHaveLength(4);
   });
 
-  it("does not widen a span the tokenizer ended before a combining mark", () => {
+  it("takes in a trailing combining mark the tokenizer left outside", () => {
     // MEASURED, and the ugliest thing the pinned tokenizer does: its normalizer
-    // composes NFKC, so on DECOMPOSED "cafe" + U+0301 the token '_café' comes
-    // back as (0, 4) -- text.slice(0, 4) is "cafe" and the acute at index 4
-    // belongs to no token at all.
+    // composes NFKC, so on DECOMPOSED "cafe" + U+0301 the token for the word
+    // comes back as (0, 4) -- text.slice(0, 4) is "cafe" and the acute at index
+    // 4 belongs to no token at all.
     //
-    // Deliberately NOT repaired, in either direction. Widening to index 5 is an
-    // offset no tokenizer reported. Rejecting would drop every finding on
-    // decomposed accented text, and a dropped finding leaks the value it was
-    // meant to catch -- the same failure, with the message shipped instead of
-    // mangled. What is left behind is an orphaned combining mark, which is
-    // cosmetic damage to a rewritten message and carries no confidential
-    // content.
+    // Reporting (0, 4) unchanged is NOT the cosmetic outcome it looks like.
+    // applyActions calls `vault.mint(conversationId, f.text, ...)`, so the
+    // value stored against the surrogate would be "cafe" -- accent stripped --
+    // and rehydration hands "cafe" back. A wrong value round-trips through the
+    // pseudonymization layer, which is worse than the orphaned mark left in the
+    // rewritten message.
+    //
+    // Rejecting is still refused: that drops every finding on decomposed
+    // accented text, and a dropped finding leaks the value it was meant to
+    // catch. Widening is the safe direction because a Mark modifies the
+    // character BEFORE it, which the span already contains, so it cannot reach
+    // a neighbouring word.
     const text = "cafe\u0301 Ltd";
     expect(text.length).toBe(9);
     expect(text.charCodeAt(4)).toBe(0x0301);
     const span = spanFromTokens(text, toks([0, 4], [5, 9]), 0, 0);
-    expect(span).toEqual({ start: 0, end: 4, text: "cafe" });
+    expect(span).toEqual({ start: 0, end: 5, text: "cafe\u0301" });
     expect(text.slice(span!.start, span!.end)).toBe(span!.text);
+    expect(span!.text.normalize("NFC")).toBe("caf\u00e9");
+  });
+
+  it("widens over a RUN of stacked combining marks", () => {
+    // MEASURED, and the case that makes this a name problem rather than a
+    // curiosity: decomposed Vietnamese stacks two marks on one vowel, and the
+    // pinned tokenizer reports (0,1) (1,4) (4,5) (7,11) for "Nguye" + U+0302 +
+    // U+0303 + " Ltd" -- BOTH marks at indices 5 and 6 belong to no token. A
+    // widen that ran once would mint the vault entry under "Nguye" + U+0302,
+    // which is not a spelling of anything.
+    const text = "Nguye\u0302\u0303 Ltd";
+    expect(text).toHaveLength(11);
+    const span = spanFromTokens(text, toks([0, 1], [1, 4], [4, 5], [7, 11]), 0, 2);
+    expect(span).toEqual({ start: 0, end: 7, text: "Nguye\u0302\u0303" });
+    expect(span!.text.normalize("NFC")).toBe("Nguy\u1ec5");
+    expect(text.slice(span!.start, span!.end)).toBe(span!.text);
+  });
+
+  it("widens by whole code points over an ASTRAL combining mark", () => {
+    // U+1D165 (MUSICAL SYMBOL COMBINING STEM) is category Mn and TWO code
+    // units. A widen that advanced by code units would test `\p{M}` against a
+    // lone surrogate, never match, and stop -- leaving the boundary inside the
+    // pair for the surrogate check to reject, turning a widen into a drop.
+    const text = `Acme\u{1D165} Ltd`;
+    expect(text).toHaveLength(10);
+    expect(spanFromTokens(text, toks([0, 4], [7, 10]), 0, 0)).toEqual({
+      start: 0,
+      end: 6,
+      text: `Acme\u{1D165}`,
+    });
+  });
+
+  it("does not widen at the START, where the base character is outside", () => {
+    // The asymmetry, pinned. A mark at `start` belongs to a base character the
+    // span does not contain, so pulling it in would mean pulling in a base
+    // character the model did not select -- which can change the value, unlike
+    // widening at the end. Measured that this is reachable: the pinned
+    // tokenizer emits Devanagari matras as tokens of their own, (17,18) and
+    // (18,19) in "Priya Sharma at <Mumbai> office".
+    const text = "cafe\u0301 Ltd";
+    expect(spanFromTokens(text, toks([4, 5], [5, 9]), 0, 0)).toEqual({
+      start: 4,
+      end: 5,
+      text: "\u0301",
+    });
   });
 });
 
@@ -273,6 +406,26 @@ describe("spanFromTokens: UTF-16 boundaries", () => {
       end: 10,
       text: "Acme Corp",
     });
+  });
+
+  it("rejects a split at both extremes of the surrogate ranges", () => {
+    // The four boundary constants, pinned. U+10000 is the LOWEST astral code
+    // point -- high half 0xD800, low half 0xDC00 -- and U+10FFFF the highest,
+    // 0xDBFF and 0xDFFF. Between them they witness every edge of both ranges:
+    // narrowing any one constant by a single value lets one of these through.
+    for (const codePoint of [0x10000, 0x10ffff]) {
+      const text = `x${String.fromCodePoint(codePoint)}y`;
+      expect(text).toHaveLength(4);
+      // A boundary at index 2 falls between the two halves.
+      expect(spanFromTokens(text, toks([0, 2], [2, 4]), 0, 0)).toBeUndefined();
+      expect(spanFromTokens(text, toks([0, 2], [2, 4]), 1, 1)).toBeUndefined();
+      // The whole pair, spanned properly, is fine.
+      expect(spanFromTokens(text, toks([0, 1], [1, 3], [3, 4]), 1, 1)).toEqual({
+        start: 1,
+        end: 3,
+        text: String.fromCodePoint(codePoint),
+      });
+    }
   });
 
   it("keeps a lone surrogate that was already in the message intact", () => {
@@ -360,6 +513,15 @@ describe("spanFromTokens: malformed input", () => {
     // starts at index 0. A [SEP] between two sequences is where it comes from,
     // and a span that crosses one is not a span over anything.
     expect(spanFromTokens("call Acme Corp", toks([0, 4], [0, 0], [4, 9], [9, 14]), 0, 3)).toBeUndefined();
+  });
+
+  it("returns undefined when a token in the range starts BEFORE the span", () => {
+    // The other half of the containment check, which the out-of-order test
+    // above does not reach: here the span is [5, 14) and token 1 sits at
+    // [0, 4), entirely before it. Without `token.start >= start` this returns
+    // {5, 14, "Acme Corp"} -- a clean-slicing span over a token range that is
+    // not contiguous with it.
+    expect(spanFromTokens("call Acme Corp today", toks([5, 9], [0, 4], [10, 14]), 0, 2)).toBeUndefined();
   });
 
   it("returns undefined for a token whose own offsets are inverted", () => {

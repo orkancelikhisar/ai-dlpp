@@ -12,14 +12,38 @@ export interface CharSpan {
 }
 
 /**
- * JS `\s`. Measured against `String.prototype.trim` on this machine's Node over
- * U+0020 U+0009 U+000A U+000B U+000C U+000D U+00A0 U+1680 U+2000 U+2028 U+2029
- * U+202F U+205F U+3000 U+FEFF: the two agree on every one of them. Also
- * measured: U+200B (zero-width space) and U+200D (zero-width joiner) are NOT in
- * this class, so neither is trimmed -- correct, because both can sit inside a
- * name and removing them would change the value the vault keys on.
+ * The separator class trimmed off a span's two ENDS, derived from what the
+ * pinned tokenizer's normalizer folds rather than from JS `\s`.
+ *
+ * Measured, by encoding `"call" + C + "Acme Corp"` for each candidate C: the
+ * normalizer collapses the separator into the FOLLOWING token's offsets --
+ * `(4, 9)` covering `C + "Acme"` -- identically for U+0020, U+0009, U+000A,
+ * U+000C, U+000D, U+00A0, U+1680, U+2000, U+2009, U+2028, U+2029, U+202F,
+ * U+205F, U+3000, U+FEFF, and also for U+200B, U+200C and U+200D. Only U+000B
+ * behaved differently (it split into its own tokens).
+ *
+ * JS `\s` covers the first fifteen and NOT the three zero-width format
+ * characters, so `\s` alone leaves exactly the separators an adversary would
+ * reach for: measured, `"call " + U+200B + "Acme Corp"` puts `U+200B + "Acme"`
+ * at (5, 10), and a `\s`-only trim hands back `"<ZWSP>Acme Corp"` while the
+ * visually identical U+FEFF case trims clean. Two spellings of one name, two
+ * vault surrogates.
+ *
+ * Trimming U+200D (ZWJ) is the one deliberate call here. A ZWJ is load-bearing
+ * INSIDE an emoji sequence, and nothing in this file touches a span's interior
+ * -- both loops below walk inward from an end and stop at the first character
+ * outside this class. A ZWJ *at a boundary* is a joiner whose partner glyph is
+ * on the other side of the boundary, so it joins nothing; the same holds for
+ * U+200C between two words. Interior occurrences, which are the ones that carry
+ * meaning in Persian and Devanagari orthography, are never reached.
  */
-const WHITESPACE = /\s/;
+const TRIMMABLE = /[\s\u200b\u200c\u200d]/;
+
+/**
+ * Unicode Mark (Mn, Mc, Me) -- a character that has no standing of its own and
+ * modifies the base character before it.
+ */
+const COMBINING_MARK = /\p{M}/u;
 
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
@@ -57,19 +81,32 @@ function splitsSurrogatePair(text: string, index: number): boolean {
  * repaired span is a wrong span that reaches `applyActions`, which rewrites BY
  * SPAN -- so a drifted finding sends a neighbouring word to the vault and
  * leaves the real value in the message. Dropping one uncertain finding is
- * strictly better than that, and the caller counts drops.
+ * strictly better than that. (There is no non-test caller yet; whoever wires
+ * this to the model should count the drops rather than let them vanish.)
  *
- * The single exception is trimming whitespace off the two ends, which is a
- * narrowing rather than a repair, and is needed because of what the pinned
- * tokenizer actually emits. Measured on "call Acme Corp today": its Metaspace
- * pre-tokenizer reports the token for "Acme" as (4, 9), which slices to
- * " Acme" -- the preceding space is inside the token. Untrimmed, every span
- * that does not start at index 0 carries a leading space. That span passes
- * `normalizeFindings`, because the text is sliced; it fails quietly further
- * down, where the pseudonym vault keys on `Finding.text` and mints two
- * different surrogates for one organisation named twice in one message.
- * Trimming can only ever remove whitespace, and no confidential value begins or
- * ends with whitespace, so it cannot leave part of one behind.
+ * Two boundary adjustments are made, both of which move a boundary to the edge
+ * of the thing it was already inside:
+ *
+ * 1. TRIMMABLE separators come off both ends. Needed because of what the pinned
+ *    tokenizer emits: measured on "call Acme Corp today", its Metaspace
+ *    pre-tokenizer reports the token for "Acme" as (4, 9), which slices to
+ *    " Acme" -- the preceding separator is inside the token. Untrimmed, every
+ *    span that does not start at index 0 carries one. That span still passes
+ *    `normalizeFindings`, because the text is sliced; it fails quietly further
+ *    down, where `applyActions` calls `vault.mint(conversationId, f.text, ...)`
+ *    and one organisation named twice mints two surrogates. What trimming
+ *    removes is exactly what the normalizer added: the class is derived from
+ *    the fold behaviour above, and only ever runs at a boundary.
+ * 2. Trailing COMBINING_MARKs are taken IN. Measured: the pinned tokenizer's
+ *    normalizer composes NFKC, so on decomposed "cafe" + U+0301 it reports
+ *    (0, 4) and the acute at index 4 belongs to no token. Widening is safe in a
+ *    way that widening over a base character would not be -- a Mark modifies
+ *    the character before it, which is already inside the span, so this cannot
+ *    reach a neighbouring word, let alone a neighbouring entity.
+ *
+ * The asymmetry is deliberate: a mark at `start` belongs to a base character
+ * OUTSIDE the span, so pulling it in would mean pulling in a base character the
+ * model did not select, which can change the value. That case is left alone.
  */
 export function spanFromTokens(
   text: string,
@@ -83,7 +120,8 @@ export function spanFromTokens(
   // the integrality check, the `firstToken < 0` check, or the `>=` in the
   // length bound, and the output does not change on a single input -- because
   // `tokens[NaN]`, `tokens[0.5]`, `tokens[-1]` and `tokens[tokens.length]` are
-  // all `undefined`, and the guard below rejects that.
+  // all `undefined`, and the guard below rejects that. The fuzz proves those
+  // three mutants equivalent; it says nothing about mutants nobody wrote.
   //
   // `lastToken < firstToken` is the one that is load-bearing on its own: with
   // an out-of-order offset array, reversed indices can produce a span that runs
@@ -115,9 +153,10 @@ export function spanFromTokens(
   // end from the other. Containment cannot cover either on its own, because
   // (0, 0) fits inside any span that starts at index 0.
   //
-  // Containment handles an offset array that is not in offset order: a
-  // re-sorted or spliced array, where reading only the endpoints yields a span
-  // that slices cleanly and describes a token range that does not exist.
+  // Containment is checked at BOTH ends. `token.end <= end` catches a token
+  // reaching past the span; `token.start >= start` catches one reaching before
+  // it, which is reachable independently -- tokens [(5,9),(0,4),(10,14)] read
+  // as 0..2 spans [5, 14) while token 1 sits at [0, 4), entirely outside it.
   //
   // Neither catches a wholesale coordinate mismatch between `tokens` and the
   // indices, in the sense named at the top of this file. Nothing here can.
@@ -129,11 +168,23 @@ export function spanFromTokens(
     if (!(token.start >= start && token.end <= end)) return undefined;
   }
 
-  while (start < end && WHITESPACE.test(text.charAt(start))) start += 1;
-  while (end > start && WHITESPACE.test(text.charAt(end - 1))) end -= 1;
-  // A range that was nothing but whitespace is not a finding. Measured: the
-  // pinned tokenizer does emit bare "_" tokens covering a single space.
+  while (start < end && TRIMMABLE.test(text.charAt(start))) start += 1;
+  while (end > start && TRIMMABLE.test(text.charAt(end - 1))) end -= 1;
+  // A range that was nothing but separators is not a finding. Measured: the
+  // pinned tokenizer does emit bare U+2581 tokens covering a single space.
   if (start >= end) return undefined;
+
+  // Advanced by whole CODE POINTS, not code units: an astral combining mark
+  // (U+1D165 and friends) is two units, and `charAt` would hand `\p{M}` a lone
+  // surrogate that never matches. This loop is the one place in the file that
+  // has to look at a code point, and it converts back immediately.
+  while (end < text.length) {
+    const codePoint = text.codePointAt(end);
+    if (codePoint === undefined) break;
+    const mark = String.fromCodePoint(codePoint);
+    if (!COMBINING_MARK.test(mark)) break;
+    end += mark.length;
+  }
 
   // Checked on the FINAL boundaries, since those are the ones that get sliced.
   // A boundary inside a surrogate pair yields a string JS is happy to build and
