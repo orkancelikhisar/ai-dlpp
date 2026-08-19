@@ -153,12 +153,17 @@ the check.
 Every run record carries `text`, the message its offsets index into, copied from
 the corpus item. **Scoring needs no join back to the corpus**: a reader holds the
 spans and the string to check them against, so the UTF-16 cross-check above is
-runnable from one line of JSONL. `RunRecordSchema` enforces it on the way out —
-every finding AND every gold span must satisfy `start < end`, `end <= len(text)`
-and `text.slice(start, end) == span.text` — so a record whose spans were built
-against a different message is rejected at write time rather than mis-scored
-later. (The one case this cannot catch: a swap onto a text that coincidentally
-holds the same slice at the same offsets.)
+runnable from one line of JSONL. `RunRecordSchema` states it — every
+finding AND every gold span must satisfy `start < end`, `end <= len(text)` and
+`text.slice(start, end) == span.text` — so a record whose spans were built
+against a different message is refused by anything that validates the file.
+(The one case this cannot catch: a swap onto a text that coincidentally holds
+the same slice at the same offsets.)
+
+**`runArm` does not validate its own output.** The schema is the contract, not a
+gate on the producing path: `test/run.spec.ts` runs it over a real arm on every
+suite run, but a writer that persists records must run it too rather than assume
+it already happened.
 
 Carrying the message costs roughly +23% at this corpus's ~93 B mean message and
 +112% at a 500 B mean; the projected worst case for a full Plan 7/8 run
@@ -210,7 +215,7 @@ item through `window.__sih.detect` and returns one `RunRecord` per item, in
 corpus order. It computes **no metrics** — that half of the §2.2 boundary is
 Plan 8's Python.
 
-Four behaviours worth knowing before calling it:
+Behaviours worth knowing before calling it:
 
 - **It does not navigate.** It asserts `window.__sih` exists and throws
   otherwise. The caller owns page state, because a later task loads a tier-1
@@ -223,8 +228,28 @@ Four behaviours worth knowing before calling it:
 - **An item that throws is recorded, not dropped**, with `error` set and
   `findings` empty. An arm that dies on item 300 of 1500 must not report as a
   complete run of 299 items, which scores as a much better arm than it is.
-  `detect` throws whole, so a thrown item has no timings at all — read `error`
-  before reading `tier0Ms`, where `0` means "nothing was measured".
+  `detect` throws whole, so no timings are *recoverable* for a thrown item —
+  read `error` before reading `tier0Ms`, where `0` means "nothing was recorded".
+- **But a dead browser aborts the arm.** After any item fails, `runArm` re-probes
+  the page once. A closed, crashed or navigated-away page cannot answer, and
+  that is the difference between "this arm scored badly" and "this run died":
+  without the probe, every remaining item throws, each becomes a schema-valid
+  record with `error` set, and the arm returns a **full-length JSONL file that
+  Plan 8 would score**. Confident, complete and wrong is the worst output this
+  harness can produce, so it throws instead, naming the item it died on and how
+  many records were discarded.
+- **Each item has a deadline**, `ArmSpec.itemTimeoutMs`, required rather than
+  defaulted because a tier-0 regex pass and a cold WebGPU model differ by orders
+  of magnitude. A wedged item becomes an errored record instead of a hung run.
+  Note the limit: `page.evaluate` takes no timeout and offers no cancellation, so
+  the abandoned call keeps running in the browser — this bounds the driver's
+  wait, not the page's work.
+- **It records the `TierConfig` that ran**, not just the arm name. `arm` is a
+  free string; without the config beside it an all-tiers-off run is
+  byte-for-byte identical to a detector that legitimately found nothing.
+- **Findings are projected field by field** onto the record rather than copied
+  wholesale, so a producer that decorates its findings cannot ride extra keys
+  into the JSONL. Nothing validates a record on the producing path.
 - **It stamps two different hashes**, described in its own section below.
 
 `ArmSpec.backend` is copied onto every record and today verified by **nothing**.

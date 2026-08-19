@@ -142,6 +142,29 @@ export const RunRecordSchema = z
      * worth paying to make every record self-verifying.
      */
     text: z.string().min(1),
+    /**
+     * The `TierConfig` handed to `detect` for this item, recorded because
+     * otherwise the record asserts an arm NAME and nothing else. `arm` is a free
+     * string the caller chooses; without the config beside it, a run with every
+     * tier switched off is byte-for-byte identical to a detector that legitimately
+     * found nothing, and both read as "this arm scored zero". This is the same
+     * disease as `backend` -- intent recorded in place of fact -- except that here
+     * the fact is available, because this object is the exact one `detect`
+     * received.
+     *
+     * Kept in step with TierConfig in packages/core/src/detect/types.ts. The three
+     * booleans are required there and so are required here; the model names and
+     * `backend` are optional there and stay optional, so a tier-0 arm does not
+     * have to invent values for tiers it never ran.
+     */
+    config: z.object({
+      tier0: z.boolean(),
+      tier1: z.boolean(),
+      tier2: z.boolean(),
+      t1Model: z.string().optional(),
+      t2Model: z.string().optional(),
+      backend: z.enum(["wasm", "webgpu"]).optional(),
+    }),
     findings: z.array(RecordFindingSchema),
     /**
      * Copied from the corpus item so a record scores standalone, without a join.

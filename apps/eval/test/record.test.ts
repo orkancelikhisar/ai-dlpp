@@ -10,7 +10,26 @@ describe("corpus", () => {
   it("loads the smoke corpus, rejecting any malformed line by number", () => {
     const items = loadCorpus(readFileSync(join(FIXTURES, "smoke.jsonl"), "utf8"));
     expect(items.length).toBeGreaterThanOrEqual(12);
-    expect(items.every((i) => CorpusItemSchema.safeParse(i).success)).toBe(true);
+    // Deliberately NOT `items.every(i => CorpusItemSchema.safeParse(i).success)`,
+    // which is what stood here and could not fail: loadCorpus returns
+    // `safeParse(...).data`, so re-parsing its own output is a tautology that
+    // pins a property of the fixture rather than anything the loader does.
+    // What the loader actually does with a line is strip what the schema does
+    // not declare and keep `meta` whatever it holds -- the behaviour the README
+    // warns Plan 7 about, because provenance columns put anywhere but `meta` are
+    // lost without a word.
+    const [loaded] = loadCorpus(
+      '{"id":"a","text":"hello","policy":"p-fin","gold":[],"provenanceColumn":"dropped",' +
+        '"meta":{"source":"sharechat","injection":{"carrier":"code-fence","depth":2}}}',
+    );
+    expect(loaded).toBeDefined();
+    expect(loaded).not.toHaveProperty("provenanceColumn");
+    // `meta` survives verbatim, nested values included -- it is typed to keep
+    // whatever it is given, which is the escape hatch the stripping makes necessary.
+    expect(loaded!.meta).toEqual({
+      source: "sharechat",
+      injection: { carrier: "code-fence", depth: 2 },
+    });
   });
 
   it("names the line number when a record is malformed", () => {
@@ -40,6 +59,7 @@ describe("RunRecordSchema", () => {
       arm: "t0",
       backend: "wasm",
       provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
       // `text` added to the specified fixture when RunRecordSchema gained the
       // field: the record now carries the message its offsets index into, so
       // this fixture has to supply one for the spans to validate against.
@@ -61,7 +81,8 @@ describe("RunRecordSchema", () => {
     const complete = {
       schemaVersion: 1, runId: "r1", itemId: "a", policy: "p-fin",
       irHash: "0".repeat(64), policyHash: "1".repeat(64),
-      arm: "t0", backend: "wasm", provider: "claude", text: "hello world", findings: [], gold: [],
+      arm: "t0", backend: "wasm", provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false }, text: "hello world", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null,
     };
     expect(RunRecordSchema.safeParse(complete).success).toBe(true);
@@ -135,6 +156,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     arm: "t0",
     backend: "wasm" as const,
     provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
     text: "hello world",
     findings: [],
     gold: [],
@@ -152,9 +174,8 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
 
   it("refuses an irHash that is not a sha256 digest", () => {
     // MEASURED: relaxing the regex to a bare z.string() leaves all five
-    // specified tests green, because the only hash the specified tests supply
-    // is a well-formed one and the other test omits the field entirely.
-    // "test-hash" is not hypothetical: it is the literal policyHash in
+    // specified tests green, because the only hash they supply is a well-formed
+    // one. "test-hash" is not hypothetical: it is the literal policyHash in
     // apps/eval/fixtures/minimal-ir.json today, and forwarding that placeholder
     // as the artifact hash is exactly the mistake this regex exists to refuse.
     expect(RunRecordSchema.safeParse({ ...record, irHash: "test-hash" }).success).toBe(false);
@@ -174,6 +195,19 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     // so this is as strict as the value's own source and no stricter.
     expect(RunRecordSchema.safeParse({ ...record, policyHash: "test-hash" }).success).toBe(true);
     expect(RunRecordSchema.safeParse({ ...record, policyHash: "" }).success).toBe(false);
+  });
+
+  it("records the TierConfig that ran, so an arm name cannot stand in for what executed", () => {
+    // `arm` is a free string the caller picks. Without the config beside it a
+    // run with every tier switched off is byte-for-byte identical to a detector
+    // that legitimately found nothing, and both read as "this arm scored zero".
+    const { config: _omitted, ...withoutConfig } = record;
+    expect(RunRecordSchema.safeParse(withoutConfig).success).toBe(false);
+    // The three booleans are required, not optional: "tier1 was off" and "tier1
+    // is unstated" are different claims, and only one of them can be scored.
+    expect(
+      RunRecordSchema.safeParse({ ...record, config: { tier0: true, tier1: false } }).success,
+    ).toBe(false);
   });
 
   it("requires error to be present, so a crashed item cannot be written as a clean one", () => {
@@ -264,6 +298,7 @@ describe("findings are validated to core's unions, like gold", () => {
     arm: "t0",
     backend: "wasm" as const,
     provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
     text: "hello world",
     gold: [],
     timings: { tier0Ms: 0 },
@@ -333,6 +368,7 @@ describe("the record's own text makes the cross-check executable", () => {
     schemaVersion: 1 as const,
     runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
     arm: "t0", backend: "wasm" as const, provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null,
   };
@@ -379,6 +415,7 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
       schemaVersion: 1 as const,
       runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
       arm: "t0", backend: "wasm" as const, provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
       text: "before after end", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null,
     };
@@ -416,6 +453,7 @@ describe("findings cannot carry a degenerate span", () => {
     schemaVersion: 1 as const,
     runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
     arm: "t0", backend: "wasm" as const, provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null,
   };
