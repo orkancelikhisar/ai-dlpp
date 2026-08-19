@@ -1592,6 +1592,13 @@ export async function createTransformersTokenizer(repoId: string): Promise<Token
 }
 ```
 
+**MEASURED IN TASK 6 AGAINST THE PINNED TOKENIZER — these are facts, not cautions, and each one shipped a wrong span in the plan's original draft:**
+
+1. **Python `tokenizers` returns CODE-POINT offsets, and JS strings are UTF-16.** Measured: `👨` inside a ZWJ family sequence is reported as `(7, 8)`; `slice(7, 8)` in JS is a **lone high surrogate** (verified via `TextEncoder` → `ef bf bd`, i.e. U+FFFD). **You must measure which unit `@huggingface/transformers` uses** — do not assume that because it operates on JS strings it reports UTF-16. If it mirrors the Python convention, the conversion belongs HERE in the tokenizer adapter, not in `offsets.ts`, which is documented as taking JS string indices. Pin the answer with a test over an astral character.
+2. **Whitespace is INSIDE the token.** `▁Acme` in `"call Acme Corp today"` is `(4, 9)` → `" Acme"`, not `(5, 9)`. `spanFromTokens` trims this, but the adapter must not "helpfully" pre-adjust as well or the span loses its first real character.
+3. **`[CLS]`/`[SEP]` carry `(0, 0)` offsets**, and a *paired* encoding carries a **third `(0,0)` `[SEP]` mid-sequence with sequence B's offsets restarting at 0**. Decide explicitly whether the returned arrays include special tokens, state it in the type, and pin it with a test.
+4. **The one hazard nothing downstream can catch:** if a caller passes the full token array (specials included) but indices derived from a text-only view, the one-off shift produces a span that **slices cleanly and names the wrong word** — `normalizeFindings` cannot object because the text does match the offsets. Only the index-0 case is detectable. The token ids and the offsets this adapter returns must therefore be the *same* view, and that must be tested, not assumed.
+
 **Verify at implementation time** that the installed `@huggingface/transformers` returns `offset_mapping` for this tokenizer and that `ort.InferenceSession.create` accepts `"webgpu"` in the installed onnxruntime-web. Both are version-sensitive. If either disagrees, follow the installed library and record it — the code above is written from the documented API, not from a run.
 
 - [ ] **Step 4: Run to verify it passes**
