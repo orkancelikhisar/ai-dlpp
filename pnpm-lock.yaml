@@ -89,6 +89,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
+      onnxruntime-node:
+        specifier: 1.21.0
+        version: 1.21.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

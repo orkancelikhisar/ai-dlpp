@@ -1,0 +1,1591 @@
+{
+  "probedBy": "packages/tier1/scripts/probe-model.ts",
+  "onnxruntimeNode": "1.21.0",
+  "models": [
+    {
+      "modelId": "gliner-pii-edge",
+      "repo": "knowledgator/gliner-pii-edge-v1.0",
+      "revision": "9b7f39b0a2da971a5beea78d35f1539d4009c891",
+      "precision": "fp32",
+      "spanMode": "token_level",
+      "weightsPath": "onnx/model.onnx",
+      "weightsSha256": "4ca588722e6d79447ad4c9c230eeba3d9d472c672a9598184a34e9f77fc35836",
+      "tokenizerSha256": "84b3a9b18f04a0ccd03b72d9f871b7e0bec40fd7021ef50bc30a7c3693c11205",
+      "declared": {
+        "irVersion": 9,
+        "producer": "pytorch 2.7.1",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          }
+        ],
+        "nodeCount": 1522,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float32",
+            "dims": [
+              "position",
+              "batch_size",
+              "sequence_length",
+              "num_classes"
+            ]
+          }
+        ]
+      },
+      "runtime": {
+        "inputNames": [
+          "input_ids",
+          "attention_mask",
+          "words_mask",
+          "text_lengths"
+        ],
+        "outputNames": [
+          "logits"
+        ],
+        "logitsType": "float32"
+      },
+      "probes": {
+        "baseline": {
+          "why": "6 words, 2 classes. Every other probe is read as a difference from this.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              2,
+              3
+            ]
+          }
+        },
+        "more-words": {
+          "why": "9 words, 2 classes. Whichever axis grows by 3 is the word axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 24,
+            "numWords": 9,
+            "numClasses": 2,
+            "maxWordsMask": 9,
+            "textLengths": 9,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              2,
+              3
+            ]
+          }
+        },
+        "more-classes": {
+          "why": "6 words, 5 classes. Whichever axis grows by 3 is the class axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 27,
+            "numWords": 6,
+            "numClasses": 5,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              5,
+              3
+            ]
+          }
+        },
+        "text-lengths-above-words-mask": {
+          "why": "6 words but text_lengths 9. If the word axis is 9 the axis is sized by text_lengths; if it is 6 it is sized by max(words_mask).",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              2,
+              3
+            ]
+          }
+        },
+        "text-lengths-below-words-mask": {
+          "why": "6 words but text_lengths 4, i.e. a words_mask value with no slot to pool into. Records whether the graph rejects that or silently drops it.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 4,
+            "numSpans": null
+          },
+          "error": "Non-zero status code returned while running ScatterND node. Name:'/core/ScatterND_1' Status Message: invalid indice found, indice = 4"
+        },
+        "batch-of-two": {
+          "why": "baseline tiled to batch 2. Whichever axis doubles is the batch axis.",
+          "feed": {
+            "batch": 2,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              2,
+              6,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      "axes": [
+        {
+          "index": 0,
+          "extent": 1,
+          "role": "batch",
+          "declaredName": "position"
+        },
+        {
+          "index": 1,
+          "extent": 6,
+          "role": "words",
+          "declaredName": "batch_size"
+        },
+        {
+          "index": 2,
+          "extent": 2,
+          "role": "classes",
+          "declaredName": "sequence_length"
+        },
+        {
+          "index": 3,
+          "extent": 3,
+          "role": "fixed",
+          "declaredName": "num_classes"
+        }
+      ],
+      "wordAxisSizedBy": "text_lengths",
+      "peaks": {
+        "words": [
+          "Contact",
+          "Priya",
+          "Sharma",
+          "at",
+          "priya@acme.io",
+          "today"
+        ],
+        "labels": [
+          "person",
+          "email"
+        ],
+        "why": "For each class and each index of the axis that is neither batch, words nor classes, the sigmoid of the highest score along the word axis and the word it fell on. Words 1-2 are a person name and word 4 an email address, so a peak landing there is what shows the word axis is indexed by WORD and not by subword token -- this sentence tokenises to 19-21 subwords for its 6 words, so the two disagree.",
+        "values": [
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 0,
+            "score": 0.7478
+          },
+          {
+            "classIndex": 0,
+            "word": 2,
+            "otherAxisIndex": 1,
+            "score": 0.7958
+          },
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 2,
+            "score": 0.7751
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 0,
+            "score": 0.8246
+          },
+          {
+            "classIndex": 1,
+            "word": 5,
+            "otherAxisIndex": 1,
+            "score": 0.6554
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.8858
+          }
+        ]
+      }
+    },
+    {
+      "modelId": "gliner-pii-edge-fp16",
+      "repo": "knowledgator/gliner-pii-edge-v1.0",
+      "revision": "9b7f39b0a2da971a5beea78d35f1539d4009c891",
+      "precision": "fp16",
+      "spanMode": "token_level",
+      "weightsPath": "onnx/model_fp16.onnx",
+      "weightsSha256": "af499f06532909628765ce1cebd65311fa2d9a16f74a34e7b6e1b9369230a3a7",
+      "tokenizerSha256": "84b3a9b18f04a0ccd03b72d9f871b7e0bec40fd7021ef50bc30a7c3693c11205",
+      "declared": {
+        "irVersion": 9,
+        "producer": "pytorch 2.7.1",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          }
+        ],
+        "nodeCount": 1522,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float16",
+            "dims": [
+              "position",
+              "batch_size",
+              "sequence_length",
+              3
+            ]
+          }
+        ]
+      },
+      "loadError": "Load model from packages/tier1/models/gliner-pii-edge-fp16/onnx/model_fp16.onnx failed:Type Error: Type (tensor(float16)) of output arg (/core/token_rep_layer/bert_layer/model/layers.0/attn/rotary_emb/Cast_1_output_0) of node (/core/token_rep_layer/bert_layer/model/layers.0/attn/rotary_emb/Cast_1) does not match expected type (tensor(float)).",
+      "onnxruntimeWebLoadError": "Can't create a session. ERROR_CODE: 1, ERROR_MESSAGE: Type Error: Type (tensor(float16)) of output arg (/core/token_rep_layer/bert_layer/model/layers.0/attn/rotary_emb/Cast_1_output_0) of node (/core/token_rep_layer/bert_layer/model/layers.0/attn/rotary_emb/Cast_1) does not match expected type (tensor(float))."
+    },
+    {
+      "modelId": "gliner-pii-edge-uint8",
+      "repo": "knowledgator/gliner-pii-edge-v1.0",
+      "revision": "9b7f39b0a2da971a5beea78d35f1539d4009c891",
+      "precision": "uint8",
+      "spanMode": "token_level",
+      "weightsPath": "onnx/model_quint8.onnx",
+      "weightsSha256": "988acb03456b26e2d9f2521016d820310c2ed64deb4a846297d3289f0c2eb7e4",
+      "tokenizerSha256": "84b3a9b18f04a0ccd03b72d9f871b7e0bec40fd7021ef50bc30a7c3693c11205",
+      "declared": {
+        "irVersion": 9,
+        "producer": "onnx.quantize 0.1.0",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          },
+          {
+            "domain": "com.microsoft",
+            "version": 1
+          }
+        ],
+        "nodeCount": 1703,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float32",
+            "dims": [
+              "position",
+              "batch_size",
+              "sequence_length",
+              3
+            ]
+          }
+        ]
+      },
+      "runtime": {
+        "inputNames": [
+          "input_ids",
+          "attention_mask",
+          "words_mask",
+          "text_lengths"
+        ],
+        "outputNames": [
+          "logits"
+        ],
+        "logitsType": "float32"
+      },
+      "probes": {
+        "baseline": {
+          "why": "6 words, 2 classes. Every other probe is read as a difference from this.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              2,
+              3
+            ]
+          }
+        },
+        "more-words": {
+          "why": "9 words, 2 classes. Whichever axis grows by 3 is the word axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 24,
+            "numWords": 9,
+            "numClasses": 2,
+            "maxWordsMask": 9,
+            "textLengths": 9,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              2,
+              3
+            ]
+          }
+        },
+        "more-classes": {
+          "why": "6 words, 5 classes. Whichever axis grows by 3 is the class axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 27,
+            "numWords": 6,
+            "numClasses": 5,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              5,
+              3
+            ]
+          }
+        },
+        "text-lengths-above-words-mask": {
+          "why": "6 words but text_lengths 9. If the word axis is 9 the axis is sized by text_lengths; if it is 6 it is sized by max(words_mask).",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              2,
+              3
+            ]
+          }
+        },
+        "text-lengths-below-words-mask": {
+          "why": "6 words but text_lengths 4, i.e. a words_mask value with no slot to pool into. Records whether the graph rejects that or silently drops it.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 4,
+            "numSpans": null
+          },
+          "error": "Non-zero status code returned while running ScatterND node. Name:'/core/ScatterND_1' Status Message: invalid indice found, indice = 4"
+        },
+        "batch-of-two": {
+          "why": "baseline tiled to batch 2. Whichever axis doubles is the batch axis.",
+          "feed": {
+            "batch": 2,
+            "seqLen": 21,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": null
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              2,
+              6,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      "axes": [
+        {
+          "index": 0,
+          "extent": 1,
+          "role": "batch",
+          "declaredName": "position"
+        },
+        {
+          "index": 1,
+          "extent": 6,
+          "role": "words",
+          "declaredName": "batch_size"
+        },
+        {
+          "index": 2,
+          "extent": 2,
+          "role": "classes",
+          "declaredName": "sequence_length"
+        },
+        {
+          "index": 3,
+          "extent": 3,
+          "role": "fixed",
+          "declaredName": 3
+        }
+      ],
+      "wordAxisSizedBy": "text_lengths",
+      "peaks": {
+        "words": [
+          "Contact",
+          "Priya",
+          "Sharma",
+          "at",
+          "priya@acme.io",
+          "today"
+        ],
+        "labels": [
+          "person",
+          "email"
+        ],
+        "why": "For each class and each index of the axis that is neither batch, words nor classes, the sigmoid of the highest score along the word axis and the word it fell on. Words 1-2 are a person name and word 4 an email address, so a peak landing there is what shows the word axis is indexed by WORD and not by subword token -- this sentence tokenises to 19-21 subwords for its 6 words, so the two disagree.",
+        "values": [
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 0,
+            "score": 0.6839
+          },
+          {
+            "classIndex": 0,
+            "word": 2,
+            "otherAxisIndex": 1,
+            "score": 0.7401
+          },
+          {
+            "classIndex": 0,
+            "word": 2,
+            "otherAxisIndex": 2,
+            "score": 0.7296
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 0,
+            "score": 0.8367
+          },
+          {
+            "classIndex": 1,
+            "word": 5,
+            "otherAxisIndex": 1,
+            "score": 0.5867
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.8746
+          }
+        ]
+      }
+    },
+    {
+      "modelId": "gliner-pii-base",
+      "repo": "knowledgator/gliner-pii-base-v1.0",
+      "revision": "61726e0ad791dcab3e29339bbec3ad42ded65641",
+      "precision": "fp32",
+      "spanMode": "markerV0",
+      "weightsPath": "onnx/model.onnx",
+      "weightsSha256": "c6ccec44625d46bfe3191152e41d6564b69bc9d4313b7f3e419e8372679e9fed",
+      "tokenizerSha256": "ee028763434d18611c1c36356ea1d050e90a9fa94ede57fac48b39f85f818ad1",
+      "declared": {
+        "irVersion": 9,
+        "producer": "pytorch 2.7.1",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          }
+        ],
+        "nodeCount": 2611,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          },
+          {
+            "name": "span_idx",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "num_spans",
+              "idx"
+            ]
+          },
+          {
+            "name": "span_mask",
+            "type": "bool",
+            "dims": [
+              "batch_size",
+              "num_spans"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float32",
+            "dims": [
+              "batch_size",
+              "sequence_length",
+              "num_spans",
+              "num_classes"
+            ]
+          }
+        ]
+      },
+      "runtime": {
+        "inputNames": [
+          "input_ids",
+          "attention_mask",
+          "words_mask",
+          "text_lengths",
+          "span_idx",
+          "span_mask"
+        ],
+        "outputNames": [
+          "logits"
+        ],
+        "logitsType": "float32"
+      },
+      "probes": {
+        "baseline": {
+          "why": "6 words, 2 classes. Every other probe is read as a difference from this.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              12,
+              2
+            ]
+          }
+        },
+        "more-words": {
+          "why": "9 words, 2 classes. Whichever axis grows by 3 is the word axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 22,
+            "numWords": 9,
+            "numClasses": 2,
+            "maxWordsMask": 9,
+            "textLengths": 9,
+            "numSpans": 108
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              12,
+              2
+            ]
+          }
+        },
+        "more-classes": {
+          "why": "6 words, 5 classes. Whichever axis grows by 3 is the class axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 25,
+            "numWords": 6,
+            "numClasses": 5,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              12,
+              5
+            ]
+          }
+        },
+        "text-lengths-above-words-mask": {
+          "why": "6 words but text_lengths 9. If the word axis is 9 the axis is sized by text_lengths; if it is 6 it is sized by max(words_mask).",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": 72
+          },
+          "error": "Non-zero status code returned while running Reshape node. Name:'/core/span_rep_layer/span_rep_layer/Reshape_2' Status Message: /Users/runner/work/1/s/onnxruntime/core/providers/cpu/tensor/reshape_helper.h:47 onnxruntime::ReshapeHelper::ReshapeHelper(const onnxruntime::TensorShape &, onnxruntime::TensorShapeVector &, bool) input_shape_size == size was false. The input tensor cannot be reshaped to the requested shape. Input shape:{1,72,768}, requested shape:{1,9,12,768}\n"
+        },
+        "text-lengths-below-words-mask": {
+          "why": "6 words but text_lengths 4, i.e. a words_mask value with no slot to pool into. Records whether the graph rejects that or silently drops it.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 4,
+            "numSpans": 72
+          },
+          "error": "Non-zero status code returned while running ScatterND node. Name:'/core/ScatterND_1' Status Message: invalid indice found, indice = 4"
+        },
+        "span-enumeration-matching-padded-text-lengths": {
+          "why": "span-mode only: the probe above, but with span_idx enumerated over all 9 padded word slots rather than the 6 real words. Asks whether the span enumeration has to be sized from text_lengths or from the words actually present.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": 108
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              12,
+              2
+            ]
+          }
+        },
+        "narrower-max-width": {
+          "why": "span-mode only: same words and classes, span_idx enumerated to width 4 instead of 12. Asks whether the span width is a runtime knob at all.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 24
+          },
+          "error": "Non-zero status code returned while running Reshape node. Name:'/core/span_rep_layer/span_rep_layer/Reshape_2' Status Message: /Users/runner/work/1/s/onnxruntime/core/providers/cpu/tensor/reshape_helper.h:47 onnxruntime::ReshapeHelper::ReshapeHelper(const onnxruntime::TensorShape &, onnxruntime::TensorShapeVector &, bool) input_shape_size == size was false. The input tensor cannot be reshaped to the requested shape. Input shape:{1,24,768}, requested shape:{1,6,12,768}\n"
+        },
+        "batch-of-two": {
+          "why": "baseline tiled to batch 2. Whichever axis doubles is the batch axis.",
+          "feed": {
+            "batch": 2,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              2,
+              6,
+              12,
+              2
+            ]
+          }
+        }
+      },
+      "axes": [
+        {
+          "index": 0,
+          "extent": 1,
+          "role": "batch",
+          "declaredName": "batch_size"
+        },
+        {
+          "index": 1,
+          "extent": 6,
+          "role": "words",
+          "declaredName": "sequence_length"
+        },
+        {
+          "index": 2,
+          "extent": 12,
+          "role": "fixed",
+          "declaredName": "num_spans"
+        },
+        {
+          "index": 3,
+          "extent": 2,
+          "role": "classes",
+          "declaredName": "num_classes"
+        }
+      ],
+      "wordAxisSizedBy": "text_lengths",
+      "peaks": {
+        "words": [
+          "Contact",
+          "Priya",
+          "Sharma",
+          "at",
+          "priya@acme.io",
+          "today"
+        ],
+        "labels": [
+          "person",
+          "email"
+        ],
+        "why": "For each class and each index of the axis that is neither batch, words nor classes, the sigmoid of the highest score along the word axis and the word it fell on. Words 1-2 are a person name and word 4 an email address, so a peak landing there is what shows the word axis is indexed by WORD and not by subword token -- this sentence tokenises to 19-21 subwords for its 6 words, so the two disagree.",
+        "values": [
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 0,
+            "score": 0.0691
+          },
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 1,
+            "score": 0.5536
+          },
+          {
+            "classIndex": 0,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 3,
+            "otherAxisIndex": 3,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 2,
+            "otherAxisIndex": 4,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 5,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 6,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 7,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 8,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 9,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 10,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 11,
+            "score": 0.0085
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 0,
+            "score": 0.9757
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 1,
+            "score": 0.0188
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 3,
+            "otherAxisIndex": 3,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 2,
+            "otherAxisIndex": 4,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 1,
+            "otherAxisIndex": 5,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 6,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 7,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 8,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 9,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 10,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 11,
+            "score": 0.0003
+          }
+        ]
+      }
+    },
+    {
+      "modelId": "gliner-pii-base-fp16",
+      "repo": "knowledgator/gliner-pii-base-v1.0",
+      "revision": "61726e0ad791dcab3e29339bbec3ad42ded65641",
+      "precision": "fp16",
+      "spanMode": "markerV0",
+      "weightsPath": "onnx/model_fp16.onnx",
+      "weightsSha256": "774b8c5d909266c9ebdc43afd819ef0354d636ed4f401a1eef1491b578e2e256",
+      "tokenizerSha256": "ee028763434d18611c1c36356ea1d050e90a9fa94ede57fac48b39f85f818ad1",
+      "declared": {
+        "irVersion": 9,
+        "producer": "pytorch 2.7.1",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          }
+        ],
+        "nodeCount": 2611,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          },
+          {
+            "name": "span_idx",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "num_spans",
+              "idx"
+            ]
+          },
+          {
+            "name": "span_mask",
+            "type": "bool",
+            "dims": [
+              "batch_size",
+              "num_spans"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float16",
+            "dims": [
+              "batch_size",
+              "sequence_length",
+              "num_spans",
+              "num_classes"
+            ]
+          }
+        ]
+      },
+      "loadError": "Load model from packages/tier1/models/gliner-pii-base-fp16/onnx/model_fp16.onnx failed:Type Error: Type (tensor(float16)) of output arg (/core/token_rep_layer/bert_layer/model/embeddings/Cast_output_0) of node (/core/token_rep_layer/bert_layer/model/embeddings/Cast) does not match expected type (tensor(float)).",
+      "onnxruntimeWebLoadError": "Can't create a session. ERROR_CODE: 1, ERROR_MESSAGE: Type Error: Type (tensor(float16)) of output arg (/core/token_rep_layer/bert_layer/model/embeddings/Cast_output_0) of node (/core/token_rep_layer/bert_layer/model/embeddings/Cast) does not match expected type (tensor(float))."
+    },
+    {
+      "modelId": "gliner-pii-base-uint8",
+      "repo": "knowledgator/gliner-pii-base-v1.0",
+      "revision": "61726e0ad791dcab3e29339bbec3ad42ded65641",
+      "precision": "uint8",
+      "spanMode": "markerV0",
+      "weightsPath": "onnx/model_quint8.onnx",
+      "weightsSha256": "0514c8fd86d0513ce5351a3267f132b57d5bcd8f99a90d43cde1228092881d19",
+      "tokenizerSha256": "ee028763434d18611c1c36356ea1d050e90a9fa94ede57fac48b39f85f818ad1",
+      "declared": {
+        "irVersion": 9,
+        "producer": "onnx.quantize 0.1.0",
+        "opset": [
+          {
+            "domain": "ai.onnx",
+            "version": 20
+          },
+          {
+            "domain": "com.microsoft",
+            "version": 1
+          }
+        ],
+        "nodeCount": 2775,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "words_mask",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "text_lengths",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "value"
+            ]
+          },
+          {
+            "name": "span_idx",
+            "type": "int64",
+            "dims": [
+              "batch_size",
+              "num_spans",
+              "idx"
+            ]
+          },
+          {
+            "name": "span_mask",
+            "type": "bool",
+            "dims": [
+              "batch_size",
+              "num_spans"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "logits",
+            "type": "float32",
+            "dims": [
+              "batch_size",
+              "sequence_length",
+              "num_spans",
+              "num_classes"
+            ]
+          }
+        ]
+      },
+      "runtime": {
+        "inputNames": [
+          "input_ids",
+          "attention_mask",
+          "words_mask",
+          "text_lengths",
+          "span_idx",
+          "span_mask"
+        ],
+        "outputNames": [
+          "logits"
+        ],
+        "logitsType": "float32"
+      },
+      "probes": {
+        "baseline": {
+          "why": "6 words, 2 classes. Every other probe is read as a difference from this.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              12,
+              2
+            ]
+          }
+        },
+        "more-words": {
+          "why": "9 words, 2 classes. Whichever axis grows by 3 is the word axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 22,
+            "numWords": 9,
+            "numClasses": 2,
+            "maxWordsMask": 9,
+            "textLengths": 9,
+            "numSpans": 108
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              12,
+              2
+            ]
+          }
+        },
+        "more-classes": {
+          "why": "6 words, 5 classes. Whichever axis grows by 3 is the class axis.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 25,
+            "numWords": 6,
+            "numClasses": 5,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              6,
+              12,
+              5
+            ]
+          }
+        },
+        "text-lengths-above-words-mask": {
+          "why": "6 words but text_lengths 9. If the word axis is 9 the axis is sized by text_lengths; if it is 6 it is sized by max(words_mask).",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": 72
+          },
+          "error": "Non-zero status code returned while running Reshape node. Name:'/core/span_rep_layer/span_rep_layer/Reshape_2' Status Message: /Users/runner/work/1/s/onnxruntime/core/providers/cpu/tensor/reshape_helper.h:47 onnxruntime::ReshapeHelper::ReshapeHelper(const onnxruntime::TensorShape &, onnxruntime::TensorShapeVector &, bool) input_shape_size == size was false. The input tensor cannot be reshaped to the requested shape. Input shape:{1,72,768}, requested shape:{1,9,12,768}\n"
+        },
+        "text-lengths-below-words-mask": {
+          "why": "6 words but text_lengths 4, i.e. a words_mask value with no slot to pool into. Records whether the graph rejects that or silently drops it.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 4,
+            "numSpans": 72
+          },
+          "error": "Non-zero status code returned while running ScatterND node. Name:'/core/ScatterND_1' Status Message: invalid indice found, indice = 4"
+        },
+        "span-enumeration-matching-padded-text-lengths": {
+          "why": "span-mode only: the probe above, but with span_idx enumerated over all 9 padded word slots rather than the 6 real words. Asks whether the span enumeration has to be sized from text_lengths or from the words actually present.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 9,
+            "numSpans": 108
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              1,
+              9,
+              12,
+              2
+            ]
+          }
+        },
+        "narrower-max-width": {
+          "why": "span-mode only: same words and classes, span_idx enumerated to width 4 instead of 12. Asks whether the span width is a runtime knob at all.",
+          "feed": {
+            "batch": 1,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 24
+          },
+          "error": "Non-zero status code returned while running Reshape node. Name:'/core/span_rep_layer/span_rep_layer/Reshape_2' Status Message: /Users/runner/work/1/s/onnxruntime/core/providers/cpu/tensor/reshape_helper.h:47 onnxruntime::ReshapeHelper::ReshapeHelper(const onnxruntime::TensorShape &, onnxruntime::TensorShapeVector &, bool) input_shape_size == size was false. The input tensor cannot be reshaped to the requested shape. Input shape:{1,24,768}, requested shape:{1,6,12,768}\n"
+        },
+        "batch-of-two": {
+          "why": "baseline tiled to batch 2. Whichever axis doubles is the batch axis.",
+          "feed": {
+            "batch": 2,
+            "seqLen": 19,
+            "numWords": 6,
+            "numClasses": 2,
+            "maxWordsMask": 6,
+            "textLengths": 6,
+            "numSpans": 72
+          },
+          "logits": {
+            "type": "float32",
+            "dims": [
+              2,
+              6,
+              12,
+              2
+            ]
+          }
+        }
+      },
+      "axes": [
+        {
+          "index": 0,
+          "extent": 1,
+          "role": "batch",
+          "declaredName": "batch_size"
+        },
+        {
+          "index": 1,
+          "extent": 6,
+          "role": "words",
+          "declaredName": "sequence_length"
+        },
+        {
+          "index": 2,
+          "extent": 12,
+          "role": "fixed",
+          "declaredName": "num_spans"
+        },
+        {
+          "index": 3,
+          "extent": 2,
+          "role": "classes",
+          "declaredName": "num_classes"
+        }
+      ],
+      "wordAxisSizedBy": "text_lengths",
+      "peaks": {
+        "words": [
+          "Contact",
+          "Priya",
+          "Sharma",
+          "at",
+          "priya@acme.io",
+          "today"
+        ],
+        "labels": [
+          "person",
+          "email"
+        ],
+        "why": "For each class and each index of the axis that is neither batch, words nor classes, the sigmoid of the highest score along the word axis and the word it fell on. Words 1-2 are a person name and word 4 an email address, so a peak landing there is what shows the word axis is indexed by WORD and not by subword token -- this sentence tokenises to 19-21 subwords for its 6 words, so the two disagree.",
+        "values": [
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 0,
+            "score": 0.1072
+          },
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 1,
+            "score": 0.7526
+          },
+          {
+            "classIndex": 0,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 3,
+            "otherAxisIndex": 3,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 2,
+            "otherAxisIndex": 4,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 1,
+            "otherAxisIndex": 5,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 6,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 7,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 8,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 9,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 10,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 0,
+            "word": 0,
+            "otherAxisIndex": 11,
+            "score": 0.0097
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 0,
+            "score": 0.9647
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 1,
+            "score": 0.0071
+          },
+          {
+            "classIndex": 1,
+            "word": 4,
+            "otherAxisIndex": 2,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 3,
+            "otherAxisIndex": 3,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 2,
+            "otherAxisIndex": 4,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 1,
+            "otherAxisIndex": 5,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 6,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 7,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 8,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 9,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 10,
+            "score": 0.0003
+          },
+          {
+            "classIndex": 1,
+            "word": 0,
+            "otherAxisIndex": 11,
+            "score": 0.0003
+          }
+        ]
+      }
+    }
+  ]
+}
