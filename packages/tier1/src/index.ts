@@ -37,10 +37,12 @@ export {
 export { buildLabels, type Tier1Label } from "./labels.js";
 export { spanFromTokens, type CharSpan, type TokenOffset } from "./offsets.js";
 export {
+  LOGITS_OUTPUT,
   assertSignature,
   createOrtSession,
   type OnnxSession,
   type OnnxTensor,
   type OrtRuntime,
 } from "./session.js";
+export { GlinerSpanTagger, type Tier1TaggerStats } from "./tagger.js";
 export { splitWords, type WordSpan } from "./words.js";

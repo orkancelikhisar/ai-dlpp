@@ -33,18 +33,26 @@ export interface OnnxSession {
   release(): Promise<void>;
 }
 
-/** Just enough of onnxruntime-web's shape to create a session. */
+/** Just enough of onnxruntime-web's shape to create a session and feed it. */
 export interface OrtRuntime {
   readonly InferenceSession: {
     create(path: string, options: { executionProviders: string[] }): Promise<OnnxSession>;
   };
+  /**
+   * The runtime's own tensor class. Required, and used on every feed -- see
+   * `toRuntimeTensors`.
+   */
+  readonly Tensor: new (type: string, data: never, dims: readonly number[]) => OnnxTensor;
 }
 
 /**
  * The output every pinned graph returns, measured by Task 7 on all four rungs
  * that load: `outputNames` is exactly `["logits"]` on edge and base alike.
+ *
+ * Exported so the tagger reads the same key `assertSignature` insists on,
+ * rather than a second string literal that could drift from it.
  */
-const LOGITS = "logits";
+export const LOGITS_OUTPUT = "logits";
 
 /**
  * Checks a loaded graph against the signature the manifest pins for it.
@@ -75,8 +83,8 @@ export function assertSignature(
   const problems: string[] = [];
   if (missing.length > 0) problems.push(`missing input(s) ${missing.join(", ")}`);
   if (unexpected.length > 0) problems.push(`unexpected input(s) ${unexpected.join(", ")}`);
-  if (!session.outputNames.includes(LOGITS)) {
-    problems.push(`no ${LOGITS} output, got ${session.outputNames.join(", ") || "none"}`);
+  if (!session.outputNames.includes(LOGITS_OUTPUT)) {
+    problems.push(`no ${LOGITS_OUTPUT} output, got ${session.outputNames.join(", ") || "none"}`);
   }
   if (problems.length > 0) {
     throw new Error(`${modelId}: loaded graph does not match the pinned signature -- ${problems.join("; ")}`);
@@ -102,11 +110,45 @@ const importOnnxruntimeWeb = async (): Promise<OrtRuntime> =>
   (await import(WEB_RUNTIME)) as unknown as OrtRuntime;
 
 /**
+ * Rebuilds every feed as one of the runtime's OWN tensors.
+ *
+ * MEASURED, and the reason this exists: onnxruntime-node 1.21.0 rejects a plain
+ * `{ dims, type, data }` object with `Tensor.location must be a string.` before
+ * it reaches the graph. Adding `location: "cpu"` to the object gets past that
+ * one check, but it is an undeclared field of a class this package does not
+ * own, so the conversion is done properly instead -- and it is done HERE
+ * because this file is the only one allowed to know about onnxruntime at all.
+ *
+ * Everything upstream therefore describes a tensor with `OnnxTensor`, which is
+ * a plain object it can build and a test can inspect. Outputs need no
+ * conversion in the other direction: what comes back already carries `dims`,
+ * `type` and `data`.
+ */
+function toRuntimeTensors(
+  runtime: OrtRuntime,
+  feeds: Readonly<Record<string, OnnxTensor>>,
+): Record<string, OnnxTensor> {
+  const out: Record<string, OnnxTensor> = {};
+  for (const [name, tensor] of Object.entries(feeds)) {
+    // `data` is `unknown` on OnnxTensor by design (int64 feeds are
+    // BigInt64Array, span_mask is Uint8Array); the runtime's constructor is
+    // what validates it against `type`.
+    out[name] = new runtime.Tensor(tensor.type, tensor.data as never, tensor.dims);
+  }
+  return out;
+}
+
+/**
  * Loads one graph on one backend.
  *
  * `loadRuntime` is injectable so the plumbing below is testable without pulling
  * a WASM runtime into a Node test process; the default is the real import, and
  * nothing else in this package may import onnxruntime-web directly.
+ *
+ * Returns a WRAPPER rather than the runtime's session, so that the tensor
+ * conversion above happens on every run. The wrapper is transparent otherwise:
+ * `inputNames` and `outputNames` are read straight off the loaded graph, which
+ * is what `assertSignature` checks.
  */
 export async function createOrtSession(
   modelUrl: string,
@@ -117,5 +159,13 @@ export async function createOrtSession(
   // One provider, never a fallback list: the whole point of the wasm/webgpu
   // rungs is to measure them apart, and a list would let onnxruntime silently
   // answer with the other one.
-  return runtime.InferenceSession.create(modelUrl, { executionProviders: [backend] });
+  const session = await runtime.InferenceSession.create(modelUrl, {
+    executionProviders: [backend],
+  });
+  return {
+    inputNames: session.inputNames,
+    outputNames: session.outputNames,
+    run: (feeds) => session.run(toRuntimeTensors(runtime, feeds)),
+    release: () => session.release(),
+  };
 }

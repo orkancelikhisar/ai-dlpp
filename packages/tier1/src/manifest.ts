@@ -49,6 +49,16 @@ export interface ModelEntry {
   readonly maxLen: number;
   /** gliner_config.json `max_width`, the width the model was trained against. */
   readonly maxWidth: number;
+  /**
+   * gliner_config.json `max_types`: the class ceiling the model's own config
+   * declares. Read as 100 in both pinned gliner_config.json files on disk.
+   * What a policy with more tier-1 entityTypes than this actually does to the
+   * graph is UNMEASURED -- the tagger refuses rather than finding out, since
+   * an arm that silently ran outside the config's declared range would report
+   * its accuracy under the same name as one that did not. Enforced in
+   * src/tagger.ts, which is where the label count is known.
+   */
+  readonly maxTypes: number;
   /** Every file needed to reproduce a load, keyed by repo-relative path. */
   readonly files: Readonly<Record<string, ModelFile>>;
 }
@@ -97,6 +107,7 @@ const EDGE = {
   inputNames: ["input_ids", "attention_mask", "words_mask", "text_lengths"],
   maxLen: 2048,
   maxWidth: 12,
+  maxTypes: 100,
 } as const;
 
 const BASE = {
@@ -113,6 +124,7 @@ const BASE = {
   ],
   maxLen: 2048,
   maxWidth: 12,
+  maxTypes: 100,
 } as const;
 
 export const MODEL_MANIFEST: Readonly<Record<string, ModelEntry>> = {
