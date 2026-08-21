@@ -47,6 +47,17 @@ interface Peak {
   readonly score: number;
 }
 
+/** One token_level sentence, per word, as [start, end, inside] sigmoids. */
+interface SlotCase {
+  readonly name: string;
+  readonly why: string;
+  readonly words: readonly string[];
+  readonly classIndex: number;
+  /** Word indices of the entity of that class, as ground truth. */
+  readonly entityWords: readonly number[];
+  readonly slots: readonly (readonly number[])[];
+}
+
 interface ProbedModel {
   readonly modelId: string;
   readonly repo: string;
@@ -78,6 +89,12 @@ interface ProbedModel {
     readonly labels: readonly string[];
     readonly values: readonly Peak[];
   };
+  /** token_level only; null on a span-mode rung, absent on one that failed. */
+  readonly slotSemantics?: {
+    readonly why: string;
+    readonly labels: readonly string[];
+    readonly cases: readonly SlotCase[];
+  } | null;
 }
 
 const signature = JSON.parse(
@@ -350,9 +367,10 @@ describe("model signature: the word axis is indexed by WORD", () => {
     // MEASURED, and the only reading of the trailing 3 that these two peaks
     // support: slot 0 scores a word as a span START and slot 1 as a span END.
     // "Priya" is word 1 and "Sharma" is word 2, and the two slots pick out one
-    // word each, in that order. Slot 2 is not asserted -- it peaks on a word
-    // inside the same name on both rungs, but on word 1 for one and word 2 for
-    // the other, so this sentence does not distinguish what it means.
+    // word each, in that order. This sentence says nothing about slot 2 -- it
+    // peaks inside the same name on both rungs, but on word 1 for one and word
+    // 2 for the other. What slot 2 is takes sentences this one is too short to
+    // be: see `slotSemantics` below.
     expect(at(person, 0).word).toBe(model.peaks.words.indexOf("Priya"));
     expect(at(person, 1).word).toBe(model.peaks.words.indexOf("Sharma"));
     expect(at(person, 0).score).toBeGreaterThan(0.5);
@@ -386,6 +404,91 @@ describe("model signature: the word axis is indexed by WORD", () => {
     expect(email.word).toBe(model.peaks.words.indexOf("priya@acme.io"));
     expect(email.otherAxisIndex).toBe(0);
     expect(email.score).toBeGreaterThan(0.5);
+  });
+});
+
+describe("model signature: what the token_level trailing slot triple means", () => {
+  // `peaks` above establishes slot 0 as start and slot 1 as end, and stops
+  // there because a two-word name has no word that is inside an entity without
+  // also being one of its ends. These sentences do, and are here because the
+  // token_level decoder reads slot 2 -- it is what tells one long entity from
+  // two adjacent short ones, and a re-pin that changed its meaning would
+  // otherwise only show up as worse numbers.
+  const slotCase = (modelId: string, name: string): SlotCase => {
+    const semantics = ran(modelId).slotSemantics;
+    if (semantics === undefined || semantics === null) {
+      throw new Error(`${modelId} has no slotSemantics`);
+    }
+    const found = semantics.cases.find((c) => c.name === name);
+    if (found === undefined) throw new Error(`${modelId} has no slot case "${name}"`);
+    return found;
+  };
+  const slot = (c: SlotCase, word: number, index: number): number => c.slots[word]![index]!;
+
+  it.each(SPAN_LEVEL)("%s records none, because it has no such axis", (modelId) => {
+    expect(ran(modelId).slotSemantics).toBeNull();
+  });
+
+  it.each(TOKEN_LEVEL)("%s records one triple per word of each sentence", (modelId) => {
+    // Not a formality. Writing this, the reader sized its row loop from the
+    // BASELINE probe's six-word axis instead of from the tensor in front of
+    // it, which truncated the eight-word sentence to six rows and read two
+    // rows past the end of the four-word one. Every assertion below still
+    // passed, because they all address words 1-5. This is the one that would
+    // have caught it.
+    const cases = ["three-word-name", "gap-between-two-names", "one-word-name"].map((name) =>
+      slotCase(modelId, name),
+    );
+    expect(cases.map((c) => c.words.length)).toEqual([7, 8, 4]);
+    for (const c of cases) {
+      expect(c.slots, c.name).toHaveLength(c.words.length);
+      for (const row of c.slots) expect(row, c.name).toHaveLength(3);
+      for (const row of c.slots) {
+        for (const value of row) expect(Number.isFinite(value), c.name).toBe(true);
+      }
+    }
+  });
+
+  it.each(TOKEN_LEVEL)("%s: slot 2 fires on an entity word that is neither end", (modelId) => {
+    // "Contact Priya Anjali Sharma at priya@acme.io today". The middle word of
+    // a three-word person name is inside the entity and is neither its first
+    // word nor its last, so slots 0 and 1 have no reason to fire on it and
+    // slot 2 does.
+    const c = slotCase(modelId, "three-word-name");
+    const middle = c.entityWords[1]!;
+    expect(c.words[middle]).toBe("Anjali");
+    expect(slot(c, middle, 0)).toBeLessThan(0.5);
+    expect(slot(c, middle, 1)).toBeLessThan(0.5);
+    expect(slot(c, middle, 2)).toBeGreaterThan(0.5);
+  });
+
+  it.each(TOKEN_LEVEL)("%s: slot 2 collapses in the gap between two entities", (modelId) => {
+    // "Email Priya Sharma and Rahul Mehta before Friday", i.e. two person
+    // names with one word between them. THE discriminating case, and the one
+    // the decoder depends on: on slots 0 and 1 alone this sentence offers
+    // three start-before-end pairings, and the third runs from "Priya" to
+    // "Mehta" across both names. Nothing in slot 0 or slot 1 separates "and"
+    // from the middle of a longer name -- both are low on it either way --
+    // while slot 2 is high on all four name words and collapses on "and".
+    const c = slotCase(modelId, "gap-between-two-names");
+    for (const word of c.entityWords) expect(slot(c, word, 2), c.words[word]).toBeGreaterThan(0.5);
+    const gap = c.words.indexOf("and");
+    expect(c.entityWords).not.toContain(gap);
+    expect(slot(c, gap, 2)).toBeLessThan(0.5);
+    // And the pairing that slot 2 is rejecting really is on offer: a start
+    // above the bar before the gap and an end above the bar after it.
+    expect(slot(c, c.entityWords[0]!, 0)).toBeGreaterThan(0.5);
+    expect(slot(c, c.entityWords[3]!, 1)).toBeGreaterThan(0.5);
+  });
+
+  it.each(TOKEN_LEVEL)("%s: all three slots fire on a one-word entity", (modelId) => {
+    // "Ask Priya about it". Slot 2 is not an interior-only signal, so a
+    // width-1 span has an inside score of its own rather than a vacuous one,
+    // and the decoder can hold every span to the same rule.
+    const c = slotCase(modelId, "one-word-name");
+    const only = c.entityWords[0]!;
+    expect(c.entityWords).toHaveLength(1);
+    for (const index of [0, 1, 2]) expect(slot(c, only, index), `slot ${index}`).toBeGreaterThan(0.5);
   });
 });
 

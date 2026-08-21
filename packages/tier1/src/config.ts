@@ -64,9 +64,19 @@ export interface Tier1Config {
   /**
    * Widest span in WORDS the run will accept. Defaults to 12 because MEASURED:
    * that is `max_width` in both models' gliner_config.json, i.e. the width they
-   * were trained against. How a model applies it differs by span mode, so this
-   * is a ceiling the run imposes rather than a description of the graph -- see
-   * `ModelEntry.spanMode` and the loader that consumes it.
+   * were trained against.
+   *
+   * On `markerV0` it is a POST-DECODE FILTER and nothing else, and it can never
+   * usefully exceed 12. MEASURED (see `test/fixtures/model-signature.json`):
+   * the width is baked into the export, and enumerating `span_idx` to width 4
+   * instead of 12 does not make the graph cheaper, it makes it fail inside
+   * `span_rep_layer`'s Reshape, which demands `{1, words, 12, 768}`. The
+   * decoder returns every width the tensor carries; narrowing happens after.
+   *
+   * On `token_level` there is no width axis at all -- spans come from pairing
+   * per-word start and end scores -- so the same field is a filter there too,
+   * just over a different construction. See `ModelEntry.spanMode`,
+   * `src/decode.ts`, and the loader that consumes both.
    */
   readonly maxWidth: number;
   /** How `buildLabels` renders each class's prompt. See `TIER1_LABEL_FORMS`. */

@@ -396,6 +396,57 @@ const LABELS_5 = ["person", "email", "phone", "address", "organisation"] as cons
 const WORDS_6 = ["Contact", "Priya", "Sharma", "at", "priya@acme.io", "today"] as const;
 const WORDS_9 = [...WORDS_6, "or", "call", "later"] as const;
 
+/**
+ * Sentences that separate the three roles in token_level's trailing axis.
+ *
+ * The baseline probe cannot: its only multi-word entity is two words long, so
+ * every word of it is either the first or the last, and no word is inside an
+ * entity without also being one of its ends. Each of these adds exactly one
+ * word that the baseline lacks -- an interior word, a word BETWEEN two
+ * entities, and a word that is a whole entity by itself.
+ */
+interface SlotCaseSpec {
+  readonly name: string;
+  readonly why: string;
+  readonly words: readonly string[];
+  /** Which label the case is about. */
+  readonly classIndex: number;
+  /** Word indices of that class's entity, as ground truth, not as a result. */
+  readonly entityWords: readonly number[];
+}
+
+const SLOT_CASES: readonly SlotCaseSpec[] = [
+  {
+    name: "three-word-name",
+    why:
+      "A three-word person name, so word 2 is inside the entity and is " +
+      "neither its first word nor its last.",
+    words: ["Contact", "Priya", "Anjali", "Sharma", "at", "priya@acme.io", "today"],
+    classIndex: 0,
+    entityWords: [1, 2, 3],
+  },
+  {
+    name: "gap-between-two-names",
+    why:
+      "Two person names with one word between them. On starts and ends alone " +
+      "this offers a third start-before-end pairing spanning both names, so " +
+      "it asks whether any slot separates that word from the interior of a " +
+      "longer name.",
+    words: ["Email", "Priya", "Sharma", "and", "Rahul", "Mehta", "before", "Friday"],
+    classIndex: 0,
+    entityWords: [1, 2, 4, 5],
+  },
+  {
+    name: "one-word-name",
+    why:
+      "A one-word person, i.e. a word that is start, end and interior at " +
+      "once. Asks whether the third slot is interior-only.",
+    words: ["Ask", "Priya", "about", "it"],
+    classIndex: 0,
+    entityWords: [1],
+  },
+];
+
 interface ProbeSpec {
   readonly name: string;
   readonly why: string;
@@ -589,6 +640,60 @@ function peaks(tensor: ort.Tensor, axes: readonly Axis[]): Peak[] {
       }
       out.push({ classIndex: c, word: bestWord, otherAxisIndex: f, score: round4(sigmoid(best)) });
     }
+  }
+  return out;
+}
+
+/**
+ * Every slot of every word, for one class, sigmoid'd -- the whole row rather
+ * than an argmax.
+ *
+ * `peaks` reports where each slot is highest, which is enough to name slots 0
+ * and 1 and not enough to name slot 2: what slot 2 is shows in which words it
+ * is high ON, not in which single word is highest. Indexed through the
+ * measured axis roles, like everything else here, never through the declared
+ * names.
+ *
+ * The sigmoid is again only a readable scale (see `peaks`); the comparisons
+ * that read these numbers are all against the same 0.5, so any monotone
+ * transform would order them identically.
+ */
+function slotTriples(
+  tensor: ort.Tensor,
+  axes: readonly Axis[],
+  classIndex: number,
+): number[][] {
+  const dims = tensor.dims as number[];
+  const stride = strides(dims);
+  const values = toNumbers(tensor);
+  const wordAxis = axes.find((a) => a.role === "words");
+  const classAxis = axes.find((a) => a.role === "classes");
+  const slotAxis = axes.find(
+    (a) => a.role !== "batch" && a.role !== "words" && a.role !== "classes",
+  );
+  if (wordAxis === undefined || classAxis === undefined || slotAxis === undefined) {
+    throw new Error("slot triples need a word, a class and a trailing axis");
+  }
+  // Extents off THIS tensor, never off `axes`. `axes` was derived from the
+  // baseline feed's six words, and every sentence here has a different length
+  // -- reading its extents would silently truncate a longer one and read past
+  // the end of a shorter one. Only the axis ORDER comes from `axes`.
+  const out: number[][] = [];
+  for (let w = 0; w < dims[wordAxis.index]!; w += 1) {
+    const row: number[] = [];
+    for (let s = 0; s < dims[slotAxis.index]!; s += 1) {
+      const raw =
+        values[
+          w * stride[wordAxis.index]! +
+            classIndex * stride[classAxis.index]! +
+            s * stride[slotAxis.index]!
+        ];
+      if (raw === undefined || !Number.isFinite(raw)) {
+        throw new Error(`slot triple at word ${w} slot ${s} read outside the tensor`);
+      }
+      row.push(round4(sigmoid(raw)));
+    }
+    out.push(row);
   }
   return out;
 }
@@ -824,6 +929,41 @@ async function probeModel(modelId: string, entry: ModelEntry): Promise<unknown> 
     takesSpans,
   );
   const baselineLogits = (await session.run(baselineFeed.feed))["logits"]!;
+
+  // token_level only: on a span-mode rung the trailing axis is the span width,
+  // which the width probes above already address, and there is no slot triple
+  // to name. Recorded as null rather than omitted so the distinction is a
+  // measured fact in the file rather than a missing key.
+  const slotSemantics = takesSpans
+    ? null
+    : {
+        why:
+          "For each sentence, every slot of every word for one class, as " +
+          "sigmoid of the raw logit. `peaks` names slots 0 and 1 from where " +
+          "they are highest; naming slot 2 needs whole rows, because what it " +
+          "is shows in which words it is high on.",
+        labels: LABELS_2,
+        cases: await Promise.all(
+          SLOT_CASES.map(async (slotCase) => {
+            const built = buildFeed(
+              tokenizer,
+              vocab,
+              { labels: LABELS_2, words: slotCase.words },
+              entry.maxWidth,
+              takesSpans,
+            );
+            const logits = (await session.run(built.feed))["logits"]!;
+            return {
+              name: slotCase.name,
+              why: slotCase.why,
+              words: slotCase.words,
+              classIndex: slotCase.classIndex,
+              entityWords: slotCase.entityWords,
+              slots: slotTriples(logits, axes, slotCase.classIndex),
+            };
+          }),
+        ),
+      };
   const runtime = {
     inputNames: session.inputNames,
     outputNames: session.outputNames,
@@ -849,6 +989,7 @@ async function probeModel(modelId: string, entry: ModelEntry): Promise<unknown> 
         "tokenises to 19-21 subwords for its 6 words, so the two disagree.",
       values: peaks(baselineLogits, axes),
     },
+    slotSemantics,
   };
 }
 

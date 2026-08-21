@@ -279,6 +279,170 @@
             "score": 0.8858
           }
         ]
+      },
+      "slotSemantics": {
+        "why": "For each sentence, every slot of every word for one class, as sigmoid of the raw logit. `peaks` names slots 0 and 1 from where they are highest; naming slot 2 needs whole rows, because what it is shows in which words it is high on.",
+        "labels": [
+          "person",
+          "email"
+        ],
+        "cases": [
+          {
+            "name": "three-word-name",
+            "why": "A three-word person name, so word 2 is inside the entity and is neither its first word nor its last.",
+            "words": [
+              "Contact",
+              "Priya",
+              "Anjali",
+              "Sharma",
+              "at",
+              "priya@acme.io",
+              "today"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1,
+              2,
+              3
+            ],
+            "slots": [
+              [
+                0.0076,
+                0.0061,
+                0.0082
+              ],
+              [
+                0.8215,
+                0.0422,
+                0.8043
+              ],
+              [
+                0.1073,
+                0.1961,
+                0.8832
+              ],
+              [
+                0.0134,
+                0.8463,
+                0.8207
+              ],
+              [
+                0.0012,
+                0.0038,
+                0.0045
+              ],
+              [
+                0.1809,
+                0.2464,
+                0.1875
+              ],
+              [
+                0.002,
+                0.0081,
+                0.0079
+              ]
+            ]
+          },
+          {
+            "name": "gap-between-two-names",
+            "why": "Two person names with one word between them. On starts and ends alone this offers a third start-before-end pairing spanning both names, so it asks whether any slot separates that word from the interior of a longer name.",
+            "words": [
+              "Email",
+              "Priya",
+              "Sharma",
+              "and",
+              "Rahul",
+              "Mehta",
+              "before",
+              "Friday"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1,
+              2,
+              4,
+              5
+            ],
+            "slots": [
+              [
+                0.0369,
+                0.0284,
+                0.0403
+              ],
+              [
+                0.8589,
+                0.0515,
+                0.8592
+              ],
+              [
+                0.0144,
+                0.7992,
+                0.7966
+              ],
+              [
+                0.0098,
+                0.0213,
+                0.0915
+              ],
+              [
+                0.7885,
+                0.0592,
+                0.7936
+              ],
+              [
+                0.0331,
+                0.7819,
+                0.7686
+              ],
+              [
+                0.0102,
+                0.0104,
+                0.0176
+              ],
+              [
+                0.0531,
+                0.0705,
+                0.0627
+              ]
+            ]
+          },
+          {
+            "name": "one-word-name",
+            "why": "A one-word person, i.e. a word that is start, end and interior at once. Asks whether the third slot is interior-only.",
+            "words": [
+              "Ask",
+              "Priya",
+              "about",
+              "it"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1
+            ],
+            "slots": [
+              [
+                0.2804,
+                0.0835,
+                0.2195
+              ],
+              [
+                0.7228,
+                0.7276,
+                0.6896
+              ],
+              [
+                0.0323,
+                0.0691,
+                0.0808
+              ],
+              [
+                0.038,
+                0.0495,
+                0.0454
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -629,6 +793,170 @@
             "word": 4,
             "otherAxisIndex": 2,
             "score": 0.8746
+          }
+        ]
+      },
+      "slotSemantics": {
+        "why": "For each sentence, every slot of every word for one class, as sigmoid of the raw logit. `peaks` names slots 0 and 1 from where they are highest; naming slot 2 needs whole rows, because what it is shows in which words it is high on.",
+        "labels": [
+          "person",
+          "email"
+        ],
+        "cases": [
+          {
+            "name": "three-word-name",
+            "why": "A three-word person name, so word 2 is inside the entity and is neither its first word nor its last.",
+            "words": [
+              "Contact",
+              "Priya",
+              "Anjali",
+              "Sharma",
+              "at",
+              "priya@acme.io",
+              "today"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1,
+              2,
+              3
+            ],
+            "slots": [
+              [
+                0.0232,
+                0.0134,
+                0.0238
+              ],
+              [
+                0.349,
+                0.1621,
+                0.286
+              ],
+              [
+                0.3864,
+                0.041,
+                0.7451
+              ],
+              [
+                0.0343,
+                0.7175,
+                0.7123
+              ],
+              [
+                0.0067,
+                0.0277,
+                0.0498
+              ],
+              [
+                0.0301,
+                0.0695,
+                0.0406
+              ],
+              [
+                0.0009,
+                0.0083,
+                0.0088
+              ]
+            ]
+          },
+          {
+            "name": "gap-between-two-names",
+            "why": "Two person names with one word between them. On starts and ends alone this offers a third start-before-end pairing spanning both names, so it asks whether any slot separates that word from the interior of a longer name.",
+            "words": [
+              "Email",
+              "Priya",
+              "Sharma",
+              "and",
+              "Rahul",
+              "Mehta",
+              "before",
+              "Friday"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1,
+              2,
+              4,
+              5
+            ],
+            "slots": [
+              [
+                0.0127,
+                0.011,
+                0.0158
+              ],
+              [
+                0.6879,
+                0.0223,
+                0.626
+              ],
+              [
+                0.0722,
+                0.7311,
+                0.7318
+              ],
+              [
+                0.0111,
+                0.0801,
+                0.3159
+              ],
+              [
+                0.7306,
+                0.0328,
+                0.7741
+              ],
+              [
+                0.0567,
+                0.7886,
+                0.7872
+              ],
+              [
+                0.0289,
+                0.035,
+                0.0745
+              ],
+              [
+                0.0742,
+                0.1237,
+                0.1128
+              ]
+            ]
+          },
+          {
+            "name": "one-word-name",
+            "why": "A one-word person, i.e. a word that is start, end and interior at once. Asks whether the third slot is interior-only.",
+            "words": [
+              "Ask",
+              "Priya",
+              "about",
+              "it"
+            ],
+            "classIndex": 0,
+            "entityWords": [
+              1
+            ],
+            "slots": [
+              [
+                0.7565,
+                0.139,
+                0.6913
+              ],
+              [
+                0.5125,
+                0.8189,
+                0.8181
+              ],
+              [
+                0.0746,
+                0.1436,
+                0.1455
+              ],
+              [
+                0.0561,
+                0.0774,
+                0.0613
+              ]
+            ]
           }
         ]
       }
@@ -1063,7 +1391,8 @@
             "score": 0.0003
           }
         ]
-      }
+      },
+      "slotSemantics": null
     },
     {
       "modelId": "gliner-pii-base-fp16",
@@ -1585,7 +1914,8 @@
             "score": 0.0003
           }
         ]
-      }
+      },
+      "slotSemantics": null
     }
   ]
 }
