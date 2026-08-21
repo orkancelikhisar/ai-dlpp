@@ -1288,162 +1288,141 @@ git add -A && git commit -m "feat(tier1): pin the ONNX model IO signature probed
 
 ---
 
-### Task 8: Decode model output to segment-local spans
+### Task 8: Decode model output to spans
 
 **Files:**
 - Create: `packages/tier1/src/decode.ts`
 - Test: `packages/tier1/test/decode.test.ts`
 
-Pure, Node-tested, no ORT import: takes a plain `Float32Array` plus dimensions.
+> **REWRITTEN after Task 7 ran the real graphs.** The original sketch assumed one shared decoder over logits shaped `[numWords, maxWidth, numClasses]` with per-class sigmoid. **That is refuted for both rungs.** Task 7 probed the pinned weights, ran them with real feeds, and varied one feed dimension at a time. Decode against the committed fixture `packages/tier1/test/fixtures/model-signature.json`, not against this prose, and not against the graphs' own declared axis names.
 
-- [ ] **Step 1: Write the failing test**
+#### What the graphs actually do
 
-`packages/tier1/test/decode.test.ts`:
+**The declared axis names are wrong on both rungs** — `torch.onnx.export` wrote whatever `dynamic_axes` said. A decoder that indexes by declared name reads classes out of the word axis.
+
+| rung | declared | **measured** |
+|---|---|---|
+| edge (`token_level`) | `[position, batch_size, sequence_length, num_classes]` | **`[batch, words, classes, 3]`** |
+| base (`markerV0`) | `[batch_size, sequence_length, num_spans, num_classes]` | **`[batch, words, 12, classes]`** |
+
+One output named `logits`, rank 4, **float32** on every rung that loads (uint8 dequantises internally).
+
+**The two rungs express spans differently, so there are two decoders, not one.**
+
+- **Edge is not span-mode at all.** Its trailing `3` is a fixed slot triple: slot 0 scores a word as a span **start**, slot 1 as a span **end**. (Measured: person peaks at word 1 "Priya" 0.75 and word 2 "Sharma" 0.80; identical structure on uint8.) Slot 2 is presumably "inside" and is **deliberately unpinned** — the probe sentence does not distinguish it. Establish it before relying on it.
+- **Base's axis 2 is span width as an offset**, inclusive: index `w` at word `i` means words `i..i+w`. (Measured: top person score at word 1, offset 1 → words 1-2 "Priya Sharma"; email at word 4, offset 0, 0.98.)
+
+That 6 words occupy the word axis inside a 21-position (edge) / 19-position (base) subword sequence is the semantic proof the axis is indexed **by word, not subword**.
+
+#### Three constraints the decoder must respect
+
+1. **The word axis is sized by `text_lengths`, NOT by `max(words_mask)`.** Measured: `text_lengths` 9 with `max(words_mask)` 6 returns a 9-word axis (padding works on edge); `text_lengths` 4 with `max(words_mask)` 6 fails hard inside `ScatterND` (`invalid indice found, indice = 4`). So `text_lengths` *allocates* the slots, a `words_mask` value with no slot is an error rather than a dropped word, and **the axis length alone does not tell the decoder how many words are real**. Task 9's lockstep invariant is against `text_lengths`.
+2. **`max_width` is baked into the export at 12.** Enumerating 24 spans at width 4 fails the graph's Reshape. So `Tier1Config.maxWidth` can only ever be a **post-decode filter** on base and can never exceed 12. Say so where the field is defined.
+3. **`subtoken_pooling: "first"` is load-bearing, not decorative.** Marking the *last* subword instead runs cleanly and returns identical shapes while dropping person 0.75→0.40 and email 0.82→0.05 — a silent accuracy collapse with no error. Whatever builds the feeds must mark the first subword of each word.
+
+#### Step 1: Write the failing test
+
+`packages/tier1/test/decode.test.ts`. Build logits as a plain `Float32Array` plus dimensions — no ORT import, pure and Node-testable. Cover both layouts explicitly; a single shared `decodeSpans` is NOT the target.
+
 ```ts
 import { describe, expect, it } from "vitest";
-import { decodeSpans } from "../src/decode.js";
+import { decodeEdgeSpans, decodeBaseSpans } from "../src/decode.js";
 
-/**
- * Builds a logits array shaped [numWords, maxWidth, numClasses] with one hot
- * cell. Widths are 0-indexed: width w covers w+1 words.
- */
-function logitsWith(
-  dims: { numWords: number; maxWidth: number; numClasses: number },
-  hot: { word: number; width: number; cls: number; score: number },
-): Float32Array {
-  const data = new Float32Array(dims.numWords * dims.maxWidth * dims.numClasses).fill(-10);
-  data[(hot.word * dims.maxWidth + hot.width) * dims.numClasses + hot.cls] = hot.score;
-  return data;
-}
-
-const DIMS = { numWords: 4, maxWidth: 3, numClasses: 2 };
-
-describe("decodeSpans", () => {
-  it("returns the span whose score clears the threshold", () => {
-    const spans = decodeSpans(logitsWith(DIMS, { word: 1, width: 1, cls: 0, score: 5 }), DIMS, 0.5);
-    expect(spans).toEqual([{ firstToken: 1, lastToken: 2, classIndex: 0, score: expect.any(Number) }]);
-    expect(spans[0]!.score).toBeGreaterThan(0.5);
+describe("decodeBaseSpans", () => {
+  it("reads axis 2 as an inclusive width offset", () => {
+    // [batch, words, 12, classes], row-major. A hit at word 1, offset 1
+    // means words 1..2 -- the span the model actually reported for a
+    // two-word person name.
+    const dims = { words: 4, widths: 12, classes: 2 };
+    const logits = hot(dims, { word: 1, width: 1, cls: 0, score: 5 });
+    expect(decodeBaseSpans(logits, dims, 0.5)).toEqual([
+      { firstWord: 1, lastWord: 2, classIndex: 0, score: expect.any(Number) },
+    ]);
   });
 
-  it("applies sigmoid, not softmax, over the class axis", () => {
-    // GLiNER span scoring is per-class binary — two entity types can both be
-    // present in one message. Softmax would force them to compete and suppress
-    // the weaker one, which is a silent recall loss no test downstream sees.
-    const data = new Float32Array(1 * 1 * 2);
-    data[0] = 2;
-    data[1] = 2;
-    const spans = decodeSpans(data, { numWords: 1, maxWidth: 1, numClasses: 2 }, 0.5);
+  it("never proposes a span running past the last real word", () => {
+    // The [word x width] grid is rectangular, so its far corner always
+    // describes spans past the end. Always present in the tensor, never valid.
+    const dims = { words: 4, widths: 12, classes: 2 };
+    expect(decodeBaseSpans(hot(dims, { word: 3, width: 5, cls: 0, score: 5 }), dims, 0.5)).toEqual([]);
+  });
+
+  it("applies sigmoid per class, not softmax across classes", () => {
+    // Scoring is per-class binary -- a message may hold a client name and a
+    // project codename at once. Softmax would make the labels compete and
+    // silently suppress the weaker of two genuine findings.
+    const dims = { words: 1, widths: 12, classes: 2 };
+    const logits = new Float32Array(dims.words * dims.widths * dims.classes).fill(-10);
+    logits[0] = 2;
+    logits[1] = 2;
+    const spans = decodeBaseSpans(logits, dims, 0.5);
     expect(spans).toHaveLength(2);
     expect(spans[0]!.score).toBeCloseTo(spans[1]!.score, 6);
   });
+});
 
-  it("drops everything below the threshold", () => {
-    expect(decodeSpans(logitsWith(DIMS, { word: 0, width: 0, cls: 0, score: -5 }), DIMS, 0.5)).toEqual([]);
+describe("decodeEdgeSpans", () => {
+  it("pairs a start slot with a later end slot of the same class", () => {
+    // [batch, words, classes, 3]: slot 0 = start, slot 1 = end. A name at
+    // words 1..2 appears as a start peak at 1 and an end peak at 2.
+    const dims = { words: 4, classes: 2, slots: 3 };
+    const logits = new Float32Array(dims.words * dims.classes * dims.slots).fill(-10);
+    logits[(1 * dims.classes + 0) * dims.slots + 0] = 5; // start, word 1, class 0
+    logits[(2 * dims.classes + 0) * dims.slots + 1] = 5; // end,   word 2, class 0
+    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([
+      { firstWord: 1, lastWord: 2, classIndex: 0, score: expect.any(Number) },
+    ]);
   });
 
-  it("never proposes a span running past the last word", () => {
-    // Width 2 at word 3 would cover words 3..5 in a 4-word input. GLiNER
-    // enumerates the full [word × width] grid regardless, so the invalid
-    // corner is always present in the tensor and must be rejected here.
-    const spans = decodeSpans(logitsWith(DIMS, { word: 3, width: 2, cls: 0, score: 5 }), DIMS, 0.5);
-    expect(spans).toEqual([]);
+  it("does not pair a start with an end of a different class", () => {
+    const dims = { words: 4, classes: 2, slots: 3 };
+    const logits = new Float32Array(dims.words * dims.classes * dims.slots).fill(-10);
+    logits[(1 * dims.classes + 0) * dims.slots + 0] = 5;
+    logits[(2 * dims.classes + 1) * dims.slots + 1] = 5;
+    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([]);
   });
 
-  it("rejects a logits array whose length disagrees with the dimensions", () => {
+  it("does not pair an end that precedes its start", () => {
+    const dims = { words: 4, classes: 1, slots: 3 };
+    const logits = new Float32Array(dims.words * dims.classes * dims.slots).fill(-10);
+    logits[(3 * dims.classes + 0) * dims.slots + 0] = 5; // start at 3
+    logits[(1 * dims.classes + 0) * dims.slots + 1] = 5; // end at 1
+    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([]);
+  });
+});
+
+describe("both decoders", () => {
+  it("reject a logits array whose length disagrees with the dimensions", () => {
     // A silent reshape misreads every score at a shifted stride and produces
     // plausible-looking garbage.
-    expect(() => decodeSpans(new Float32Array(5), DIMS, 0.5)).toThrow(/length/i);
+    expect(() => decodeBaseSpans(new Float32Array(5), { words: 4, widths: 12, classes: 2 }, 0.5)).toThrow(/length/i);
+    expect(() => decodeEdgeSpans(new Float32Array(5), { words: 4, classes: 2, slots: 3 }, 0.5)).toThrow(/length/i);
   });
 
-  it("returns spans sorted by descending score", () => {
-    const data = new Float32Array(DIMS.numWords * DIMS.maxWidth * DIMS.numClasses).fill(-10);
-    data[(0 * DIMS.maxWidth + 0) * DIMS.numClasses + 0] = 1;
-    data[(2 * DIMS.maxWidth + 0) * DIMS.numClasses + 0] = 4;
-    const spans = decodeSpans(data, DIMS, 0.5);
-    expect(spans.map((s) => s.firstToken)).toEqual([2, 0]);
-  });
+  it("return spans sorted by descending score", () => { /* ... */ });
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+Write the `hot(dims, {...})` helper in this task. **Add a test that fails if the fixture's measured axis order changes** — the decoder's correctness is entirely a function of that fixture, and a weight re-pin must break loudly here.
 
-Run: `pnpm -C packages/tier1 exec vitest run test/decode.test.ts`
-Expected: FAIL — cannot find module `../src/decode.js`.
+- [ ] **Step 2: Run to verify failure** — module not found.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement** `packages/tier1/src/decode.ts` with `decodeEdgeSpans` and `decodeBaseSpans`, sharing only what genuinely generalises (sigmoid, length validation, sorting, the class axis). Both return the same `DecodedSpan` shape — `{ firstWord, lastWord, classIndex, score }` — so `GlinerSpanTagger` maps either through `spanFromTokens` with word offsets.
 
-`packages/tier1/src/decode.ts`:
-```ts
-export interface SpanDims {
-  readonly numWords: number;
-  readonly maxWidth: number;
-  readonly numClasses: number;
-}
+**Overlaps are NOT resolved here.** Core's merge owns overlap resolution across all tiers together (severity-first, then confidence), and a tier that pre-filtered its own overlaps would hide candidates the merge might have preferred.
 
-export interface DecodedSpan {
-  readonly firstToken: number;
-  readonly lastToken: number;
-  readonly classIndex: number;
-  /** Sigmoid of the logit, in (0, 1). Used directly as Finding.confidence. */
-  readonly score: number;
-}
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-
-/**
- * Decode GLiNER span-mode logits, shaped [numWords, maxWidth, numClasses] in
- * row-major order, into candidate spans.
- *
- * Per-class SIGMOID, not softmax across classes: GLiNER scores each (span,
- * class) pair as an independent binary decision, and a message may contain a
- * client name and a project codename at once. Softmax would make the labels
- * compete for one probability mass and silently suppress the weaker of two
- * genuine findings.
- *
- * Overlaps are NOT resolved here. Core's merge owns overlap resolution for all
- * tiers together (severity-first, then confidence), and a tier that pre-filtered
- * its own overlaps would hide candidates the merge might have preferred.
- */
-export function decodeSpans(logits: Float32Array, dims: SpanDims, threshold: number): DecodedSpan[] {
-  const expected = dims.numWords * dims.maxWidth * dims.numClasses;
-  if (logits.length !== expected) {
-    throw new Error(
-      `logits length ${logits.length} disagrees with dimensions ` +
-        `[${dims.numWords}, ${dims.maxWidth}, ${dims.numClasses}] (expected ${expected})`,
-    );
-  }
-
-  const spans: DecodedSpan[] = [];
-  for (let word = 0; word < dims.numWords; word += 1) {
-    for (let width = 0; width < dims.maxWidth; width += 1) {
-      const lastToken = word + width;
-      // The [word x width] grid is rectangular, so its bottom-right corner
-      // always describes spans past the end of the input. Always present in the
-      // tensor, never valid.
-      if (lastToken >= dims.numWords) break;
-      for (let cls = 0; cls < dims.numClasses; cls += 1) {
-        const score = sigmoid(logits[(word * dims.maxWidth + width) * dims.numClasses + cls]!);
-        if (score < threshold) continue;
-        spans.push({ firstToken: word, lastToken, classIndex: cls, score });
-      }
-    }
-  }
-  return spans.sort((a, b) => b.score - a.score);
-}
-```
-
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `pnpm -C packages/tier1 exec vitest run test/decode.test.ts`
-Expected: 6 passed.
+- [ ] **Step 4: Verify pass** — all green, `pnpm -r test` green, typecheck clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A && git commit -m "feat(tier1): decode span logits with per-class sigmoid scoring"
+git add -A && git commit -m "feat(tier1): decode both rungs against the probed logits layout"
 ```
+
+#### Standing caveats
+
+- Task 7's shape probes ran under **`onnxruntime-node` 1.21.0 CPU**, not the measured `onnxruntime-web` browser path. Only the fp16 load failure was cross-checked under ort-web. Task 11 must confirm the shapes reproduce in-browser before any number is reported.
+- **Two of the six ladder rungs do not load at all.** Both fp16 exports carry a `Cast` whose declared output type contradicts its consumer, and `onnxruntime-node` *and* the pinned `onnxruntime-web` refuse them with the same error. Weights hash correctly and the graphs parse — the defect is upstream in the export. **The experiment matrix is effectively four rungs** (fp32 and uint8 per family) unless they are re-pinned or re-exported.
 
 ---
 
@@ -1485,7 +1464,7 @@ words N=5 [call, U+0001, Acme, Corp, today]   word_ids present M=4 [0,2,3,4]
  slot 2: reference reads start_idx[2] -> Acme    | CORRECT is Corp   <<< WRONG
 ```
 
-This is exactly the "neighbouring word to the vault, real value left in the message" failure this system exists to prevent, and it is attacker-controllable with one invisible character. **Fix: drop zero-subword words from the word list AND the offset arrays in lockstep**, so word count always equals `max(words_mask)`. Pin it with a test using U+0001 and U+FEFF.
+This is exactly the "neighbouring word to the vault, real value left in the message" failure this system exists to prevent, and it is attacker-controllable with one invisible character. **Fix: drop zero-subword words from the word list AND the offset arrays in lockstep.** Task 7 then established what the invariant is actually against: the model's word axis is sized by **`text_lengths`**, not by `max(words_mask)`. Measured — `text_lengths` 9 with `max(words_mask)` 6 returns a 9-word axis (padding works on edge), while `text_lengths` 4 with `max(words_mask)` 6 fails hard inside `ScatterND` (`invalid indice found, indice = 4`). So `text_lengths` allocates the slots, a `words_mask` value with no slot is an error rather than a dropped word, and the surviving word count must equal `text_lengths`. Also load-bearing: `subtoken_pooling: "first"` — marking the *last* subword instead runs cleanly with identical shapes while dropping person 0.75→0.40 and email 0.82→0.05, a silent accuracy collapse with no error. Pin it with a test using U+0001 and U+FEFF.
 
 #### Step 1: Write the failing tests
 
@@ -2017,6 +1996,8 @@ git add -A && git commit -m "feat(eval): arm matrix driver writing per-arm JSONL
 ## Done criteria for this plan
 
 A GLiNER-class ONNX model runs inside real Chrome on both WASM and WebGPU, looking for exactly the entity classes the compiled policy declares at tier 1 — changing the policy changes what it looks for, with no retraining and no code change. Every span it produces survives `normalizeFindings` in the same `detect()` the extension will call. The Playwright harness runs an arm matrix over a JSONL corpus and writes JSONL records carrying findings, gold, timings, policy hash, and errors — the complete input Plan 8's Python needs, with no metric computed on the TypeScript side.
+
+**Two ladder rungs are dead on arrival.** Task 7 established that both fp16 exports fail to load in `onnxruntime-node` AND the pinned `onnxruntime-web`, with the same type error: a `Cast` whose declared output type contradicts its consumer. Weights hash correctly and the graphs parse, so the defect is upstream in the export. **The precision ladder is effectively four rungs** — fp32 and uint8 per family — unless they are re-pinned to a working export or re-exported. Report this as a finding rather than quietly running four and calling it six.
 
 **Explicitly NOT in this plan:** tier-2 (Plan 5), the Approach-B baseline (Plan 5), the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus is 13 hand-authored items whose only job is to prove the pipe carries data end to end.
 
