@@ -94,7 +94,13 @@ async function installFakeSih(
         value: {
           irHash: () => Promise.resolve(hash),
           policyHash: () => "test-hash",
-          detect: ({ text }: { text: string }) => {
+          detect: ({ text, config }: { text: string; config: unknown }) => {
+            // Remembered so a spec can assert what `detect` was HANDED, which no
+            // assertion on the returned record can establish: runArm builds one
+            // config object and uses it for both, so a record agreeing with
+            // itself proves nothing about the call.
+            const seen = window as unknown as { __configs?: unknown[] };
+            seen.__configs = [...(seen.__configs ?? []), config];
             const verdict = Object.hasOwn(verdicts, text) ? verdicts[text] : "ok";
             if (verdict === "hang") return new Promise(() => {});
             if (verdict === "kill") {
@@ -344,8 +350,17 @@ test("carries timings verbatim and emits only the fields the record declares", a
     "text",
     "tier",
   ]);
-  // The config that ran, recorded rather than implied by the arm name.
-  expect(records[0]!.config).toEqual({ tier0: true, tier1: true, tier2: false, t1Model: "fake" });
+  // The config that ran, recorded rather than implied by the arm name. It
+  // carries `backend` even though this arm's TierConfig did not: runArm
+  // reconciles `spec.backend` into the config it forwards, so the label and the
+  // config cannot disagree.
+  expect(records[0]!.config).toEqual({
+    tier0: true,
+    tier1: true,
+    tier2: false,
+    t1Model: "fake",
+    backend: "wasm",
+  });
 });
 
 test("times an item out instead of wedging the whole arm on it", async ({ page }) => {
@@ -493,4 +508,100 @@ test("refuses a page whose irHash is not a digest, before running the corpus", a
       items: [{ id: "a", text: "hello", policy: "p-fin", gold: [] }],
     }),
   ).rejects.toThrow(/irHash/);
+});
+
+test("hands detect the arm's backend rather than leaving the label unbacked", async ({ page }) => {
+  // `ArmSpec.backend` used to reach nothing: it was copied onto every record and
+  // never plumbed into the config forwarded to `detect`, so the page's
+  // reconciliation against what actually executed could not fire unless the
+  // CALLER remembered to set `config.backend` too. Asserted on what the page was
+  // handed, not on the record, because runArm builds one object and uses it for
+  // both -- a record agreeing with itself would prove nothing.
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1 } });
+
+  await runArm(page, {
+    runId: "test-run",
+    arm: "t0+t1",
+    backend: "webgpu",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 10_000,
+    items: [
+      { id: "a", text: "one", policy: "p-fin", gold: [] },
+      { id: "b", text: "two", policy: "p-fin", gold: [] },
+    ],
+  });
+
+  const seen = await page.evaluate(
+    () => (window as unknown as { __configs?: unknown[] }).__configs ?? [],
+  );
+  expect(seen).toEqual([
+    { tier0: true, tier1: false, tier2: false, backend: "webgpu" },
+    { tier0: true, tier1: false, tier2: false, backend: "webgpu" },
+  ]);
+});
+
+test("refuses an arm whose config names a different backend than the arm does", async ({ page }) => {
+  // Overwriting the caller's value silently would pick one of two stated
+  // intentions and record it as fact. Checked before the page is touched, so it
+  // fails on any page at all -- this one has never been navigated.
+  await expect(
+    runArm(page, {
+      runId: "test-run",
+      arm: "t0+t1",
+      backend: "wasm",
+      provider: "claude",
+      config: { tier0: true, tier1: true, tier2: false, backend: "webgpu" },
+      itemTimeoutMs: 10_000,
+      items: [{ id: "a", text: "hello", policy: "p-fin", gold: [] }],
+    }),
+  ).rejects.toThrow(/one arm cannot measure two runtimes/);
+});
+
+test("stamps the tier-1 config it was given onto every record, and nothing when given none", async ({
+  page,
+}) => {
+  // The six-dimensional rung has nowhere else to go: `TierConfig` has no
+  // `threshold`, `maxWidth` or `labelForm`, so without this field two arms
+  // differing only in those are byte-identical in the output. runArm cannot
+  // verify the config describes the tagger the page holds -- it never loads one
+  // -- which is why RunRecordSchema couples the two and runMatrix validates
+  // every record before writing.
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 } });
+  const items = [{ id: "a", text: "one", policy: "p-fin", gold: [] }];
+
+  const withTier1 = await runArm(page, {
+    runId: "test-run",
+    arm: "t0+t1",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: true, tier2: false },
+    tier1Config: {
+      modelId: "gliner-pii-edge-uint8",
+      backend: "wasm",
+      threshold: 0.02,
+      maxWidth: 12,
+      labelForm: "id",
+    },
+    itemTimeoutMs: 10_000,
+    items,
+  });
+  expect(withTier1[0]!.tier1Config).toEqual({
+    modelId: "gliner-pii-edge-uint8",
+    backend: "wasm",
+    threshold: 0.02,
+    maxWidth: 12,
+    labelForm: "id",
+  });
+
+  const withoutTier1 = await runArm(page, {
+    runId: "test-run",
+    arm: "t0",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 10_000,
+    items,
+  });
+  expect(withoutTier1[0]!.tier1Config).toBeUndefined();
 });

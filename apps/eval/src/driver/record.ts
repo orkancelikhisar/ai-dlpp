@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TIER1_BACKENDS, TIER1_LABEL_FORMS } from "@sih/tier1";
 import { GoldSpanSchema } from "./corpus.js";
 
 /**
@@ -165,6 +166,40 @@ export const RunRecordSchema = z
       t2Model: z.string().optional(),
       backend: z.enum(["wasm", "webgpu"]).optional(),
     }),
+    /**
+     * The FULLY RESOLVED `Tier1Config` the tagger in the page was constructed
+     * with. Present exactly when tier 1 ran, absent otherwise.
+     *
+     * `config` above is core's `TierConfig`: three booleans, two model names and
+     * a backend. The tier-1 ladder has six dimensions -- modelId, precision,
+     * backend, threshold, maxWidth, labelForm -- and three of them appear
+     * nowhere in `TierConfig`. So two arms differing only in `threshold`,
+     * `maxWidth` or `labelForm` used to emit records that were byte-identical in
+     * every field a scorer can group by: a matrix that ran four arms and handed
+     * Plan 8 four indistinguishable ones.
+     *
+     * What lands here is the config off `loadTier1`'s report -- the object the
+     * GlinerSpanTagger was constructed with, after `resolveTier1Config` filled in
+     * and validated every field -- and never the partial object an arm asked
+     * for. Same distinction `backend` above is a warning about: intent is not
+     * evidence of what ran.
+     *
+     * The vocabularies are IMPORTED from @sih/tier1 rather than restated, unlike
+     * core's unions higher up in this file. Those are types, with no runtime
+     * value to import; `TIER1_BACKENDS` and `TIER1_LABEL_FORMS` are exported
+     * arrays, so importing them makes drift impossible instead of merely
+     * discouraged.
+     */
+    tier1Config: z
+      .object({
+        modelId: z.string().min(1),
+        backend: z.enum(TIER1_BACKENDS),
+        /** Restates resolveTier1Config's own bound, (0, 1]. */
+        threshold: z.number().gt(0).lte(1),
+        maxWidth: z.number().int().positive(),
+        labelForm: z.enum(TIER1_LABEL_FORMS),
+      })
+      .optional(),
     findings: z.array(RecordFindingSchema),
     /**
      * Copied from the corpus item so a record scores standalone, without a join.
@@ -199,6 +234,31 @@ export const RunRecordSchema = z
           r.text.slice(s.start, s.end) === s.text,
       ),
     { message: "a span's offsets do not hold the text it names" },
+  )
+  // The four checks below tie the record's LABELS to the configuration that
+  // produced them. Each one is a way a complete, schema-valid, perfectly
+  // scoreable file can describe a run that did not happen, and each was
+  // reachable before Task 12: nothing validates a record on the producing path,
+  // so the writer runs this schema and these are the checks it runs.
+  .refine((r) => r.config.backend === undefined || r.config.backend === r.backend, {
+    message: "config.backend contradicts the record's own backend",
+  })
+  .refine((r) => r.config.tier1 === (r.tier1Config !== undefined), {
+    // Both directions. Tier 1 on with no config is an arm whose six-dimensional
+    // rung went unrecorded; a config with tier 1 off is a tier-0 run wearing a
+    // tier-1 label, which is the exact substitution runArm refuses to navigate
+    // in order to prevent.
+    message: "tier1Config must be present exactly when config.tier1 is true",
+  })
+  .refine((r) => r.tier1Config === undefined || r.tier1Config.backend === r.backend, {
+    message: "tier1Config.backend contradicts the record's own backend",
+  })
+  .refine(
+    (r) =>
+      r.tier1Config === undefined ||
+      r.config.t1Model === undefined ||
+      r.config.t1Model === r.tier1Config.modelId,
+    { message: "config.t1Model names a different rung than tier1Config.modelId" },
   );
 
 export type RunRecord = z.infer<typeof RunRecordSchema>;

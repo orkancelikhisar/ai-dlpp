@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MODEL_MANIFEST, TIER1_BACKENDS, type Tier1Backend } from "@sih/tier1";
 import type { ResolvedFinding } from "@sih/core";
+import { BACKEND_AGREEMENT } from "../src/driver/main.js";
 
 /**
  * The tier-1 model, executing in real Chrome. Everything before this task ran
@@ -17,11 +18,21 @@ test.describe.configure({ mode: "serial" });
  *
  * `gliner-pii-base` fp32 is 665 MB where `gliner-pii-edge-uint8` is 46 MB, and
  * size was the obvious selection criterion. It is the wrong one. MEASURED here
- * (see `BACKEND_AGREEMENT` below): this is the ONLY rung of the four that load
- * at all whose WebGPU logits match its WASM logits -- to 0.000, bit for bit --
- * so it is the only rung on which a wasm arm and a webgpu arm are measuring the
- * same model. On the other three, a webgpu arm silently returns different
- * numbers, which is a far worse source of flakiness than a large file.
+ * (see `BACKEND_AGREEMENT`, imported from src/driver/main.ts): this is the ONLY
+ * rung of the four that load at all whose WebGPU output agrees with its WASM
+ * output, so it is the only rung on which a wasm arm and a webgpu arm are
+ * measuring the same model. On the other three, a webgpu arm silently returns
+ * different numbers, which is a far worse source of flakiness than a large file.
+ *
+ * "Agrees" is not "bit for bit", and the difference was measured in Task 12
+ * rather than assumed. Task 11 diffed raw logits element-wise on ONE message and
+ * got 0.000. Running the whole 13-item smoke corpus through both providers at
+ * threshold 0.02 instead: every span boundary and every entityType is identical
+ * on all 13 items (47 tier-1 findings per arm), while CONFIDENCES differ by
+ * ~1e-7 typically and by up to 2.6e-4 on the two multi-line items -- the longest
+ * inputs in the corpus. Close, not exact, and looser on longer sequences than
+ * one short message could show. It stays usable because nothing that is scored
+ * moved: no span, no label, no ordering.
  *
  * The size cost is small and measured: 2.0-2.7 s to load in this browser from
  * local disk, against 0.5-0.6 s for edge-uint8.
@@ -170,8 +181,14 @@ for (const backend of TIER1_BACKENDS) {
 
 /**
  * Whether a rung's WebGPU output agrees with its WASM output, MEASURED on this
- * machine, and pinned here so that a change in either direction is a test
- * failure rather than a quiet change in what the numbers mean.
+ * machine, and pinned so that a change in either direction is a test failure
+ * rather than a quiet change in what the numbers mean.
+ *
+ * The table itself lives in `src/driver/main.ts`, imported above, because
+ * `runMatrix` REFUSES a webgpu arm on any rung it says disagrees. Keeping one
+ * copy is what makes that guard and this measurement impossible to drift apart:
+ * a rung moved into the trusting column here immediately changes which arms the
+ * driver will run, and vice versa.
  *
  * This is a characterization test of an UPSTREAM DEFECT, not an aspiration.
  * Method (scratch harness, one fresh page per rung per provider, identical feeds
@@ -197,13 +214,6 @@ for (const backend of TIER1_BACKENDS) {
  * these four rungs return nothing on either provider, so the arms would agree by
  * both being empty and this test would pass while proving nothing.
  */
-const BACKEND_AGREEMENT: readonly { readonly modelId: string; readonly agrees: boolean }[] = [
-  { modelId: "gliner-pii-edge", agrees: false },
-  { modelId: "gliner-pii-edge-uint8", agrees: false },
-  { modelId: "gliner-pii-base", agrees: true },
-  { modelId: "gliner-pii-base-uint8", agrees: false },
-];
-
 for (const { modelId, agrees } of BACKEND_AGREEMENT) {
   test(`webgpu ${agrees ? "agrees with" : "DISAGREES with"} wasm on ${modelId}`, async ({ page }) => {
     test.setTimeout(ARM_TIMEOUT_MS);

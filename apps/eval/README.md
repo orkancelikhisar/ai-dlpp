@@ -61,6 +61,16 @@ Two runners, one script, vitest first: it needs no browser and finishes in under
 a second, so a broken schema fails before Playwright spends time launching
 Chrome. Root `pnpm -r test` calls this script, so both suites run there too.
 
+**Playwright runs with `workers: 1`**, for the same physical reason `runMatrix`
+runs its arms one at a time: two ONNX graphs loading at once contend for one GPU
+and one memory budget. The default is half the cores and it schedules *files* in
+parallel, so `tier1.spec.ts` and `matrix.spec.ts` — which both load real models —
+were being run against each other. Measured once `matrix.spec.ts` existed: about
+one full run in five failed under the default, inside whichever model-loading
+file lost the race. At one worker, four consecutive runs passed. The cost is
+about nine seconds (25.7–26.4 s against 30.7–35.4 s). There are no `retries`
+either, so a flaky suite cannot be papered over by re-running it.
+
 Specs are `test/*.spec.ts` and vitest tests are `test/*.test.ts`, and each runner
 is pinned to its own half — `testMatch` in `playwright.config.ts`, `include` in
 `vitest.config.ts`. Both pins are load-bearing rather than tidiness. Measured:
@@ -179,7 +189,25 @@ the same slice at the same offsets.)
 **`runArm` does not validate its own output.** The schema is the contract, not a
 gate on the producing path: `test/run.spec.ts` runs it over a real arm on every
 suite run, but a writer that persists records must run it too rather than assume
-it already happened.
+it already happened. `runMatrix` does, on every record, before writing.
+
+### `config` is core's, `tier1Config` is the rung
+
+A record carries two configuration objects because one of them cannot hold the
+other's fields. `config` is the `TierConfig` `detect` received — three booleans,
+two model names, a backend. The tier-1 ladder has **six** dimensions (modelId,
+precision, backend, threshold, maxWidth, labelForm) and three of them appear
+nowhere in `TierConfig`, so two arms differing only in `threshold`, `maxWidth` or
+`labelForm` used to emit records that were byte-identical in every field a scorer
+can group by.
+
+`tier1Config` is the **fully resolved** `Tier1Config` the tagger in the page was
+constructed with, read off `loadTier1`'s report — never the partial object an arm
+asked for. It is present **exactly when `config.tier1` is true**, and the schema
+enforces both directions of that, plus that `backend`, `config.backend` and
+`tier1Config.backend` are one answer and that `config.t1Model` names the same
+rung as `tier1Config.modelId`. Each of those is a way a complete, valid,
+scoreable file can describe a run that did not happen.
 
 Carrying the message costs roughly +23% at this corpus's ~93 B mean message and
 +112% at a 500 B mean; the projected worst case for a full Plan 7/8 run
@@ -268,14 +296,119 @@ Behaviours worth knowing before calling it:
   into the JSONL. Nothing validates a record on the producing path.
 - **It stamps two different hashes**, described in its own section below.
 
-`ArmSpec.backend` is copied onto every record and **still half-unbacked**. The
-chain from that label to what executed was broken in two places; one is now
-fixed. The page measures which execution provider really ran and rejects a
-`TierConfig.backend` that contradicts it (see *`backend` is a measurement now*
-below). But `runArm` still never plumbs `spec.backend` into `spec.config`, so
-unless the caller sets `config.backend` as well, nothing reconciles this label
-with anything. Do not read a record's `backend` as evidence of what executed
-until an arm sets both.
+`ArmSpec.backend` is copied onto every record **and plumbed into the
+`TierConfig` handed to `detect`**. The chain from that label to what executed was
+broken in two places and both are now closed: the page measures which execution
+provider really ran and rejects a `TierConfig.backend` that contradicts it (see
+*`backend` is a measurement now* below), and `runArm` puts `spec.backend` into
+the config it forwards — refusing an arm whose `config.backend` says something
+else rather than silently picking one. So on a **tier-1** arm a record's
+`backend` is backed by a measurement. On a **tier-0** arm it stays a bare label:
+a regex pass runs on no backend at all, and the page's check is skipped when
+`config.tier1` is false, so read it there as "which arm of the matrix this row
+belongs to" and nothing more.
+
+`runArm` also stamps `tier1Config` — the resolved `Tier1Config` its caller says
+the tagger was built with. It cannot verify that, because it never loads a model;
+`RunRecordSchema` couples the two fields and `runMatrix` validates every record
+before writing one.
+
+## The matrix: arms in, files out
+
+`src/driver/main.ts` is the layer above `runArm`. `runMatrix(page, options)`
+takes a list of arms and a corpus path, runs each arm over the whole corpus, and
+writes **one JSONL file per arm** named `<runId>.<arm>.<backend>.jsonl`. It
+returns the paths it wrote and, like everything else here, computes **no
+metrics**.
+
+```ts
+await runMatrix(page, {
+  runId: "2026-08-21a",
+  outDir: "runs/",
+  corpus: "corpora/fixtures/smoke.jsonl",
+  provider: "claude",
+  arms: [
+    { arm: "t0", backend: "wasm", itemTimeoutMs: 10_000,
+      config: { tier0: true, tier1: false, tier2: false } },
+    { arm: "t0+t1-base", backend: "wasm", itemTimeoutMs: 120_000,
+      config: { tier0: true, tier1: true, tier2: false },
+      tier1Config: { modelId: "gliner-pii-base" } },
+  ],
+});
+```
+
+**Arms run sequentially, each from a freshly navigated page.** Sequential because
+two models loading at once contend for one GPU and corrupt every latency number
+in both files. Freshly navigated because a tagger left over from the previous arm
+would be measured under the next arm's label — `runMatrix` owns page state, which
+is exactly why `runArm` refuses to navigate on its own and throws on an
+unprepared page.
+
+**`tier1Config` on an arm is a `Partial<Tier1Config>`** — vary `modelId`,
+`threshold`, `maxWidth` or `labelForm`. `backend` comes from the arm and naming a
+different one inside is refused rather than reconciled. `resolveTier1Config`
+fills in and validates the rest, in Node, before anything loads.
+
+A note on which axes belong in a matrix at all: **`labelForm` should be measured
+on one model and one policy, not crossed into the ladder.** It asks whether label
+conditioning helps, which is a different question from where a rung sits on the
+accuracy-versus-latency curve, and crossing it multiplies every arm for an answer
+that does not vary by rung. Likewise a tier-0 arm's `backend` is a label and
+nothing more: no part of a regex pass runs on a backend, so `{t0} x {wasm,
+webgpu}` is the same measurement twice under two names. It is not refused —
+`config.tier1` is `false` on both, so the records say so — but it buys nothing.
+
+### Everything `runMatrix` refuses
+
+Almost all of it is one failure mode: **a run that looks complete and measured
+nothing.** An arm whose model never loaded, an arm that silently ran tier 0 under
+a tier-1 label, an arm whose every row is an error, two arms overwriting each
+other's file — each of those ends as a directory of well-formed JSONL that Plan 8
+would score without complaint. So:
+
+*Before the browser is touched at all* (a ten-arm matrix is hours of GPU time;
+learning on the last arm that its name collides wastes all of it):
+
+- **A WebGPU arm on any rung except `gliner-pii-base`** — see the table below.
+  Including an arm that names no rung, since the default resolves to
+  `gliner-pii-edge`, which is one of the wrong ones.
+- **Tier-1 settings on an arm whose `config.tier1` is false.** Naming a rung and
+  forgetting to switch tier 1 on produces a complete, valid, tier-0 file under a
+  tier-1 name.
+- **A `tier1Config.backend` contradicting the arm's `backend`**, and a
+  `config.t1Model` naming a different rung than the tier-1 settings resolve to.
+- **Two arms that would write the same file** — same `runId`, `arm` and
+  `backend` — which would leave one silently overwritten while the matrix
+  reports both.
+- **A file an earlier run already wrote.** Re-running under the same `runId`
+  replaces a measurement; use a new one. `writeFileSync` also uses the exclusive
+  flag, so a file that appears mid-run is refused too.
+- **A `runId` or arm name that is not filename-safe**, since both halves reach
+  the filesystem verbatim.
+- **An empty corpus, or a matrix with no arms.**
+
+*After an arm has run, before its file is written:*
+
+- **Every item errored.** `error` on a record exists so an arm that crashes on
+  5% of a corpus is distinguishable from one that scores 0 on it; at 100% the
+  file is a complete, schema-valid transcript of nothing having been measured.
+  No file is written.
+- **A tier-1 arm whose tagger ran no inference.** Not judged from `findings` (a
+  span tagger may return none) or from `tier1Ms` (core sets it around the tagger
+  call whether or not there was anything to tag) but from
+  `tier1Status().totals.inferences`, compared against its value straight after
+  the warm-up.
+- **Any record `RunRecordSchema` refuses.** `runArm` does not validate its own
+  output — the README says a writer must, and this is the writer.
+- **A dead browser**, propagated out of `runArm`, which discards the records it
+  had rather than returning a short arm as a complete one.
+
+The WebGPU refusal is worth one more line because it is the only guard here
+defending against a defect in someone else's code. `BACKEND_AGREEMENT` in
+`src/driver/main.ts` is the table, `test/tier1.spec.ts` imports it and re-measures
+it end to end on every suite run, and `runMatrix` checks it twice per tier-1 arm:
+once on the config resolved in Node, and once on the config the page reports the
+tagger was actually built with.
 
 ## Tier 1: the model in the page
 
@@ -353,16 +486,30 @@ on webgpu, whose sigmoid is ≈0.46 for everything — which is exactly what the
 end-to-end findings show, every word scoring 0.44–0.47 in monotone order.
 
 **Nothing reports this.** Session creation succeeds, `run` resolves, the logits
-are finite and correctly shaped. `gliner-pii-base` agreeing to 0.000 under the
-same page code and readback path is the control that says the harness is not the
-cause. `test/tier1.spec.ts` pins the table above, so a future onnxruntime-web
+are finite and correctly shaped. `gliner-pii-base` agreeing under the same page
+code and readback path is the control that says the harness is not the cause.
+
+That `0.000` is Task 11's, over raw logits on a single message, and **"exact" is
+not "bit for bit."** Measured in Task 12 over the whole 13-item smoke corpus at
+threshold 0.02, comparing a real wasm arm against a real webgpu arm: every span
+boundary and every entityType is identical on all 13 items (47 tier-1 findings
+per arm), while *confidences* differ by ~1e-7 typically and by up to **2.6e-4**
+on the two multi-line items — the longest inputs in the corpus. Close, not exact,
+and looser on longer sequences than one short message could show. Nothing that is
+scored moved, which is why the rung stays usable; four orders of magnitude still
+separate it from the other three. `test/tier1.spec.ts` pins the table above, so a future onnxruntime-web
 that fixes (or breaks) a rung fails the suite instead of quietly changing what a
 number means.
 
-**Do not run a WebGPU arm on any rung except `gliner-pii-base` until this is
-retested.** That is also why the smoke arms use the 665 MB fp32 rung rather than
-the 46 MB uint8 one: it is the only rung on which a wasm arm and a webgpu arm
-measure the same model. The size cost is 2.0–2.7 s of load in this browser.
+**`runMatrix` refuses a WebGPU arm on any rung except `gliner-pii-base`**, and
+the table above is the constant it reads — `BACKEND_AGREEMENT`, exported from
+`src/driver/main.ts` and imported by `test/tier1.spec.ts`, so the guard and the
+measurement that justifies it cannot drift apart. The refusal happens before the
+browser is touched, and again on the config the page reports the tagger was
+actually built with. That is also why the smoke arms use the 665 MB fp32 rung
+rather than the 46 MB uint8 one: it is the only rung on which a wasm arm and a
+webgpu arm measure the same model. The size cost is 2.0–2.7 s of load in this
+browser.
 
 ### The ladder is four rungs, not six
 

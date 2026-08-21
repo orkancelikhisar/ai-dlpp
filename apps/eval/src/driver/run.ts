@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { TierConfig } from "@sih/core";
+import type { Tier1Config } from "@sih/tier1";
 import type { CorpusItem } from "./corpus.js";
 import { RECORD_SCHEMA_VERSION, type RunRecord } from "./record.js";
 
@@ -7,35 +8,53 @@ export interface ArmSpec {
   runId: string;
   arm: string;
   /**
-   * Copied onto every record verbatim, and today verified by nothing. The chain
-   * from this label to what actually executed is broken in TWO places, and
-   * repairing either one alone would still leave the label unbacked:
+   * Copied onto every record verbatim AND plumbed into the `TierConfig` that
+   * `detect` receives, so the label and the run are one value in two places
+   * rather than two independent claims.
    *
-   *   1. `runArm` never plumbs this into `spec.config`. `spec.config` is
+   * The chain from this label to what executed was broken in two places, and
+   * both are now closed:
+   *
+   *   1. `runArm` never plumbed this into `spec.config`. `spec.config` was
    *      forwarded to `detect` untouched, so the only backend core could ever
-   *      see is whatever the caller happened to put in `config.backend`, which
-   *      nothing here reconciles against this field.
-   *   2. MEASURED: nothing under packages/core/src reads `TierConfig.backend`
-   *      at all -- grep finds only its declaration in detect/types.ts -- so
-   *      even a faithfully plumbed value would reach no reader.
+   *      see was whatever the caller happened to put in `config.backend`, which
+   *      nothing here reconciled against this field. Closed below: the config
+   *      handed to `detect` carries this value, and a caller that put a
+   *      different one in `config.backend` is refused rather than quietly
+   *      corrected.
+   *   2. Nothing under packages/core/src reads `TierConfig.backend`, so even a
+   *      faithfully plumbed value reaches no reader inside core. Measured in
+   *      Task 3 and re-run here: `grep -rn backend packages/core/src` returns
+   *      exactly one line, the field's own declaration in detect/types.ts.
+   *      Closed by Task 11 in the PAGE instead: `loadTier1` counts
+   *      GPUQueue.submit calls around a warm-up inference and refuses to finish
+   *      when that disagrees with the backend asked for, and
+   *      `window.__sih.detect` rejects a `TierConfig.backend` contradicting the
+   *      loaded model.
    *
-   * Task 11 closed the second half and only the second half. The page now
-   * MEASURES which execution provider ran -- it counts GPUQueue.submit calls
-   * around a warm-up inference and refuses to finish `loadTier1` when that
-   * disagrees with the backend asked for -- and `window.__sih.detect` rejects a
-   * `TierConfig.backend` that contradicts the loaded model. So a `config.backend`
-   * reaching the page is now checked against what executes.
-   *
-   * Point 1 is untouched: this field is still not plumbed into `spec.config`, so
-   * unless the CALLER puts `backend` in the config it passes, nothing reconciles
-   * this label with anything. Do not read a record's `backend` as evidence of
-   * what executed until an arm sets `config.backend` too. Note that `config` IS
-   * recorded (see the record's own field): unlike this one, that value is the
-   * object `detect` received.
+   * So on a TIER-1 arm this field is now backed by a measurement: the record's
+   * value is the config's value, the page checked that config against a count of
+   * real GPU work, and the load would not have completed had the two disagreed.
+   * On a TIER-0 arm it stays a bare label -- a regex pass runs on no backend at
+   * all, and the page's check is skipped when `config.tier1` is false -- so read
+   * it there as "which arm of the matrix this row belongs to" and nothing more.
    */
   backend: "wasm" | "webgpu";
   provider: string;
   config: TierConfig;
+  /**
+   * The resolved `Tier1Config` the tier-1 tagger in the page was built with,
+   * stamped onto every record. Required by RunRecordSchema exactly when
+   * `config.tier1` is set, because `TierConfig` has no room for `threshold`,
+   * `maxWidth` or `labelForm` and two arms differing only in those are otherwise
+   * indistinguishable in the output.
+   *
+   * `runArm` does not check the coupling and cannot: it never loads a model, so
+   * it has no way to know whether this describes the tagger the page holds. The
+   * caller that loaded it does -- see runMatrix in driver/main.ts, which reads
+   * this off `loadTier1`'s report and validates every record before writing.
+   */
+  tier1Config?: Tier1Config;
   /**
    * Per-item deadline, in milliseconds. Required rather than defaulted: the
    * right budget for a tier-0 regex pass and for a tier-1 ONNX model on a cold
@@ -102,6 +121,19 @@ async function pageIsAlive(page: Page): Promise<boolean> {
  * diffable line by line.
  */
 export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
+  // An arm that names one backend beside its label and another inside its config
+  // holds two intentions, and neither is the safe one to keep silently. Checked
+  // before the page is touched at all, because it is an argument error rather
+  // than anything about this run.
+  if (spec.config.backend !== undefined && spec.config.backend !== spec.backend) {
+    throw new Error(
+      `arm "${spec.arm}" is labelled ${spec.backend} while its TierConfig says ` +
+        `${spec.config.backend}; one arm cannot measure two runtimes`,
+    );
+  }
+  // ONE object, built here and used for both the call and the record, so the two
+  // cannot drift: whatever `detect` was given is literally what gets stamped.
+  const config: TierConfig = { ...spec.config, backend: spec.backend };
   // Deliberately does NOT navigate. Task 12 loads a tier-1 model into the page
   // before calling this, and a goto() here would discard it and silently
   // measure a tier-0 run under a tier-1 arm label. The caller owns page state.
@@ -162,7 +194,7 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       const result = await withDeadline(
         page.evaluate(
           (request) => window.__sih!.detect(request),
-          { text: item.text, provider: spec.provider, config: spec.config },
+          { text: item.text, provider: spec.provider, config },
         ),
         spec.itemTimeoutMs,
         `detection for item "${item.id}"`,
@@ -223,10 +255,16 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       arm: spec.arm,
       backend: spec.backend,
       provider: spec.provider,
-      // The exact object handed to `detect` above, so `arm` is a label with the
+      // The exact object handed to `detect` above -- the caller's config with
+      // `backend` reconciled into it -- so `arm` is a label with the
       // configuration that produced it sitting next to it rather than a claim on
       // its own.
-      config: spec.config,
+      config,
+      // What `TierConfig` has no room for. Absent on a tier-0 arm, which is what
+      // RunRecordSchema requires; a tier-1 arm that reaches here without it
+      // produces records the schema refuses, which is where runMatrix catches a
+      // rung that was never recorded.
+      tier1Config: spec.tier1Config,
       // The message the offsets in `findings` and `gold` index into, and the
       // one detection actually ran on -- both read from the same `item.text`,
       // so a record cannot carry findings produced from a different string than

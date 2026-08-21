@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveTier1Config } from "@sih/tier1";
 import { CorpusItemSchema, loadCorpus } from "../src/driver/corpus.js";
 import { RunRecordSchema, toJsonl } from "../src/driver/record.js";
 
@@ -207,6 +208,66 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     // is unstated" are different claims, and only one of them can be scored.
     expect(
       RunRecordSchema.safeParse({ ...record, config: { tier0: true, tier1: false } }).success,
+    ).toBe(false);
+  });
+
+  it("carries the tier-1 config whole, so no resolved field is dropped before Plan 8", () => {
+    // Compared against resolveTier1Config's OWN output rather than a literal
+    // written here. zod strips what a schema does not declare, so a schema
+    // missing one of the six resolved fields would drop it without a word, and
+    // an arm recorded without its threshold is an arm nobody can reproduce.
+    const resolved = resolveTier1Config({ backend: "wasm" });
+    const parsed = RunRecordSchema.safeParse({
+      ...record,
+      config: { tier0: true, tier1: true, tier2: false },
+      tier1Config: resolved,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.tier1Config).toEqual(resolved);
+  });
+
+  it("couples tier1Config to config.tier1 in both directions", () => {
+    // Tier 1 on with no config leaves the rung, the threshold and the label form
+    // unwritten -- and TierConfig cannot hold them, so nothing else in the
+    // record says which of the six rungs produced the numbers.
+    expect(
+      RunRecordSchema.safeParse({ ...record, config: { tier0: true, tier1: true, tier2: false } })
+        .success,
+    ).toBe(false);
+    // The other direction is the worse mislabel: a tier-1 config on an arm whose
+    // detect ran tier 0. Complete, valid, and describing a run that never
+    // happened.
+    expect(
+      RunRecordSchema.safeParse({ ...record, tier1Config: resolveTier1Config({ backend: "wasm" }) })
+        .success,
+    ).toBe(false);
+  });
+
+  it("refuses a record whose backend disagrees with itself", () => {
+    // Three fields name a backend and they must be one answer. `backend` is the
+    // arm label, `config.backend` is what detect was given, `tier1Config.backend`
+    // is what the tagger was built with -- a record where they differ cannot be
+    // attributed to any runtime at all.
+    expect(
+      RunRecordSchema.safeParse({ ...record, config: { ...record.config, backend: "webgpu" } })
+        .success,
+    ).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({
+        ...record,
+        config: { tier0: true, tier1: true, tier2: false },
+        tier1Config: resolveTier1Config({ backend: "webgpu" }),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a t1Model naming a different rung than the tier-1 config does", () => {
+    expect(
+      RunRecordSchema.safeParse({
+        ...record,
+        config: { tier0: true, tier1: true, tier2: false, t1Model: "gliner-pii-base" },
+        tier1Config: resolveTier1Config({ backend: "wasm", modelId: "gliner-pii-edge" }),
+      }).success,
     ).toBe(false);
   });
 

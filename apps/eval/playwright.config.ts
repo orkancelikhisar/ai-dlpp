@@ -10,6 +10,26 @@ export default defineConfig({
   // skipping the rest, which on a harness whose whole job is producing numbers
   // is worse than a red build.
   forbidOnly: !!process.env["CI"],
+  // ONE worker, for the same physical reason runMatrix runs its arms one at a
+  // time: two ONNX graphs loading at once contend for one GPU and one memory
+  // budget. Playwright's default is half the cores (5 on this 10-core machine)
+  // and it schedules FILES in parallel, so tier1.spec.ts and matrix.spec.ts --
+  // which both load real models -- were being run against each other.
+  //
+  // MEASURED once matrix.spec.ts existed: roughly 1 full run in 5 failed under
+  // the default, always inside whichever model-loading file lost the race (seen
+  // as `tier-1 runs the real graph in real Chrome on wasm`, which then skipped
+  // the 9 tests after it because that file is `mode: "serial"`). At one worker,
+  // four consecutive full runs passed. There is no `retries` key here on
+  // purpose, so a flaky suite cannot be papered over by re-running it.
+  //
+  // It also makes the latencies tier1.spec.ts prints mean something: measured
+  // while another worker is loading a 665 MB graph, they describe contention.
+  //
+  // The cost is about nine seconds of wall clock on this machine: three runs at
+  // the default took 25.7, 26.4 and 25.7 s, four at one worker took 30.7, 34.0,
+  // 35.4 and 35.2 s.
+  workers: 1,
   use: {
     baseURL: "http://localhost:5178",
     // `retain-on-failure`, NOT `on-first-retry`. There is no `retries` key
