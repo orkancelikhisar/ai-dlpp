@@ -1997,6 +1997,24 @@ git add -A && git commit -m "feat(eval): arm matrix driver writing per-arm JSONL
 
 A GLiNER-class ONNX model runs inside real Chrome on both WASM and WebGPU, looking for exactly the entity classes the compiled policy declares at tier 1 — changing the policy changes what it looks for, with no retraining and no code change. Every span it produces survives `normalizeFindings` in the same `detect()` the extension will call. The Playwright harness runs an arm matrix over a JSONL corpus and writes JSONL records carrying findings, gold, timings, policy hash, and errors — the complete input Plan 8's Python needs, with no metric computed on the TypeScript side.
 
+**WebGPU silently returns WRONG logits on 3 of the 4 loadable rungs.** Task 11 measured this in real Chrome with identical feeds, one fresh page per rung per provider, diffing raw logits element-wise, reproduced bit-identically over two independent full re-runs:
+
+| rung | spanMode | max abs diff (wasm vs webgpu) | verdict |
+|---|---|---|---|
+| `gliner-pii-edge` | token_level | 8.352 | **wrong** |
+| `gliner-pii-edge-uint8` | token_level | 8.134 | **wrong** |
+| `gliner-pii-base` | markerV0 | **0.000** | exact |
+| `gliner-pii-base-uint8` | markerV0 | 30.154 | **wrong** |
+
+It is a **collapse, not drift**: `gliner-pii-base-uint8` logits span `[-30.46, +2.05]` on WASM and `[-0.36, -0.16]` on WebGPU, whose sigmoid is ~0.46 for everything — every word scoring 0.44-0.47 in monotone order. **No error and no warning.** `gliner-pii-base` agreeing to 0.000 under the same page code is the control proving the harness is not the cause, and browser WASM matched `onnxruntime-node` CPU exactly on all four rungs (spans identical; scores to 3 dp on both fp32 rungs).
+
+Consequences that bind the rest of this plan and Plan 8:
+
+- **Task 12 must not run a WebGPU arm on any rung except `gliner-pii-base`** until this is retested. That is the only rung where a WASM arm and a WebGPU arm measure the same model.
+- The backend axis of spec §6.3 is **compromised, not merely slow**. Any WebGPU number from another rung describes a broken kernel, not a hardware trade-off.
+- Also measured: **WebGPU is slower than WASM on 3 of 4 rungs** (browser WASM 20.1/20.7/54.8/70.1 ms vs WebGPU 66.9/50.3/31.1/108.1 ms), so the expected accuracy-vs-latency argument for WebGPU does not hold here either.
+- This is an upstream `onnxruntime-web` defect at the pinned dev build. Report it as a finding; do not work around it by quietly dropping the backend axis.
+
 **Two ladder rungs are dead on arrival.** Task 7 established that both fp16 exports fail to load in `onnxruntime-node` AND the pinned `onnxruntime-web`, with the same type error: a `Cast` whose declared output type contradicts its consumer. Weights hash correctly and the graphs parse, so the defect is upstream in the export. **The precision ladder is effectively four rungs** — fp32 and uint8 per family — unless they are re-pinned to a working export or re-exported. Report this as a finding rather than quietly running four and calling it six.
 
 **Explicitly NOT in this plan:** tier-2 (Plan 5), the Approach-B baseline (Plan 5), the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus is 13 hand-authored items whose only job is to prove the pipe carries data end to end.
