@@ -15,6 +15,19 @@ export interface CharSpan {
  * The separator class trimmed off a span's two ENDS, derived from what the
  * pinned tokenizer's normalizer folds rather than from JS `\s`.
  *
+ * WHAT IT DOES ON THE PATH THAT NOW EXISTS. Task 9 established that the model
+ * is indexed by WORDS, not by subword tokens, and that the offsets come from
+ * the regex splitter in words.ts rather than from the tokenizer -- which has
+ * no offsets API and never had one. A regex word cannot begin or end with a
+ * separator PART-WAY, so the trim can no longer bite into a word. Measured
+ * over 272,842 words from splitWords: 11,674 of them have a TRIMMABLE first or
+ * last character and every one of those is a ONE-code-point word -- U+200B,
+ * U+200C, U+200D or U+FEFF, which the Python splitter treats as words in their
+ * own right. So on the word path this loop only ever discards a whole
+ * zero-width format word sitting at a span's end, and a span that was nothing
+ * but such words is rejected below. The derivation that follows is the
+ * measurement the class came from, and it is what makes that safe.
+ *
  * Measured, by encoding `"call" + C + "Acme Corp"` for each candidate C: the
  * normalizer collapses the separator into the FOLLOWING token's offsets --
  * `(4, 9)` covering `C + "Acme"` -- identically for U+0020, U+0009, U+000A,
@@ -63,11 +76,18 @@ function splitsSurrogatePair(text: string, index: number): boolean {
 /**
  * Turn a token-index span into a character span over `text`.
  *
- * `tokens` and the two indices MUST be in the same coordinate system. If the
- * array came from a tokenizer that adds special tokens, the indices have to be
- * over that same array, specials included -- there is no way for this function
- * to detect a caller that mixed the two, except at index 0, and a one-off shift
- * produces a span that slices cleanly and names the wrong word.
+ * `tokens` and the two indices MUST be in the same coordinate system. The one
+ * caller this plan builds is Task 9's: `splitWords` produces the array and the
+ * model's logits are indexed by the same WORDS, after `encodeWords` has
+ * dropped the ones that tokenise to nothing from the array and the slot
+ * numbering together. That drop is the coordinate system; get it wrong and a
+ * one-off shift produces a span that slices cleanly and names the wrong word,
+ * which nothing in this function can detect.
+ *
+ * (The array no longer carries special tokens at all -- `encodeWords` returns
+ * only real words -- so the `[CLS]`/`[SEP]` reasoning below describes a hazard
+ * this path does not reach. The guard it justifies stays, because it is also
+ * what rejects a malformed offset array.)
  *
  * Every offset here is a JS string index -- a UTF-16 code unit position --
  * because `String.prototype.slice` is, and core's contract (detect/types.ts) is
@@ -87,16 +107,18 @@ function splitsSurrogatePair(text: string, index: number): boolean {
  * Two boundary adjustments are made, both of which move a boundary to the edge
  * of the thing it was already inside:
  *
- * 1. TRIMMABLE separators come off both ends. Needed because of what the pinned
- *    tokenizer emits: measured on "call Acme Corp today", its Metaspace
- *    pre-tokenizer reports the token for "Acme" as (4, 9), which slices to
- *    " Acme" -- the preceding separator is inside the token. Untrimmed, every
- *    span that does not start at index 0 carries one. That span still passes
- *    `normalizeFindings`, because the text is sliced; it fails quietly further
- *    down, where `applyActions` calls `vault.mint(conversationId, f.text, ...)`
- *    and one organisation named twice mints two surrogates. What trimming
- *    removes is exactly what the normalizer added: the class is derived from
- *    the fold behaviour above, and only ever runs at a boundary.
+ * 1. TRIMMABLE separators come off both ends. On the word path this is what
+ *    keeps a zero-width format word out of a span's ends: measured, `splitWords`
+ *    emits U+200B, U+200C, U+200D and U+FEFF as words of their own, because
+ *    Python's `\s` -- which the model's splitter used -- holds none of them.
+ *    An untrimmed span starting on one would hand `applyActions` a value that
+ *    differs invisibly from the same name written without it, and
+ *    `vault.mint(conversationId, f.text, ...)` would issue two surrogates for
+ *    one organisation. It was originally needed for a different reason, which
+ *    still holds where it applies: measured on "call Acme Corp today", the
+ *    pinned tokenizer's Metaspace pre-tokenizer reports the token for "Acme" as
+ *    (4, 9), which slices to " Acme" -- the preceding separator is inside the
+ *    token. Nothing feeds this function token offsets today.
  * 2. Trailing COMBINING_MARKs are taken IN. Measured: the pinned tokenizer's
  *    normalizer composes NFKC, so on decomposed "cafe" + U+0301 it reports
  *    (0, 4) and the acute at index 4 belongs to no token. Widening is safe in a
@@ -143,15 +165,14 @@ export function spanFromTokens(
   // no separate anchor check -- must be a real, non-empty interval that fits
   // inside the span its endpoints describe.
   //
-  // Zero-width rejection is what handles special tokens. Measured on the pinned
-  // tokenizer: it wraps every encoding in [CLS] .. [SEP] and reports both at
-  // (0, 0), and encoding a PAIR puts a third [SEP], also (0, 0), between the
-  // two sequences -- whose offsets then restart at 0. A span anchored on [CLS]
-  // would otherwise start at 0, an offset unrelated to where the entity is and
-  // slice-consistent enough that normalizeFindings waves it through; a span
-  // crossing the middle [SEP] would take its start from one sequence and its
-  // end from the other. Containment cannot cover either on its own, because
-  // (0, 0) fits inside any span that starts at index 0.
+  // Zero-width rejection. `splitWords` cannot produce a zero-width word -- both
+  // branches of its pattern need at least one character -- so on the word path
+  // this rejects a corrupted array rather than a legitimate one. It was written
+  // for the special tokens of the abandoned subword path, and the measurement
+  // stands: the pinned tokenizer wraps every encoding in [CLS] .. [SEP] and
+  // reports both at (0, 0), and a PAIR encode puts a third [SEP], also (0, 0),
+  // between two sequences whose offsets restart at 0. Containment cannot cover
+  // that on its own, because (0, 0) fits inside any span starting at index 0.
   //
   // Containment is checked at BOTH ends. `token.end <= end` catches a token
   // reaching past the span; `token.start >= start` catches one reaching before

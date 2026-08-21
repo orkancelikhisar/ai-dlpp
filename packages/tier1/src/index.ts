@@ -24,5 +24,23 @@ export {
   type DecodedSpan,
   type EdgeLogitsDims,
 } from "./decode.js";
+export {
+  encodeWords,
+  enumerateSpans,
+  tokenizerFromEncoder,
+  type EncodeOptions,
+  type EncodePrompt,
+  type EncodedWords,
+  type SpanEnumeration,
+  type SubwordTokenizer,
+} from "./encode.js";
 export { buildLabels, type Tier1Label } from "./labels.js";
 export { spanFromTokens, type CharSpan, type TokenOffset } from "./offsets.js";
+export {
+  assertSignature,
+  createOrtSession,
+  type OnnxSession,
+  type OnnxTensor,
+  type OrtRuntime,
+} from "./session.js";
+export { splitWords, type WordSpan } from "./words.js";
