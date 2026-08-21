@@ -11,6 +11,17 @@ export default defineConfig({
   // resolve while a plain runtime `fetch()` for the same tree gets a 403.
   // Task 11 fetches ONNX weights that way. The default covers everything.
   server: { port: 5178 },
+  // Both are reached only through a DYNAMIC import inside main.ts (tier 1 is
+  // loaded on demand, so a tier-0 page does not pay for a WASM runtime), which
+  // means Vite's scanner does not see them at startup and discovers them
+  // mid-run instead. MEASURED: without this, the first tier-1 spec fails with
+  // "Execution context was destroyed, most likely because of a navigation",
+  // and the dev-server log says why -- "new dependencies optimized:
+  // @huggingface/transformers / optimized dependencies changed. reloading".
+  // Vite full-reloads the page in the middle of the evaluate that triggered the
+  // discovery. Listing them here makes the pre-bundle happen before the browser
+  // is ever pointed at the page.
+  optimizeDeps: { include: ["onnxruntime-web", "@huggingface/transformers"] },
   // Output escapes the source tree: `root` is src/page, so Vite's default
   // outDir would write dist/ INTO the page sources.
   build: { outDir: "../../dist", emptyOutDir: true },

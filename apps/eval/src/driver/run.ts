@@ -19,11 +19,19 @@ export interface ArmSpec {
    *      at all -- grep finds only its declaration in detect/types.ts -- so
    *      even a faithfully plumbed value would reach no reader.
    *
-   * So this is a label the caller asserts. Task 11 owns making it real, and
-   * does so by confirming which execution provider actually initialized rather
-   * than by labelling harder. Until then do not read a record's `backend` as
-   * evidence of what executed. Note that `config` IS recorded (see the record's
-   * own field): unlike this one, that value is the object `detect` received.
+   * Task 11 closed the second half and only the second half. The page now
+   * MEASURES which execution provider ran -- it counts GPUQueue.submit calls
+   * around a warm-up inference and refuses to finish `loadTier1` when that
+   * disagrees with the backend asked for -- and `window.__sih.detect` rejects a
+   * `TierConfig.backend` that contradicts the loaded model. So a `config.backend`
+   * reaching the page is now checked against what executes.
+   *
+   * Point 1 is untouched: this field is still not plumbed into `spec.config`, so
+   * unless the CALLER puts `backend` in the config it passes, nothing reconciles
+   * this label with anything. Do not read a record's `backend` as evidence of
+   * what executed until an arm sets `config.backend` too. Note that `config` IS
+   * recorded (see the record's own field): unlike this one, that value is the
+   * object `detect` received.
    */
   backend: "wasm" | "webgpu";
   provider: string;

@@ -10,9 +10,18 @@ importers:
 
   apps/eval:
     dependencies:
+      '@huggingface/transformers':
+        specifier: ^3.3.0
+        version: 3.8.1
       '@sih/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@sih/tier1':
+        specifier: workspace:*
+        version: link:../../packages/tier1
+      onnxruntime-web:
+        specifier: 1.22.0-dev.20250409-89f8206ba4
+        version: 1.22.0-dev.20250409-89f8206ba4
       zod:
         specifier: ^4.0.0
         version: 4.4.3

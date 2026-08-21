@@ -142,8 +142,19 @@ function toRuntimeTensors(
  * Loads one graph on one backend.
  *
  * `loadRuntime` is injectable so the plumbing below is testable without pulling
- * a WASM runtime into a Node test process; the default is the real import, and
- * nothing else in this package may import onnxruntime-web directly.
+ * a WASM runtime into a Node test process, and nothing else in this package may
+ * import onnxruntime-web directly.
+ *
+ * The default is NOT usable from a bundled browser page, which makes this seam
+ * the supported way in rather than a test hook. MEASURED in real Chrome on the
+ * Vite-served eval page: `importOnnxruntimeWeb` throws "Failed to resolve module
+ * specifier 'onnxruntime-web'", and the dev server logs
+ * "The above dynamic import cannot be analyzed by Vite" pointing at the line
+ * below. Vite's import analysis rewrites only LITERAL specifiers, and this one
+ * goes through `WEB_RUNTIME` to dodge a TS7016 on the package's own types (see
+ * above), so the bare name reaches the browser unresolved. apps/eval's page
+ * therefore passes its own loader, which imports the literal specifier and sets
+ * `env.wasm.wasmPaths`; see apps/eval/src/page/main.ts.
  *
  * Returns a WRAPPER rather than the runtime's session, so that the tensor
  * conversion above happens on every run. The wrapper is transparent otherwise:

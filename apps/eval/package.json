@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.3.0",
     "@sih/core": "workspace:*",
+    "@sih/tier1": "workspace:*",
+    "onnxruntime-web": "1.22.0-dev.20250409-89f8206ba4",
     "zod": "^4.0.0"
   },
   "devDependencies": {

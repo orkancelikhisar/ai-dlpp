@@ -33,6 +33,22 @@ wasm *silently*, so a WebGPU arm run on the shell reports wasm latency under
 WebGPU's name. `test/smoke.spec.ts` asserts a non-null adapter so this fails
 loudly rather than quietly producing wrong numbers.
 
+## Prerequisite: fetch the model weights
+
+```bash
+pnpm -C packages/tier1 exec vite-node ../../scripts/fetch-models.ts
+```
+
+`test/tier1.spec.ts` runs the real ONNX graphs and **fails** without them —
+deliberately, and with a message naming the script above rather than a 404. The
+weights are ~1.5 GB, gitignored, and verified against `MODEL_MANIFEST`'s pinned
+hashes by that script.
+
+The other half of the same coverage, `packages/tier1/test/e2e.test.ts`, **skips**
+instead. That asymmetry is intended: the vitest suites in `packages/*` must run
+on a checkout that has never downloaded a model, while this app is the harness
+whose entire job is running them.
+
 ## Running
 
 ```bash
@@ -252,14 +268,147 @@ Behaviours worth knowing before calling it:
   into the JSONL. Nothing validates a record on the producing path.
 - **It stamps two different hashes**, described in its own section below.
 
-`ArmSpec.backend` is copied onto every record and today verified by **nothing**.
-The chain from that label to what executed is broken in two places, and fixing
-either alone would still leave it unbacked: `runArm` never plumbs `spec.backend`
-into `spec.config` (the config is forwarded to `detect` untouched), and nothing
-under `packages/core/src` reads `TierConfig.backend` in the first place. Do not
-read a record's `backend` as evidence of what executed until the WebGPU arm
-lands — that task confirms which execution provider actually initialized rather
-than labelling.
+`ArmSpec.backend` is copied onto every record and **still half-unbacked**. The
+chain from that label to what executed was broken in two places; one is now
+fixed. The page measures which execution provider really ran and rejects a
+`TierConfig.backend` that contradicts it (see *`backend` is a measurement now*
+below). But `runArm` still never plumbs `spec.backend` into `spec.config`, so
+unless the caller sets `config.backend` as well, nothing reconciles this label
+with anything. Do not read a record's `backend` as evidence of what executed
+until an arm sets both.
+
+## Tier 1: the model in the page
+
+`window.__sih` grows three methods when a tier-1 model is involved:
+
+- `backendAvailable(backend)` — asks the browser, not a user agent. `"webgpu"`
+  requires `navigator.gpu.requestAdapter()` to resolve **non-null**, because
+  Playwright's headless shell exposes `navigator.gpu` and returns `null` from it.
+- `loadTier1({ backend, modelId?, threshold?, ... })` — loads one rung, builds
+  the tokenizer, constructs `GlinerSpanTagger`, runs one warm-up inference, and
+  returns a report. Takes a `Partial<Tier1Config>`, so an arm can vary threshold,
+  max width and label form; `resolveTier1Config` fills in and validates the rest,
+  and the **fully resolved config** comes back on the report.
+- `tier1Status()` — the load report, the tagger's cumulative counters, and the
+  per-call deltas from the most recent `detect`.
+
+The ONNX file is reached through `import.meta.glob(..., { query: "?url" })`, which
+resolves to a `/@fs/...` URL that Vite's **default** `server.fs.allow` already
+covers. Measured: a plain `fetch()` of one answers 206. Weights absent (the
+directory is gitignored) makes that glob empty, and `loadTier1` then throws a
+message naming `scripts/fetch-models.ts` rather than letting onnxruntime fetch a
+404 body and fail on a magic word.
+
+Two environment facts, both measured, both invisible until they bite:
+
+- **`env.wasm.wasmPaths` must be set to a local URL.** Vite's dependency
+  pre-bundling moves onnxruntime-web to `/node_modules/.vite/deps/`, and ORT
+  resolves `ort-wasm-simd-threaded.jsep.wasm` relative to its own module URL, so
+  the binary 404s and session creation dies on
+  `CompileError: expected magic word 00 61 73 6d, found 3c 21 64 6f` (`<!do` —
+  the dev server's index.html fallback). Worse, `@huggingface/transformers`
+  shares this exact ORT instance and assigns
+  `wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@<v>/dist/"`
+  when it finds the field unset — a **different ORT build, fetched over the
+  network**, from an origin this page's COEP rejects. `main.ts` sets it and then
+  re-checks it.
+- **`optimizeDeps.include`** lists both packages in `vite.config.ts`. They are
+  reached only through a dynamic import, so Vite discovers them mid-run and
+  full-reloads the page in the middle of the `evaluate` that triggered the
+  discovery — which surfaces as `Execution context was destroyed`.
+
+### `backend` is a measurement now, not a label
+
+`loadTier1` counts **`GPUQueue.submit` calls around a real warm-up inference**
+and reports `observedBackend` from that. If it disagrees with the backend that
+was asked for, the load throws and no arm runs. Measured on this page:
+`executionProviders: ["wasm"]` submits **0** during a run, `["webgpu"]` submits
+40–193 depending on the rung.
+
+The two obvious alternatives do not work. `env.webgpu.device` is documented as a
+getter that **creates** a device when read before the first webgpu session, so
+reading it to ask "did webgpu initialize" makes the answer yes.
+`env.webgpu.adapter` is a real signal but sticky — once any webgpu session has
+existed it stays set for the page's lifetime.
+
+`window.__sih.detect` additionally rejects a `TierConfig.backend` that
+contradicts the loaded model, which is the one place both values are known.
+
+### ⚠ WebGPU returns WRONG NUMBERS on three of the four loadable rungs
+
+Measured with identical feeds, one fresh page per rung per provider, comparing
+raw `logits` element by element:
+
+| rung | spanMode | max &#124;wasm − webgpu&#124; | verdict |
+|---|---|---|---|
+| `gliner-pii-edge` | token_level | 8.352 | **wrong** |
+| `gliner-pii-edge-uint8` | token_level | 8.134 | **wrong** |
+| `gliner-pii-base` | markerV0 | **0.000** | exact |
+| `gliner-pii-base-uint8` | markerV0 | 30.154 | **wrong** |
+
+Bit-identical across two independent full re-runs, so it is deterministic rather
+than numerical noise. The disagreement is a **collapse**, not drift:
+`gliner-pii-base-uint8` logits span `[-30.46, +2.05]` on wasm and `[-0.36, -0.16]`
+on webgpu, whose sigmoid is ≈0.46 for everything — which is exactly what the
+end-to-end findings show, every word scoring 0.44–0.47 in monotone order.
+
+**Nothing reports this.** Session creation succeeds, `run` resolves, the logits
+are finite and correctly shaped. `gliner-pii-base` agreeing to 0.000 under the
+same page code and readback path is the control that says the harness is not the
+cause. `test/tier1.spec.ts` pins the table above, so a future onnxruntime-web
+that fixes (or breaks) a rung fails the suite instead of quietly changing what a
+number means.
+
+**Do not run a WebGPU arm on any rung except `gliner-pii-base` until this is
+retested.** That is also why the smoke arms use the 665 MB fp32 rung rather than
+the 46 MB uint8 one: it is the only rung on which a wasm arm and a webgpu arm
+measure the same model. The size cost is 2.0–2.7 s of load in this browser.
+
+### The ladder is four rungs, not six
+
+Both `*-fp16` variants fail to create a session, in the **browser** and under
+`onnxruntime-node` alike, with the same error:
+
+```
+Type Error: Type (tensor(float16)) of output arg (.../Cast_1_output_0)
+of node (.../Cast_1) does not match expected type (tensor(float)).
+```
+
+Same failure on both runtimes means an upstream export defect, not a runtime
+difference. `test/tier1.spec.ts` asserts they fail *loudly* — a rung that cannot
+run must throw rather than fall back to one that can.
+
+### Node and the browser agree, on WASM
+
+`packages/tier1/test/e2e.test.ts` runs the assembled tagger under
+`onnxruntime-node` (skipped unless the weights are on disk). Cross-checked
+against the browser with the same IR, the same message and the same rungs:
+identical spans on all four loadable rungs, and identical scores to 3 dp on both
+fp32 rungs. Only `gliner-pii-edge-uint8` drifts, by ≤0.03 — two ORT builds'
+quantized kernels, not a span difference.
+
+Latency for one 12-word prose segment, `tier1Ms`:
+
+| rung | onnxruntime-node CPU | browser wasm | browser webgpu |
+|---|---|---|---|
+| `gliner-pii-edge` | 10.9 | 20.1 | 66.9 |
+| `gliner-pii-edge-uint8` | 3.4 | 20.7 | 50.3 |
+| `gliner-pii-base` | 24.9 | 54.8 | 31.1 |
+| `gliner-pii-base-uint8` | 10.0 | 70.1 | 108.1 |
+
+WebGPU is **slower** than WASM on three of four rungs at this message size, and
+three of those four webgpu columns are measuring wrong numbers anyway. Only
+`gliner-pii-base` both benefits and agrees.
+
+### Telling "ran and found nothing" from "never ran"
+
+A span tagger legitimately returns nothing, so `findings` cannot be the evidence
+that the model executed, and `tier1Ms` cannot either. `tier1Status().lastDetect`
+carries the tagger's own counters as deltas over the one `detect` call —
+`inferences` (actual `session.run` calls), `unmappableSpans` (decoded spans the
+offset mapper refused, which are invisible in `findings` and would otherwise read
+as a model that found less), and `gpuSubmits`. The page clears `lastDetect` at
+the end of `loadTier1`, so the warm-up cannot supply it.
 
 ### A record carries two hashes
 
