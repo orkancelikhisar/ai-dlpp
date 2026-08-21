@@ -1172,6 +1172,17 @@ git add -A && git commit -m "feat(tier1): token-to-character span mapping with U
 - Create: `packages/tier1/test/fixtures/model-signature.json`
 - Test: `packages/tier1/test/signature.test.ts`
 
+> **Rescoped after Tasks 4 and 6.** Task 4 already parsed both graphs and pinned their signatures into `MODEL_MANIFEST` (`inputNames`), verified against the on-disk weights:
+>
+> ```
+> edge: input_ids, attention_mask, words_mask, text_lengths          (all INT64)
+> base: + span_idx (INT64), span_mask (BOOL)
+> ```
+>
+> So the *discovery* half of this task is done. What remains, and what it should now establish, is the **output** side and the pooling contract: the shape and dtype of the logits tensor, whether its word axis length equals `max(words_mask)`, and how `span_idx`/`span_mask` are expected to be populated for base. `words_mask` being a graph input is the structural proof of the word-level design established in Task 9 — the model pools subwords into one vector per word, and the logits are indexed by WORD, not by subword token. Confirm that against the real graph rather than assuming it.
+>
+> Note also that the two rungs are structurally different models, not interchangeable precisions: edge is **BPE / ModernBERT** (`vocab 50,280`, `NFC` normalizer, `ByteLevel` pre-tokenizer), base is **Unigram / DeBERTa-v3** (`vocab 128,000`, `Precompiled` charsmap, `Metaspace`). One decoder may not serve both — establish which parts are shared.
+
 **Do not write the decoder against a guessed tensor layout.** GLiNER ONNX exports differ between publishers in input names, tensor ranks, and output shape. This task discovers the truth and commits it; Task 8 decodes against the committed fact.
 
 - [ ] **Step 1: Write the probe script**
@@ -1436,185 +1447,151 @@ git add -A && git commit -m "feat(tier1): decode span logits with per-class sigm
 
 ---
 
-### Task 9: Session and tokenizer seams
+### Task 9: Word splitter, session seam, and per-word encoding
 
 **Files:**
-- Create: `packages/tier1/src/session.ts`, `packages/tier1/src/tokenizer.ts`
-- Test: `packages/tier1/test/session.test.ts`
+- Create: `packages/tier1/src/words.ts`, `packages/tier1/src/session.ts`, `packages/tier1/src/encode.ts`
+- Test: `packages/tier1/test/words.test.ts`, `packages/tier1/test/encode.test.ts`, `packages/tier1/test/session.test.ts`
 
-Interfaces plus real implementations. The interfaces let Task 10 be tested in Node with a fake; the implementations are exercised in Chrome in Task 11.
+> **This task was rewritten after Task 6.** The original assumed `@huggingface/transformers` returns `offset_mapping` and that character offsets come from subword tokens. **Both assumptions were false.** Read this preamble before writing code.
 
-- [ ] **Step 1: Write the failing test**
+#### What is actually true
 
-`packages/tier1/test/session.test.ts`:
+**GLiNER span indices are WORD indices, not subword-token indices.** The reference implementation (`gliner/data_processing/tokenizer.py`, and GLiNER.js) pre-splits text with a regex word splitter recording `(word, charStart, charEnd)`, feeds the *word list* to the subword tokenizer, and passes a `words_mask` graph input so the model pools subwords back into one vector per word. Logits are indexed by word, and the reference recovers character offsets **purely from the splitter own `match.index` / `lastIndex`** — the tokenizer is never consulted for a position.
+
+Consequences, all measured:
+
+- **No tokenizer offsets are needed.** `@huggingface/transformers` has never shipped an offsets API: 0 hits for `offset_mapping` / `return_offsets` / `word_ids` across 2.17.2, 3.8.1 and current 4.2.0 — the entire 73-version lineage. `return_offsets_mapping: true` is silently ignored. There is no upgrade to wait for; do not change the pinned dep.
+- **`text === message.slice(start, end)` holds by construction**, because JS regex indices are natively UTF-16 code units. Measured: **0 slice-fidelity violations across 25,341 texts and ~394,000 word tokens**, in every candidate regex tried — including ones that segmented wrongly. Offsets are always self-consistent; only segmentation drifts.
+- **Every hard problem in the old Task 9 dissolves**: no byte-level BPE inversion, no SentencePiece `Precompiled` alignment, no code-point-to-UTF-16 conversion.
+
+**Do NOT copy GLiNER.js regex.** Its shipped `/\w+(?:[-_]\w+)*|\S/g` measures **21.204%** token-exact parity with the Python reference, because JS `\w` is ASCII-only (63 code points vs Python 133,023) and JS `\s` differs. Use:
+
+```js
+/[\p{L}\p{N}_]+(?:[-_][\p{L}\p{N}_]+)*|[^PYWS]/gu
+```
+
+where `PYWS` is Python `\s` spelled out explicitly — JS `\s` **plus** U+001C through U+001F and U+0085, **minus** U+FEFF. Measured parity: **341/341 texts, 3971/3971 tokens** on a curated corpus (ASCII, NFC/NFD accents, CJK, Indic matras, Arabic/Hebrew, emoji ZWJ + flags + skin tones, NBSP/U+3000/U+200B/BOM/C0, repeated substrings), and **20000/20000 texts, 389955/389955 tokens** on adversarial fuzz. For contrast: same regex with `u` but JS `\s` scores 56.610%; without `u`, 14.631%.
+
+Character-class note, established exhaustively over all 1,114,112 code points: Python `\w` is a subset of JS `[\p{L}\p{N}_]` with **zero** Python-only members; the 14,574 JS-only code points are all Unicode-`Cn` (unassigned) at the oracle Unicode 13.0 — pure version skew.
+
+#### The latent bug in BOTH reference implementations — do not reproduce it
+
+If any word tokenizes to **zero subwords**, the reference word counter and its offset arrays desync, and **every subsequent span silently points at the wrong word**. Measured on base with a single U+0001 (which is `\S`, so it *is* a word):
+
+```
+words N=5 [call, U+0001, Acme, Corp, today]   word_ids present M=4 [0,2,3,4]
+ slot 1: reference reads start_idx[1] -> U+0001  | CORRECT is Acme   <<< WRONG
+ slot 2: reference reads start_idx[2] -> Acme    | CORRECT is Corp   <<< WRONG
+```
+
+This is exactly the "neighbouring word to the vault, real value left in the message" failure this system exists to prevent, and it is attacker-controllable with one invisible character. **Fix: drop zero-subword words from the word list AND the offset arrays in lockstep**, so word count always equals `max(words_mask)`. Pin it with a test using U+0001 and U+FEFF.
+
+#### Step 1: Write the failing tests
+
+`packages/tier1/test/words.test.ts`, at minimum:
+
 ```ts
 import { describe, expect, it } from "vitest";
-import { assertSignature } from "../src/session.js";
-import signature from "./fixtures/model-signature.json" with { type: "json" };
+import { splitWords } from "../src/words.js";
 
-describe("assertSignature", () => {
-  it("accepts a session whose inputs match the pinned signature", () => {
-    const names = signature.inputs.map((i) => i.name);
-    expect(() => assertSignature({ inputNames: names, outputNames: signature.outputs.map((o) => o.name) })).not.toThrow();
+describe("splitWords", () => {
+  it("returns offsets that slice back to the word, always", () => {
+    // The invariant the whole tier rests on. Includes astral characters,
+    // because UTF-16 is where this breaks.
+    for (const text of ["call Acme Corp today", "\u{1F389} Acme", "caf\u00e9 Ltd", "\u5317\u4eac Corp", "ab"]) {
+      for (const w of splitWords(text)) {
+        expect(text.slice(w.start, w.end)).toBe(w.text);
+      }
+    }
   });
 
-  it("rejects a session missing a pinned input, naming the input", () => {
-    // A model swapped underneath a matching filename would otherwise be fed
-    // tensors it does not read, and return scores for something else entirely.
-    const names = signature.inputs.map((i) => i.name).slice(1);
-    expect(() => assertSignature({ inputNames: names, outputNames: signature.outputs.map((o) => o.name) })).toThrow(
-      new RegExp(signature.inputs[0]!.name),
-    );
+  it("keeps hyphenated and underscored words whole", () => {
+    expect(splitWords("well-known co_op").map((w) => w.text)).toEqual(["well-known", "co_op"]);
+  });
+
+  it("treats every non-space non-word character as its own word", () => {
+    expect(splitWords("a, b!").map((w) => w.text)).toEqual(["a", ",", "b", "!"]);
+  });
+
+  it("uses Unicode word characters, not ASCII", () => {
+    // GLiNER.js shipped regex fails this: JS \w is ASCII-only, so an accented
+    // word splits in two and every downstream word index shifts.
+    expect(splitWords("caf\u00e9 Ltd").map((w) => w.text)).toEqual(["caf\u00e9", "Ltd"]);
+    expect(splitWords("\u5317\u4eac Corp").map((w) => w.text)).toEqual(["\u5317\u4eac", "Corp"]);
+  });
+
+  it("treats BOM as a word, not whitespace, matching Python", () => {
+    // JS \s includes U+FEFF; Python does not. Getting this wrong shifts every
+    // subsequent word index on any text containing a BOM.
+    expect(splitWords("a" + BOMCHAR + "b").map((w) => w.text)).toEqual(["a", BOMCHAR, "b"]);
+  });
+
+  it("treats C0 separators as whitespace, matching Python", () => {
+    // Python \s includes U+001C-U+001F and U+0085; JS does not.
+    expect(splitWords("a" + C0CHAR + "b").map((w) => w.text)).toEqual(["a", "b"]);
   });
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+Define `BOMCHAR` as `"\uFEFF"` and `C0CHAR` as `"\u001C"` at the top of the test file rather than pasting raw control characters into source.
 
-Run: `pnpm -C packages/tier1 exec vitest run test/session.test.ts`
-Expected: FAIL — cannot find module `../src/session.js`.
+`packages/tier1/test/encode.test.ts` must pin the lockstep invariant:
+
+```ts
+it("drops zero-subword words from the word list and the offsets together", async () => {
+  // The reference bug: a word tokenizing to nothing desyncs the offset arrays
+  // and every later span names the wrong word.
+  const encoded = await encodeWords(tokenizer, splitWords("call " + C0CHAR + " Acme Corp"));
+  expect(encoded.words).toHaveLength(Math.max(...encoded.wordsMask));
+  expect(encoded.words.map((w) => w.text)).not.toContain("");
+});
+```
+
+- [ ] **Step 2: Run to verify failure** — module not found.
 
 - [ ] **Step 3: Implement**
 
-`packages/tier1/src/session.ts`:
-```ts
-import * as ort from "onnxruntime-web";
-import signature from "../test/fixtures/model-signature.json" with { type: "json" };
+`src/words.ts` — `splitWords(text): WordSpan[]` where `WordSpan` is `{ text, start, end }`, i.e. exactly the `TokenOffset` shape `spanFromTokens` already consumes, plus the text. Build the character class explicitly and comment it; do not inline a bare `\s` or `\w`.
 
-export interface OnnxTensorLike {
-  readonly data: Float32Array;
-  readonly dims: readonly number[];
-}
+`src/encode.ts` — `encodeWords(tokenizer, words)` returning `{ inputIds, attentionMask, wordsMask, words }`, where `words` is the **surviving** list after the lockstep drop and `wordsMask` maps each subword to its 1-based word slot. Special-token ids are discoverable at runtime; do not hardcode them.
 
-export interface OnnxSession {
-  readonly inputNames: readonly string[];
-  readonly outputNames: readonly string[];
-  run(feeds: Record<string, unknown>): Promise<Record<string, OnnxTensorLike>>;
-}
+`src/session.ts` — the `OnnxSession` seam, `createOrtSession(modelUrl, backend)`, and `assertSignature` checking the loaded graph against the manifest recorded `inputNames`. Task 4 already parsed and pinned these:
 
-/**
- * Fail fast when the loaded model is not the model the decoder was written
- * against. ORT will happily run a session with an unexpected graph and return a
- * tensor of the wrong shape; decode.ts then reads it at the wrong stride and
- * produces confident nonsense that looks exactly like a real result.
- */
-export function assertSignature(session: Pick<OnnxSession, "inputNames" | "outputNames">): void {
-  for (const input of signature.inputs) {
-    if (!session.inputNames.includes(input.name)) {
-      throw new Error(
-        `loaded model is missing input "${input.name}" (it has [${session.inputNames.join(", ")}]) — ` +
-          `these weights do not match test/fixtures/model-signature.json`,
-      );
-    }
-  }
-  for (const output of signature.outputs) {
-    if (!session.outputNames.includes(output.name)) {
-      throw new Error(
-        `loaded model is missing output "${output.name}" (it has [${session.outputNames.join(", ")}])`,
-      );
-    }
-  }
-}
-
-export async function createOrtSession(
-  modelUrl: string,
-  backend: "wasm" | "webgpu",
-): Promise<OnnxSession> {
-  // Threads help WASM only, and only under cross-origin isolation — which
-  // vite.config.ts arranges via COOP/COEP. Requesting them without it makes ORT
-  // fall back silently, so the check is explicit rather than hopeful.
-  ort.env.wasm.numThreads =
-    backend === "wasm" && globalThis.crossOriginIsolated
-      ? Math.min(4, navigator.hardwareConcurrency ?? 1)
-      : 1;
-
-  const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: [backend],
-    graphOptimizationLevel: "all",
-  });
-  assertSignature(session);
-
-  return {
-    inputNames: session.inputNames,
-    outputNames: session.outputNames,
-    async run(feeds) {
-      const result = await session.run(feeds as never);
-      const out: Record<string, OnnxTensorLike> = {};
-      for (const name of session.outputNames) {
-        const tensor = result[name]!;
-        out[name] = { data: tensor.data as Float32Array, dims: tensor.dims };
-      }
-      return out;
-    },
-  };
-}
+```
+edge: input_ids, attention_mask, words_mask, text_lengths          (all INT64)
+base: + span_idx (INT64), span_mask (BOOL)
 ```
 
-`packages/tier1/src/tokenizer.ts`:
-```ts
-import { AutoTokenizer } from "@huggingface/transformers";
-import type { TokenOffset } from "./offsets.js";
-
-export interface Encoded {
-  readonly inputIds: BigInt64Array;
-  readonly attentionMask: BigInt64Array;
-  /** JS string indices into the text passed to encode() — see offsets.ts. */
-  readonly offsets: TokenOffset[];
-}
-
-export interface Tokenizer {
-  encode(text: string): Promise<Encoded>;
-}
-
-export async function createTransformersTokenizer(repoId: string): Promise<Tokenizer> {
-  const tokenizer = await AutoTokenizer.from_pretrained(repoId);
-  return {
-    async encode(text) {
-      const encoded = tokenizer(text, { return_offsets_mapping: true, add_special_tokens: true });
-      const mapping = (encoded as { offset_mapping?: [number, number][] }).offset_mapping;
-      if (mapping === undefined) {
-        // A blocker, deliberately not worked around. The alternative — locating
-        // each token by searching the text for its surface form — is precisely
-        // the drift normalizeFindings throws on, and it fails silently on
-        // repeated substrings.
-        throw new Error(
-          `tokenizer "${repoId}" returned no offset_mapping; character spans cannot be derived ` +
-            `without it (see offsets.ts)`,
-        );
-      }
-      return {
-        inputIds: encoded.input_ids.data as BigInt64Array,
-        attentionMask: encoded.attention_mask.data as BigInt64Array,
-        offsets: mapping.map(([start, end]) => ({ start, end })),
-      };
-    },
-  };
-}
-```
-
-**MEASURED IN TASK 6 AGAINST THE PINNED TOKENIZER — these are facts, not cautions, and each one shipped a wrong span in the plan's original draft:**
-
-1. **Python `tokenizers` returns CODE-POINT offsets, and JS strings are UTF-16.** Measured: `👨` inside a ZWJ family sequence is reported as `(7, 8)`; `slice(7, 8)` in JS is a **lone high surrogate** (verified via `TextEncoder` → `ef bf bd`, i.e. U+FFFD). **You must measure which unit `@huggingface/transformers` uses** — do not assume that because it operates on JS strings it reports UTF-16. If it mirrors the Python convention, the conversion belongs HERE in the tokenizer adapter, not in `offsets.ts`, which is documented as taking JS string indices. Pin the answer with a test over an astral character.
-2. **Whitespace is INSIDE the token.** `▁Acme` in `"call Acme Corp today"` is `(4, 9)` → `" Acme"`, not `(5, 9)`. `spanFromTokens` trims this, but the adapter must not "helpfully" pre-adjust as well or the span loses its first real character.
-3. **`[CLS]`/`[SEP]` carry `(0, 0)` offsets**, and a *paired* encoding carries a **third `(0,0)` `[SEP]` mid-sequence with sequence B's offsets restarting at 0**. Decide explicitly whether the returned arrays include special tokens, state it in the type, and pin it with a test.
-4. **The one hazard nothing downstream can catch:** if a caller passes the full token array (specials included) but indices derived from a text-only view, the one-off shift produces a span that **slices cleanly and names the wrong word** — `normalizeFindings` cannot object because the text does match the offsets. Only the index-0 case is detectable. The token ids and the offsets this adapter returns must therefore be the *same* view, and that must be tested, not assumed.
-
-**Verify at implementation time** that the installed `@huggingface/transformers` returns `offset_mapping` for this tokenizer and that `ort.InferenceSession.create` accepts `"webgpu"` in the installed onnxruntime-web. Both are version-sensitive. If either disagrees, follow the installed library and record it — the code above is written from the documented API, not from a run.
-
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `pnpm -C packages/tier1 exec vitest run test/session.test.ts`
-Expected: 2 passed.
+- [ ] **Step 4: Verify pass** — all green, full root suite green (`pnpm -r test`), typecheck clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A && git commit -m "feat(tier1): ONNX session and tokenizer seams with signature assertion"
+git add -A && git commit -m "feat(tier1): word splitter and per-word encoding with lockstep offsets"
 ```
+
+#### Known gaps to handle or document explicitly
+
+- **U+FEFF on base.** `transformers.js` encodes it to zero tokens where Rust gives `[507]`. With the lockstep drop this is an *accuracy* gap, never an offset gap. Derive the substitution rather than hardcoding `507`, or document the parity gap.
+- **Unicode version skew.** The splitter behaviour depends on the host browser ICU version (Node 26 ships ICU 78.3 / Unicode 17.0). It cannot corrupt an offset; it can move a word boundary. Not reproducible across clients — state it.
+- **`max_len: 2048` truncation is not handled here** and carries the same lockstep hazard: truncation drops trailing words and the word arrays must be truncated together.
+- **A Node-side golden oracle exists**: `@anush008/tokenizers` 0.6.0 has Rust-parity `getOffsets`, and Python `AutoTokenizer` + `re` gives word-level ground truth. The oracle must load the **directory**, not the `tokenizer.json` file — `PreTrainedTokenizerFast(tokenizer_file=...)` bypasses `tokenizer_config.json` and loses `add_prefix_space: true`.
+- **`spanFromTokens` doc rationale is now partly obsolete.** It reasons about Metaspace token offsets, specials at `(0,0)`, and leading-space-inside-token — none of which occur on the word-offset path, where the whitespace trim is a no-op because regex words never start or end with a separator. The function is correct as-is; revise the stated rationale and keep the surrogate and combining-mark guards, which stay useful.
 
 ---
 
 ### Task 10: GlinerSpanTagger
+
+> **Rescoped after Task 6.** The sketch below predates the word-level finding and still shows `this.tokenizer.encode(segment.text)` producing `encoded.offsets`. Replace that path with Task 9 modules: `splitWords(segment.text)` for the offsets, `encodeWords(...)` for the model feeds, and `decodeSpans(..., numWords)` where `numWords` is the length of the **surviving** word list after the lockstep drop — never the subword count. `spanFromTokens` is then fed WORD offsets, which is what makes its slice-fidelity guarantee hold by construction.
+>
+> Two invariants this task must not break, both established by measurement:
+>
+> 1. **Lockstep.** `words.length` must equal `max(wordsMask)` at every point. The reference implementations desync here and every subsequent span silently names the wrong word — attacker-controllable with one invisible character.
+> 2. **Segment-local to absolute.** The tagger receives `Segment[]` carrying their own offsets into the message, and `splitWords` returns offsets relative to the *segment*. The addition is the single most likely place for this package to be wrong, and `normalizeFindings` throws rather than warns.
+>
+> `buildLabels` now takes a required `Tier1Config` (Task 5), so `GlinerSpanTagger` must hold the whole config, not a `{threshold, maxWidth}` subset — a narrower options bag is how an arm silently runs labels it did not configure.
+
 
 **Files:**
 - Create: `packages/tier1/src/tagger.ts`
