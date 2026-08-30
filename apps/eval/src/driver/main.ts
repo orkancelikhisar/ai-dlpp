@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Page } from "@playwright/test";
 import type { TierConfig } from "@sih/core";
-import { resolveTier1Config, type Tier1Backend, type Tier1Config } from "@sih/tier1";
+import {
+  MODEL_MANIFEST,
+  resolveTier1Config,
+  type Tier1Backend,
+  type Tier1Config,
+} from "@sih/tier1";
 import { z } from "zod";
 import { loadCorpus } from "./corpus.js";
 import { RunRecordSchema, toJsonl } from "./record.js";
@@ -220,6 +225,55 @@ function prepareArms(options: MatrixOptions): PreparedArm[] {
   return prepared;
 }
 
+/**
+ * Checks that the page fetched the artifact MODEL_MANIFEST pins for this rung.
+ *
+ * Two independent facts, because they fail differently. The URL says which file
+ * was asked for -- a rung wired to the wrong `weightsPath` names the right
+ * model and loads a different precision. The byte count says what the server
+ * said it would serve -- a 404 body, a truncated download, or a file replaced
+ * on disk since it was fetched all answer at the pinned path with the wrong
+ * size. Neither catches a same-size substitution; the sha256 in the manifest
+ * does, and verifying it means reading 665 MB back out of the browser on every
+ * arm, which is why `scripts/fetch-models.ts` is where that check lives.
+ *
+ * Read from @sih/tier1 here in Node, never from the page: a page answering from
+ * a stub cannot match a number it was not given.
+ */
+function assertPinnedArtifact(
+  arm: string,
+  modelId: string,
+  loaded: { readonly weightsUrl: string; readonly weightsBytes: number },
+): void {
+  const entry = MODEL_MANIFEST[modelId];
+  // Unreachable while resolveTier1Config has already rejected an unknown
+  // modelId, and kept because the alternative is reading `.files` off
+  // `undefined` if that ever stops being true.
+  if (entry === undefined) throw new Error(`arm "${arm}" loaded unknown rung ${modelId}`);
+  const pinned = entry.files[entry.weightsPath];
+  if (pinned === undefined) {
+    throw new Error(
+      `arm "${arm}": MODEL_MANIFEST names ${entry.weightsPath} as ${modelId}'s weights but ` +
+        `pins no file at that path`,
+    );
+  }
+  if (!loaded.weightsUrl.endsWith(entry.weightsPath)) {
+    throw new Error(
+      `arm "${arm}" loaded ${modelId} from a URL ending "${loaded.weightsUrl.slice(-40)}", which ` +
+        `is not the pinned ${entry.weightsPath}; the arm would be recorded under a rung it did ` +
+        `not run`,
+    );
+  }
+  if (loaded.weightsBytes !== pinned.bytes) {
+    throw new Error(
+      `arm "${arm}": ${modelId}'s pinned weights are ${String(pinned.bytes)} bytes but the page ` +
+        `was served ${String(loaded.weightsBytes)}. Either the file on disk is not the pinned ` +
+        `artifact, or the request answered with something that is not the graph at all. Re-fetch ` +
+        `with scripts/fetch-models.ts, which verifies every file against its sha256.`,
+    );
+  }
+}
+
 /** Every field of a resolved config, so a drift in any one of the six is caught. */
 function sameTier1Config(a: Tier1Config, b: Tier1Config): boolean {
   return (
@@ -311,11 +365,26 @@ export async function runMatrix(page: Page, options: MatrixOptions): Promise<str
           const loadedReport = await window.__sih!.loadTier1(loadOptions);
           return {
             config: loadedReport.config,
+            weightsUrl: loadedReport.weightsUrl,
+            weightsBytes: loadedReport.weightsBytes,
             inferences: window.__sih!.tier1Status()!.totals.inferences,
           };
         },
         { ...definition.tier1Config, backend: definition.backend },
       );
+      // The check `Tier1LoadReport.weightsBytes` was added FOR, finally
+      // performed. The page reports the size and refuses to judge it -- "the
+      // manifest lives in @sih/tier1 and the driver is where the comparison
+      // belongs" -- and until now no driver made it: `runMatrix` read
+      // `config` and `inferences` off this report and discarded the other two
+      // fields. So an arm could serve any bytes at the pinned path, from a 404
+      // body to a different precision variant, and every record would still
+      // name the manifest's rung. test/tier1.spec.ts already compares this way;
+      // this is the same comparison on the path that writes files.
+      //
+      // Before the corpus, not after: the alternative is learning that the
+      // wrong graph ran once the arm has finished.
+      assertPinnedArtifact(definition.arm, report.config.modelId, report);
       // The guard again, now on the object the tagger was CONSTRUCTED with
       // rather than on what this process resolved from the arm.
       assertWebgpuTrustworthy(definition.arm, report.config);

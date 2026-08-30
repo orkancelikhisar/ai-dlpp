@@ -20,6 +20,14 @@ import { GoldSpanSchema } from "./corpus.js";
  *
  * Version 1 therefore describes the only record shape that has ever existed.
  * From the first run that writes a file, the rule above applies literally.
+ *
+ * STILL 1 after two further additions -- `tier1Stats` and
+ * `abandonedWorkInFlight` -- under exactly the reasoning above and no other.
+ * Both are ADDITIONS, which the rule does not cover in the first place, and the
+ * only files any producer here has ever written are the mkdtemp directories
+ * test/matrix.spec.ts creates and abandons. Nothing durable exists for a
+ * version 2 to be distinguished from. If that changes -- if a run is ever kept
+ * -- this constant moves before the next field does.
  */
 export const RECORD_SCHEMA_VERSION = 1;
 
@@ -200,6 +208,50 @@ export const RunRecordSchema = z
         labelForm: z.enum(TIER1_LABEL_FORMS),
       })
       .optional(),
+    /**
+     * The tier-1 tagger's own counters for THIS item, as a delta over the one
+     * `detect` call. Present exactly when tier 1 ran and returned; see the
+     * refine at the bottom for the coupling and why `error` is part of it.
+     *
+     * WHY THE RECORD CARRIES THEM. `Tier1TaggerStats` in
+     * packages/tier1/src/tagger.ts says what these are for in as many words: "a
+     * silently dropped span is indistinguishable from a model that found
+     * nothing. An eval arm reporting recall has to be able to tell those
+     * apart." Until this field existed the arm could not: `runArm` built every
+     * record from `findings` and `timings` alone, so an item whose tail
+     * `maxLen` cut off, or whose span the offset mapper refused, emitted a row
+     * byte-identical to one where the model ran over the whole message and
+     * found nothing. That is the exact recall miss the counters were introduced
+     * to expose, and it was being thrown away one layer above them.
+     *
+     * The field set is `Tier1TaggerStats` WHOLE, not a chosen subset, so there
+     * is no judgement here about which counter matters -- a counter added there
+     * fails typecheck here rather than going missing. `gpuSubmits` is the one
+     * thing on the page's `Tier1DetectStats` that is deliberately absent: it
+     * counts the PAGE's `GPUQueue.submit` calls, not the tagger's work, and
+     * `loadTier1` already refuses to finish when it disagrees with `backend`.
+     *
+     * Read `inferences` before reading any of the others. Zero means the graph
+     * never ran on this item -- a message with no prose segment does that
+     * legitimately -- in which case the four loss counters are zero because
+     * there was nothing to lose, not because nothing was lost.
+     */
+    tier1Stats: z
+      .object({
+        /** `session.run` calls. Zero means the graph never ran for this item. */
+        inferences: z.number().int().nonnegative(),
+        /** Words that tokenised to nothing and lost their seat on the model's axis. */
+        droppedWords: z.number().int().nonnegative(),
+        /** Trailing words `maxLen` cut off before they reached the graph. */
+        truncatedWords: z.number().int().nonnegative(),
+        /** Decoded spans wider than `tier1Config.maxWidth`. markerV0 only; see tagger.ts. */
+        overWideSpans: z.number().int().nonnegative(),
+        /** Decoded spans the offset mapper refused to turn into a character range. */
+        unmappableSpans: z.number().int().nonnegative(),
+        /** Decoded spans whose score was not a finite number in 0..1. */
+        nonFiniteScores: z.number().int().nonnegative(),
+      })
+      .optional(),
     findings: z.array(RecordFindingSchema),
     /**
      * Copied from the corpus item so a record scores standalone, without a join.
@@ -219,6 +271,40 @@ export const RunRecordSchema = z
      * results, and dropping the row makes them look identical.
      */
     error: z.string().nullable(),
+    /**
+     * True when an EARLIER item in this arm blew its deadline, so this row's
+     * `timings` were taken while that item's work was still running.
+     *
+     * `page.evaluate` accepts no timeout and offers no cancellation channel, so
+     * a deadline expiry bounds the DRIVER's wait and nothing else -- the
+     * abandoned detection keeps executing in the browser. Every item after it
+     * is therefore measured under contention with work that belongs to a
+     * different row, and, because the timed-out row is the only one that gets
+     * an `error`, all the contaminated rows have `error === null`. A latency
+     * aggregate over `error === null` rows silently includes them. This flag is
+     * what lets that aggregate exclude them.
+     *
+     * FINDINGS ON A FLAGGED ROW ARE STILL GOOD. Contention moves the clock, not
+     * the spans: `detect` is deterministic given the message, the IR and the
+     * config, all three of which are on the row. So this is a filter for
+     * `timings`, not a reason to drop the row from a recall or precision count.
+     *
+     * A FLAG RATHER THAN ABORTING THE ARM, and the choice is not obvious.
+     * Aborting is defensible -- a wedged item means the arm's latencies are not
+     * measuring the arm -- and it is what `runArm` already does for a dead
+     * browser. It is rejected here for one reason: a deadline expiry is a
+     * per-item event that says nothing about the items already measured, and
+     * aborting throws all of them away AND, through `runMatrix`, takes the rest
+     * of the matrix with it. One slow item at position 1,400 of 1,500 would
+     * destroy hours of GPU time that had already produced good rows. The flag
+     * keeps every row and hands the decision to the side that is doing the
+     * scoring, which is where spec 2.2 puts every other judgement in this file.
+     *
+     * `false` on every row of an arm that never timed out, which is the normal
+     * case; a run where this is true anywhere should be treated as a
+     * misconfigured deadline to fix, not a tolerable outcome.
+     */
+    abandonedWorkInFlight: z.boolean(),
   })
   .refine(
     (r) =>
@@ -242,6 +328,18 @@ export const RunRecordSchema = z
   // so the writer runs this schema and these are the checks it runs.
   .refine((r) => r.config.backend === undefined || r.config.backend === r.backend, {
     message: "config.backend contradicts the record's own backend",
+  })
+  .refine((r) => (r.tier1Stats !== undefined) === (r.config.tier1 && r.error === null), {
+    // Coupled to `error` as well as to `config.tier1`, unlike `tier1Config`
+    // below, and the asymmetry is the honest one. `tier1Config` describes the
+    // tagger the page HOLDS, which is known before the item runs and stays true
+    // whatever the item does. `tier1Stats` describes what the tagger DID on
+    // this item, and `detect` throws whole -- so on a thrown or timed-out item
+    // the page's `lastDetect` still holds the previous item's delta and there
+    // is no per-item answer to give. Absent says that; a row of zeros would
+    // assert that nothing was truncated, dropped or unmappable on an item where
+    // the model may never have finished.
+    message: "tier1Stats must be present exactly when config.tier1 is true and error is null",
   })
   .refine((r) => r.config.tier1 === (r.tier1Config !== undefined), {
     // Both directions. Tier 1 on with no config is an arm whose six-dimensional

@@ -69,6 +69,7 @@ describe("RunRecordSchema", () => {
       gold: [{ start: 0, end: 5, text: "hello", entityType: "client-name", action: "block" }],
       timings: { tier0Ms: 0.4 },
       error: null,
+      abandonedWorkInFlight: false,
     };
     expect(RunRecordSchema.safeParse(record).success).toBe(true);
   });
@@ -84,7 +85,7 @@ describe("RunRecordSchema", () => {
       irHash: "0".repeat(64), policyHash: "1".repeat(64),
       arm: "t0", backend: "wasm", provider: "claude",
     config: { tier0: true, tier1: false, tier2: false }, text: "hello world", findings: [], gold: [],
-      timings: { tier0Ms: 0 }, error: null,
+      timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
     };
     expect(RunRecordSchema.safeParse(complete).success).toBe(true);
     const { irHash: _noIrHash, ...withoutIrHash } = complete;
@@ -163,6 +164,22 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     gold: [],
     timings: { tier0Ms: 0 },
     error: null,
+    abandonedWorkInFlight: false,
+  };
+
+  /**
+   * A tier-1 record needs `tier1Stats` as well as `tier1Config` -- the schema
+   * couples both to `config.tier1` -- so the tier-1 cases below carry this.
+   * Zeros are the honest value for a synthetic record: nothing ran, so nothing
+   * was lost.
+   */
+  const STATS = {
+    inferences: 1,
+    droppedWords: 0,
+    truncatedWords: 0,
+    overWideSpans: 0,
+    unmappableSpans: 0,
+    nonFiniteScores: 0,
   };
 
   it("refuses a schemaVersion other than the one this module writes", () => {
@@ -221,6 +238,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
       ...record,
       config: { tier0: true, tier1: true, tier2: false },
       tier1Config: resolved,
+      tier1Stats: STATS,
     });
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data.tier1Config).toEqual(resolved);
@@ -231,8 +249,11 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     // unwritten -- and TierConfig cannot hold them, so nothing else in the
     // record says which of the six rungs produced the numbers.
     expect(
-      RunRecordSchema.safeParse({ ...record, config: { tier0: true, tier1: true, tier2: false } })
-        .success,
+      RunRecordSchema.safeParse({
+        ...record,
+        config: { tier0: true, tier1: true, tier2: false },
+        tier1Stats: STATS,
+      }).success,
     ).toBe(false);
     // The other direction is the worse mislabel: a tier-1 config on an arm whose
     // detect ran tier 0. Complete, valid, and describing a run that never
@@ -240,6 +261,94 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     expect(
       RunRecordSchema.safeParse({ ...record, tier1Config: resolveTier1Config({ backend: "wasm" }) })
         .success,
+    ).toBe(false);
+  });
+
+  it("couples tier1Stats to config.tier1 AND to error, in every direction", () => {
+    // The finding this field closes: `runArm` built every record from
+    // `findings` and `timings` alone, so an item whose tail `maxLen` cut off
+    // emitted a row byte-identical to one where the model read the whole
+    // message and found nothing. Both have no findings and a real `tier1Ms`.
+    const t1 = { tier0: false, tier1: true, tier2: false };
+    const cfg = resolveTier1Config({ backend: "wasm" });
+
+    // Tier 1 ran and returned: both halves required.
+    expect(
+      RunRecordSchema.safeParse({ ...record, config: t1, tier1Config: cfg, tier1Stats: STATS })
+        .success,
+    ).toBe(true);
+    expect(
+      RunRecordSchema.safeParse({ ...record, config: t1, tier1Config: cfg }).success,
+    ).toBe(false);
+
+    // Tier 1 off: counters would be describing a tagger that never existed.
+    expect(RunRecordSchema.safeParse({ ...record, tier1Stats: STATS }).success).toBe(false);
+
+    // Threw: `detect` throws whole, so the page's `lastDetect` still holds the
+    // PREVIOUS item's delta and there is no per-item answer. Absent says that;
+    // a row of zeros would assert nothing was lost on an item that may never
+    // have finished.
+    expect(
+      RunRecordSchema.safeParse({
+        ...record,
+        config: t1,
+        tier1Config: cfg,
+        error: "detector exploded",
+      }).success,
+    ).toBe(true);
+    expect(
+      RunRecordSchema.safeParse({
+        ...record,
+        config: t1,
+        tier1Config: cfg,
+        tier1Stats: STATS,
+        error: "detector exploded",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("carries every counter Tier1TaggerStats declares, and refuses a partial one", () => {
+    // Written as a delete-one-key sweep rather than six named cases, so a
+    // counter added to the tagger and forwarded here is covered without this
+    // test being edited -- and one dropped from the schema fails immediately.
+    const t1 = { tier0: false, tier1: true, tier2: false };
+    const cfg = resolveTier1Config({ backend: "wasm" });
+    for (const key of Object.keys(STATS)) {
+      const { [key]: _dropped, ...partial } = STATS as Record<string, number>;
+      expect(
+        RunRecordSchema.safeParse({ ...record, config: t1, tier1Config: cfg, tier1Stats: partial })
+          .success,
+      ).toBe(false);
+    }
+    // And the values survive the parse rather than being stripped: zod drops
+    // what a schema does not declare, so a counter missing from the object
+    // above would vanish from the file without a word.
+    const parsed = RunRecordSchema.safeParse({
+      ...record,
+      config: t1,
+      tier1Config: cfg,
+      tier1Stats: { ...STATS, truncatedWords: 7, unmappableSpans: 2 },
+    });
+    expect(parsed.success && parsed.data.tier1Stats).toEqual({
+      ...STATS,
+      truncatedWords: 7,
+      unmappableSpans: 2,
+    });
+  });
+
+  it("requires abandonedWorkInFlight, so a contaminated latency cannot be unstated", () => {
+    // A deadline expiry leaves the abandoned detection running in the browser,
+    // and every later row is measured under contention with it -- while
+    // carrying `error: null`, so a latency aggregate over non-errored rows
+    // silently includes them. An ABSENT key would state nothing, which is
+    // exactly the reading that makes the aggregate wrong.
+    const { abandonedWorkInFlight: _omitted, ...without } = record;
+    expect(RunRecordSchema.safeParse(without).success).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({ ...record, abandonedWorkInFlight: true }).success,
+    ).toBe(true);
+    expect(
+      RunRecordSchema.safeParse({ ...record, abandonedWorkInFlight: "yes" }).success,
     ).toBe(false);
   });
 
@@ -257,6 +366,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
         ...record,
         config: { tier0: true, tier1: true, tier2: false },
         tier1Config: resolveTier1Config({ backend: "webgpu" }),
+        tier1Stats: STATS,
       }).success,
     ).toBe(false);
   });
@@ -267,6 +377,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
         ...record,
         config: { tier0: true, tier1: true, tier2: false, t1Model: "gliner-pii-base" },
         tier1Config: resolveTier1Config({ backend: "wasm", modelId: "gliner-pii-edge" }),
+        tier1Stats: STATS,
       }).success,
     ).toBe(false);
   });
@@ -364,6 +475,7 @@ describe("findings are validated to core's unions, like gold", () => {
     gold: [],
     timings: { tier0Ms: 0 },
     error: null,
+    abandonedWorkInFlight: false,
   };
   const finding = {
     start: 0, end: 5, text: "hello", entityType: "in-pan",
@@ -431,7 +543,7 @@ describe("the record's own text makes the cross-check executable", () => {
     arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
-    timings: { tier0Ms: 0 }, error: null,
+    timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
   };
 
   it("requires the message text, so a record can be verified without the corpus", () => {
@@ -478,7 +590,7 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
       arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
       text: "before after end", findings: [], gold: [],
-      timings: { tier0Ms: 0 }, error: null,
+      timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
     };
     const jsonl = toJsonl([record]);
     expect(jsonl).not.toContain(" ");
@@ -516,7 +628,7 @@ describe("findings cannot carry a degenerate span", () => {
     arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
-    timings: { tier0Ms: 0 }, error: null,
+    timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
   };
   const span = (start: number, end: number, text: string) => ({
     start, end, text, entityType: "in-pan",

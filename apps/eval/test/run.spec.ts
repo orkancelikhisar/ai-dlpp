@@ -80,15 +80,34 @@ type FakeVerdict = "ok" | "throw" | "hang" | "kill";
  *
  * `plan` is data rather than a function because it has to cross into the browser
  * as JSON. Any text not named in it is treated as "ok".
+ *
+ * `tier1` is what `tier1Status().lastDetect` answers. It has a default rather
+ * than being optional-and-absent because `RunRecordSchema` requires
+ * `tier1Stats` on any record whose `config.tier1` is set and whose `error` is
+ * null: a fake that answered nothing would make every tier-1 arm here produce
+ * records the schema refuses, for a reason that has nothing to do with the
+ * behaviour under test. `inferences: 1` is the honest reading of a fake that
+ * did answer a detect call.
  */
+const FAKE_TIER1_STATS = {
+  inferences: 1,
+  droppedWords: 0,
+  truncatedWords: 0,
+  overWideSpans: 0,
+  unmappableSpans: 0,
+  nonFiniteScores: 0,
+  gpuSubmits: 0,
+};
+
 async function installFakeSih(
   page: Page,
   plan: Record<string, FakeVerdict>,
   result: { findings: unknown[]; timings: { tier0Ms: number; tier1Ms?: number; tier2Ms?: number } },
+  tier1: Record<string, number> = FAKE_TIER1_STATS,
 ): Promise<void> {
   await page.goto("about:blank");
   await page.evaluate(
-    ({ plan: verdicts, result: canned, hash }) => {
+    ({ plan: verdicts, result: canned, hash, tier1: stats }) => {
       Object.defineProperty(window, "__sih", {
         configurable: true,
         value: {
@@ -110,10 +129,15 @@ async function installFakeSih(
             if (verdict === "throw") return Promise.reject(new Error("detector exploded"));
             return Promise.resolve(canned);
           },
+          // Only `lastDetect` is populated: it is the only member runArm reads,
+          // and inventing a `load` report would be a fake asserting which rung
+          // and which provider ran, which is precisely what this stand-in has
+          // no standing to claim.
+          tier1Status: () => ({ lastDetect: stats }),
         },
       });
     },
-    { plan, result, hash: FAKE_IR_HASH },
+    { plan, result, hash: FAKE_IR_HASH, tier1 },
   );
 }
 
@@ -604,4 +628,167 @@ test("stamps the tier-1 config it was given onto every record, and nothing when 
     items,
   });
   expect(withoutTier1[0]!.tier1Config).toBeUndefined();
+});
+
+test("carries the tier-1 tagger's own counters onto every record", async ({ page }) => {
+  // The finding this closes: runArm built each record from `findings` and
+  // `timings` only and never called `tier1Status()`, so an item whose tail
+  // `maxLen` truncated -- or whose span the offset mapper refused -- emitted a
+  // record byte-indistinguishable from one where the model read the whole
+  // message and found nothing. Both have no findings and a real `tier1Ms`.
+  // `Tier1TaggerStats` exists precisely to tell those apart, and the counters
+  // were dying one layer above the tagger.
+  //
+  // The values below are deliberately NOT zeros: a test whose expected stats
+  // are all zero passes just as well against a producer that hardcodes zeros.
+  await installFakeSih(
+    page,
+    {},
+    { findings: [], timings: { tier0Ms: 1, tier1Ms: 40 } },
+    {
+      inferences: 3,
+      droppedWords: 2,
+      truncatedWords: 17,
+      overWideSpans: 4,
+      unmappableSpans: 1,
+      nonFiniteScores: 5,
+      // Present on the page's Tier1DetectStats and deliberately not on a
+      // record: it counts the PAGE's GPU submissions, not the tagger's work.
+      gpuSubmits: 99,
+    },
+  );
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t1",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: false, tier1: true, tier2: false },
+    tier1Config: {
+      modelId: "gliner-pii-edge-uint8",
+      backend: "wasm",
+      threshold: 0.5,
+      maxWidth: 12,
+      labelForm: "id",
+    },
+    itemTimeoutMs: 10_000,
+    items: [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }],
+  });
+
+  expect(records[0]!.tier1Stats).toEqual({
+    inferences: 3,
+    droppedWords: 2,
+    truncatedWords: 17,
+    overWideSpans: 4,
+    unmappableSpans: 1,
+    nonFiniteScores: 5,
+  });
+  // Projected, not spread: `gpuSubmits` is on the object the page hands over
+  // and must not ride into the file on a field the schema never declared.
+  expect(Object.keys(records[0]!.tier1Stats!).sort()).toEqual([
+    "droppedWords",
+    "inferences",
+    "nonFiniteScores",
+    "overWideSpans",
+    "truncatedWords",
+    "unmappableSpans",
+  ]);
+  // A truncated tail is now visible in the record, which is the whole point:
+  // this row and a row from a model that read everything and found nothing are
+  // no longer the same bytes.
+  expect(records[0]!.findings).toEqual([]);
+  expect(records[0]!.tier1Stats!.truncatedWords).toBeGreaterThan(0);
+  expect(RunRecordSchema.safeParse(records[0]).success).toBe(true);
+});
+
+test("asks the page for the tier-1 counters without a second round trip per item", async ({
+  page,
+}) => {
+  // The constraint the fix had to respect. runArm makes exactly one evaluate
+  // per item plus two fixed ones (the readiness probe and the two hashes), and
+  // reading `lastDetect` in its own evaluate would have doubled the per-item
+  // cost over a 1,500-item corpus for a value already sitting in the page --
+  // and would have raced the loop, since the next `detect` overwrites it.
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 } });
+  const watched = watchEvaluate(page);
+  const items = [
+    { id: "a", text: "one", policy: "minimal-fixture", gold: [] },
+    { id: "b", text: "two", policy: "minimal-fixture", gold: [] },
+    { id: "c", text: "three", policy: "minimal-fixture", gold: [] },
+  ];
+  const records = await runArm(watched.page, {
+    runId: "test-run",
+    arm: "t1",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: false, tier1: true, tier2: false },
+    tier1Config: {
+      modelId: "gliner-pii-edge-uint8",
+      backend: "wasm",
+      threshold: 0.5,
+      maxWidth: 12,
+      labelForm: "id",
+    },
+    itemTimeoutMs: 10_000,
+    items,
+  });
+  expect(records.every((r) => r.tier1Stats !== undefined)).toBe(true);
+  // 2 fixed + 1 per item. Pinned exactly, because "not many more" is the
+  // property a regression would satisfy.
+  expect(watched.calls()).toBe(2 + items.length);
+  expect(watched.maxInFlight()).toBe(1);
+});
+
+test("marks every row measured after a deadline expiry, and no row before it", async ({ page }) => {
+  // `page.evaluate` has no cancellation channel, so the abandoned detection
+  // keeps running in the browser and every later item is timed under
+  // contention with it -- while carrying `error: null`, so a latency aggregate
+  // over non-errored rows silently includes them. The arm is flagged rather
+  // than aborted; `abandonedWorkInFlight` in record.ts states why.
+  await installFakeSih(page, { "wedges forever": "hang" }, { findings: [], timings: { tier0Ms: 2 } });
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 250,
+    items: [
+      { id: "before", text: "fine", policy: "minimal-fixture", gold: [] },
+      { id: "hangs", text: "wedges forever", policy: "minimal-fixture", gold: [] },
+      { id: "after", text: "also fine", policy: "minimal-fixture", gold: [] },
+    ],
+  });
+
+  expect(records.map((r) => r.itemId)).toEqual(["before", "hangs", "after"]);
+  expect(records.map((r) => r.abandonedWorkInFlight)).toEqual([false, false, true]);
+  // The timed-out row is not flagged BY ITS OWN expiry -- it already carries
+  // `error`, and what the flag marks is a row whose timings were taken under
+  // someone else's work. This pairing is what a scorer filters on.
+  expect(records[1]!.error).toMatch(/did not finish within 250ms/);
+  expect(records[2]!.error).toBeNull();
+  expect(records[2]!.timings.tier0Ms).toBe(2);
+});
+
+test("does not flag an arm whose items merely THREW", async ({ page }) => {
+  // The control the test above needs. A detection that rejects promptly leaves
+  // nothing running in the browser, so later latencies are clean -- flagging
+  // them would tell Plan 8 to discard good measurements. Only a deadline
+  // expiry, which abandons work still executing, sets the flag.
+  await installFakeSih(page, { "boom": "throw" }, { findings: [], timings: { tier0Ms: 2 } });
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 10_000,
+    items: [
+      { id: "explodes", text: "boom", policy: "minimal-fixture", gold: [] },
+      { id: "after", text: "fine", policy: "minimal-fixture", gold: [] },
+    ],
+  });
+  expect(records[0]!.error).toMatch(/detector exploded/);
+  expect(records.map((r) => r.abandonedWorkInFlight)).toEqual([false, false]);
 });

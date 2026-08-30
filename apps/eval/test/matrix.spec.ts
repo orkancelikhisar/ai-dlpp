@@ -696,3 +696,96 @@ test(`runs a real webgpu arm on ${WEBGPU_SAFE_RUNG} end to end`, async ({ page }
   // served by wasm cannot reach this line with every record error-free.
   expect(records.some((r) => r.findings.some((f) => f.tier === 1))).toBe(true);
 });
+
+test("refuses an arm served bytes that are not the pinned artifact", async ({ page }) => {
+  // `Tier1LoadReport.weightsBytes` exists so a caller holding MODEL_MANIFEST
+  // can tell the pinned graph from a 404 body or a different precision
+  // variant, and the page deliberately reports it without judging it. Nothing
+  // on this path made the comparison: runMatrix read `config` and `inferences`
+  // off the load report and discarded `weightsUrl`/`weightsBytes`, so an arm
+  // could serve anything at the pinned path and every record would still name
+  // the manifest rung.
+  //
+  // Driven by lying about the SIZE rather than by swapping a file: the point of
+  // the check is that the driver compares the page's answer against the
+  // manifest, so a page whose answer is wrong must be refused whatever made it
+  // wrong. A proxy on `evaluate` is the only way to make the real page give a
+  // wrong answer on demand.
+  test.skip(!weightsOnDisk(CHEAP_RUNG), FETCH_MODELS_HINT);
+  const out = freshOutDir();
+  let calls = 0;
+  const lying = new Proxy(page, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (typeof value !== "function") return value;
+      if (prop !== "evaluate") return value.bind(target);
+      return async (...args: unknown[]) => {
+        const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+        calls += 1;
+        // The load report is the only evaluate that answers with these fields.
+        if (result !== null && typeof result === "object" && "weightsBytes" in result) {
+          return { ...result, weightsBytes: 1234 };
+        }
+        return result;
+      };
+    },
+  }) as Page;
+
+  await expect(
+    runMatrix(lying, {
+      runId: "pinned",
+      outDir: out,
+      corpus: CORPUS,
+      arms: [
+        {
+          arm: "t1",
+          backend: "wasm",
+          config: { tier0: false, tier1: true, tier2: false },
+          tier1Config: { modelId: CHEAP_RUNG },
+          itemTimeoutMs: 120_000,
+        },
+      ],
+      provider: "claude",
+    }),
+  ).rejects.toThrow(/pinned weights are \d+ bytes but the page was served 1234/);
+
+  // Refused BEFORE the corpus ran, which is the difference between losing a
+  // second and losing an arm: the load is one evaluate, so a run that reached
+  // the items would have made many more than this.
+  expect(calls).toBeLessThanOrEqual(3);
+  // And no file, so nothing downstream can score an arm that was refused.
+  expect(readdirSync(out)).toEqual([]);
+});
+
+test("lets an arm through when the bytes served are the pinned ones", async ({ page }) => {
+  // The control. Without it the test above passes against a driver that
+  // refuses every arm, which is the classic way a guard test proves nothing.
+  test.skip(!weightsOnDisk(CHEAP_RUNG), FETCH_MODELS_HINT);
+  const out = freshOutDir();
+  const written = await runMatrix(page, {
+    runId: "pinned-ok",
+    outDir: out,
+    corpus: CORPUS,
+    arms: [
+      {
+        arm: "t1",
+        backend: "wasm",
+        config: { tier0: false, tier1: true, tier2: false },
+        tier1Config: { modelId: CHEAP_RUNG },
+        itemTimeoutMs: 120_000,
+      },
+    ],
+    provider: "claude",
+  });
+  const records = readRecords(written[0]!);
+  expect(records).toHaveLength(ITEMS.length);
+  // The manifest's own number, read here rather than restated, so a re-pin
+  // moves both sides together.
+  const entry = MODEL_MANIFEST[CHEAP_RUNG]!;
+  expect(entry.files[entry.weightsPath]!.bytes).toBeGreaterThan(0);
+  // Every row carries the tier-1 counters, which is the other half of what a
+  // written file now owes Plan 8.
+  expect(records.every((r) => r.tier1Stats !== undefined)).toBe(true);
+  expect(records.every((r) => r.tier1Stats!.inferences > 0)).toBe(true);
+  expect(records.every((r) => r.abandonedWorkInFlight === false)).toBe(true);
+});

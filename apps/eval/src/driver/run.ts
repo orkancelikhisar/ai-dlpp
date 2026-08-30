@@ -72,6 +72,16 @@ export interface ArmSpec {
 }
 
 /**
+ * A deadline expiry, distinguishable from a detection failure.
+ *
+ * Its own class rather than a string match on the message, because the loop
+ * below has to tell the two apart to decide whether later rows are still
+ * measuring what they claim -- and a message match would be broken silently by
+ * anyone rewording the error.
+ */
+class DeadlineExpired extends Error {}
+
+/**
  * Rejects if `work` has not settled within `ms`.
  *
  * The limit of this mechanism, stated because it is easy to assume otherwise:
@@ -81,7 +91,9 @@ export interface ArmSpec {
  * otherwise hang `runArm` forever, and because records are only returned in bulk
  * at the end, every already-completed record would be unreachable -- but a run
  * that trips this repeatedly is leaking in-flight work into later items'
- * latencies, so treat it as a failure to be fixed rather than a tolerable one.
+ * latencies. Every row measured after an expiry is therefore stamped
+ * `abandonedWorkInFlight: true`; see that field in record.ts for why the arm is
+ * flagged rather than aborted.
  */
 async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   // `Promise.race` attaches a handler to `work` immediately, so a rejection that
@@ -91,7 +103,10 @@ async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Prom
     return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms}ms`)), ms);
+        timer = setTimeout(
+          () => reject(new DeadlineExpired(`${what} did not finish within ${ms}ms`)),
+          ms,
+        );
       }),
     ]);
   } finally {
@@ -176,6 +191,12 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
   }
 
   const records: RunRecord[] = [];
+  // Latched, never cleared. Once an evaluate has been abandoned there is no
+  // signal that says it finished -- `page.evaluate` has no cancellation channel
+  // and the driver has already stopped listening -- so the honest claim for
+  // every later row is "work of another row's may have been in flight", not
+  // "was". See `abandonedWorkInFlight` in record.ts.
+  let abandonedWorkInFlight = false;
   for (const [index, item] of spec.items.entries()) {
     // The try lives INSIDE the loop: one item that throws must not end the arm.
     // An arm that dies on item 300 of 1500 would otherwise report as a complete
@@ -189,16 +210,49 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
     // before reading any timing on this path: a `tier0Ms` of 0 means "nothing
     // was recorded", never "instant".
     let timings: RunRecord["timings"] = { tier0Ms: 0 };
+    let tier1Stats: RunRecord["tier1Stats"];
     let error: string | null = null;
+    // Set for THIS item only; `abandonedWorkInFlight` is advanced from it after
+    // the record is built, so the row that timed out is not itself flagged --
+    // it already carries `error`, and what the flag marks is a row whose
+    // timings were taken under someone else's work.
+    let timedOut = false;
     try {
       const result = await withDeadline(
         page.evaluate(
-          (request) => window.__sih!.detect(request),
+          // The tier-1 counters are read HERE, inside the same evaluate that
+          // ran the detection, for two reasons. One: a second `page.evaluate`
+          // per item would double this loop's round trips over a 1,500-item
+          // corpus for a value that is already sitting in the page. Two:
+          // `lastDetect` is overwritten by the next `detect`, so anything that
+          // read it in a later round trip would be racing the loop it belongs
+          // to. Asked for only when tier 1 is enabled, so a tier-0 arm neither
+          // needs `tier1Status` to exist nor carries a value it cannot justify.
+          (request) =>
+            window.__sih!.detect(request).then((detection) => ({
+              detection,
+              tier1: request.config.tier1 ? window.__sih!.tier1Status()?.lastDetect : undefined,
+            })),
           { text: item.text, provider: spec.provider, config },
         ),
         spec.itemTimeoutMs,
         `detection for item "${item.id}"`,
-      );
+      ).then((both) => {
+        // Projected field by field, like `findings` below and for the same
+        // reason: `Tier1DetectStats` also carries `gpuSubmits`, which is the
+        // page's counter rather than the tagger's and has no field on a record.
+        if (both.tier1 !== undefined) {
+          tier1Stats = {
+            inferences: both.tier1.inferences,
+            droppedWords: both.tier1.droppedWords,
+            truncatedWords: both.tier1.truncatedWords,
+            overWideSpans: both.tier1.overWideSpans,
+            unmappableSpans: both.tier1.unmappableSpans,
+            nonFiniteScores: both.tier1.nonFiniteScores,
+          };
+        }
+        return both.detection;
+      });
       // Projected field by field rather than assigned wholesale. `result`
       // crossed the evaluate boundary as plain JSON, and nothing validates a
       // record on this path, so a producer that decorates its findings with
@@ -224,6 +278,7 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       };
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
+      timedOut = cause instanceof DeadlineExpired;
       // A DETECTION failure and a HARNESS failure both land here, and they must
       // not produce the same output. If the browser crashed, the context closed,
       // or the page navigated away, every remaining item throws too, each
@@ -265,6 +320,10 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       // produces records the schema refuses, which is where runMatrix catches a
       // rung that was never recorded.
       tier1Config: spec.tier1Config,
+      // What the tagger did on THIS item, absent when detection threw -- see
+      // record.ts, which couples the two and states why a row of zeros would be
+      // a worse answer than no row at all.
+      tier1Stats,
       // The message the offsets in `findings` and `gold` index into, and the
       // one detection actually ran on -- both read from the same `item.text`,
       // so a record cannot carry findings produced from a different string than
@@ -275,7 +334,10 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       gold: item.gold,
       timings,
       error,
+      abandonedWorkInFlight,
     });
+    // AFTER the push, so the row that expired is not flagged by its own expiry.
+    if (timedOut) abandonedWorkInFlight = true;
   }
   return records;
 }
