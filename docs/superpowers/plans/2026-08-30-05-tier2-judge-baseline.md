@@ -43,9 +43,26 @@ await engine.chat.completions.create({
 
   **But that was measured on `Qwen3.5-2B` ONLY.** The other three arms each ship their own `overrides.context_window_size: 4096` and are **unmeasured at 8192**. Before Task 12 commits four arms to it, probe each remaining model at 8192 and record what happens — a model that refuses the larger window, or that loads but thrashes, is a finding, and discovering it as three failed arms mid-bake-off would waste a full run. If a model cannot take 8192, the honest options are to run that arm at 4096 and **report the asymmetry**, or to drop the arm; silently mixing window sizes across arms would make the comparison measure context rather than method.
 
-### Cancellation must interrupt and drain — `Promise.race` wedges the engine
+### Cancellation must interrupt, drain, AND clear — corrected by Task 3 against the real engine
 
-Measured on the real pipeline in the browser: after abandoning a stream with a naive timeout race, **the next call did not return within 8 s**. The engine is permanently deadlocked. Task 3 exists entirely for this.
+The original note here said a naive `Promise.race` leaves the engine deadlocked for 8 s. Task 3 measured that on the **pinned non-streaming recipe** and the mechanism is different: a bare race costs **10.2 s of latency and then self-recovers**. The 8 s figure came from the streaming path, where abandoning a `for await` never releases the lock.
+
+**Far more importantly, interrupt-and-drain alone is NOT sufficient, and the plan's original `cancel.ts` was defective.** Draining returns the engine to idle with its `interruptSignal` flag still **set**, and on the non-streaming path nothing clears it. Read out of the shipped 0.2.84 bundle: `_generate` clears the flag on entry, but `chatCompletion` tests it *before deciding whether to call `_generate`* — and that poisoned branch sets the output to `""` and returns without ever reaching the clear. `resetChat()` does not touch the field. Only the streaming path clears it unconditionally.
+
+Measured consequence, driving the repo's own module in real Chrome:
+
+| step | plan's original | after the fix |
+|---|---|---|
+| expire(1500 ms) | `DeadlineExpired` @ 1509 ms, flag left **true** | `DeadlineExpired` @ 1519 ms, flag **false** |
+| **next call** | **0 ms, `finish_reason: "abort"`, text `""`** | **171 ms, `stop`, `"OK"`** |
+| the call after that | **0 ms, `abort`, `""`** | 164 ms, `stop`, `"OK"` |
+
+**This is worse than the wedge it was written to prevent.** Not a hang anyone would notice, but an instant empty answer that a judge reads as "no findings" — on every message from then on, permanently. So `Interruptible` requires a `clearInterrupt()` alongside `interruptGenerate()`, called after the drain, and it is **required rather than optional** because optionality is exactly how this defect survives review.
+
+**Two consequences for later tasks:**
+
+- **Task 12 must assert the call following any expiry returns a NON-EMPTY body.** The plan's own Step 4 check — "the second call returns" — would have passed against the broken implementation, because it did return, in 0 ms, empty. `clearInterrupt` writes a field TypeScript marks `private`; if upstream renames it the clear silently no-ops and the poisoning returns with a fully green unit suite. No Node test can catch that; the bake-off assertion is the cheapest real guard.
+- **Reentrancy was broken and is now serialized per engine.** Measured: two overlapping calls, and the second was silently killed by the first's timeout — resolving with `abort` and 0 characters. The judge calls this per segment, so that was not hypothetical. Note `budgetMs` excludes queue time by design; a caller needing a bound on total elapsed time must pass the `outer` signal, which is honoured while queued.
 
 ### The bake-off slate is four arms
 
@@ -1563,6 +1580,16 @@ export const GATES = {
   maxDuplicateRate: 0.5,
   /** A killed arm is a result and stays in the output. */
   recordKilledArms: true,
+  /**
+   * After ANY deadline expiry, the next call must return a non-empty body.
+   * Task 3 measured the engine latching its interrupt flag on the pinned
+   * non-streaming path, after which every later call returns instantly and
+   * empty -- which a judge reads as "no findings" forever. `clearInterrupt`
+   * fixes it by writing a field TypeScript marks private, so an upstream
+   * rename would silently restore the poisoning with a green unit suite.
+   * This assertion is the only guard that would notice.
+   */
+  assertNonEmptyAfterExpiry: true,
 } as const;
 ```
 
