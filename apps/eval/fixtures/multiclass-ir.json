@@ -1,0 +1,45 @@
+{
+  "irVersion": "1",
+  "policyHash": "multiclass-fixture-hash",
+  "entityTypes": [
+    {
+      "id": "client-name",
+      "tier": 1,
+      "nlDefinition": "A client organisation the firm does business with.",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "high",
+      "surrogateKind": "org-name"
+    },
+    {
+      "id": "person-name",
+      "tier": 1,
+      "nlDefinition": "A natural person's name.",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "medium",
+      "surrogateKind": "person-name"
+    },
+    {
+      "id": "email-address",
+      "tier": 1,
+      "nlDefinition": "An email address.",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "medium",
+      "surrogateKind": "opaque"
+    }
+  ],
+  "rules": [],
+  "semanticPredicates": [],
+  "actions": {
+    "default": {
+      "client-name": "pseudonymize",
+      "person-name": "pseudonymize",
+      "email-address": "pseudonymize"
+    }
+  },
+  "failMode": "closed",
+  "latencyBudgetMs": 5000,
+  "provenance": {}
+}

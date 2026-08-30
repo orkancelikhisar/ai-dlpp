@@ -1,4 +1,10 @@
-import { detect, loadPolicyIr, type DetectionResult, type TierConfig } from "@sih/core";
+import {
+  detect,
+  loadPolicyIr,
+  type DetectionResult,
+  type PolicyIr,
+  type TierConfig,
+} from "@sih/core";
 import {
   GlinerSpanTagger,
   MODEL_MANIFEST,
@@ -17,7 +23,17 @@ import {
 // worth exercising here -- the extension receives a compiled IR as JSON text and
 // parses it with loadPolicyIr, so the page must too. Later tasks replace this
 // with a real compiled policy; until then it is a placeholder, not a baseline.
-import irJson from "../../fixtures/minimal-ir.json?raw";
+import minimalIrJson from "../../fixtures/minimal-ir.json?raw";
+// The SECOND fixture, and the reason it exists rather than a variation on the
+// first. `minimal-ir.json` declares exactly ONE tier-1 entityType, so every
+// browser assertion in this harness has run with `classes = 1`, where
+// `buildLabels` only ever assigns classIndex 0 and `decodeEdgeSpans`'
+// `(word * classes + classIndex) * slots` degenerates to `word * slots`. A
+// class-axis stride bug is invisible at that width -- on the ONE path spec 2.2
+// exists to protect, since the multi-class end-to-end test in
+// packages/tier1/test/e2e.test.ts runs under onnxruntime-NODE. This file
+// declares three, in a fixed order, so the stride is exercised in Chrome.
+import multiclassIrJson from "../../fixtures/multiclass-ir.json?raw";
 // Reached by PATH rather than by the package's own subpath export, because
 // onnxruntime-web's `exports` map publishes no `./dist/*` entry -- there is no
 // specifier that names this file. See `loadOrtRuntime` for why the page has to
@@ -122,6 +138,23 @@ export interface SihPageApi {
    */
   policyHash(): string;
   /**
+   * Select which of this page's pinned IR fixtures `detect` runs against, and
+   * get the new `irHash` back.
+   *
+   * `"minimal"` (the default) has ONE tier-1 entityType and `"multiclass"` has
+   * three. That difference is the reason this method exists: at one tier-1
+   * class the model's class axis has extent 1, `buildLabels` only ever assigns
+   * classIndex 0, and both decoders' class stride multiplies by zero -- so
+   * every stride bug in `decodeEdgeSpans` and `decodeBaseSpans` reads the same
+   * cell as a correct implementation would. Without a way to widen that axis
+   * IN THE BROWSER, the only multi-class coverage in the repo runs under
+   * onnxruntime-node, which spec 2.2 says is not the measured runtime.
+   *
+   * Returns the digest rather than void so a caller cannot forget that the
+   * record's provenance moved with it.
+   */
+  useIr(name: string): Promise<string>;
+  /**
    * Whether this browser can actually run `backend`, asked of the browser
    * rather than guessed from a user agent.
    *
@@ -158,11 +191,43 @@ declare global {
   }
 }
 
-// Parsed at module scope so a malformed IR fails BEFORE `__sih` is published,
-// rather than a spec receiving an API that throws on first use. The cost is
-// that the failure reaches the driver only as a pageerror -- `openHarness` in
-// smoke.spec.ts listens for exactly that and re-throws it with the message.
-const ir = loadPolicyIr(irJson);
+/**
+ * Every IR this page can run, by name.
+ *
+ * A NAMED REGISTRY of `?raw` fixtures rather than a `loadIr(json)` that takes
+ * arbitrary text, and the difference is `irHash`'s whole value. A record's
+ * `irHash` is checkable from outside the browser -- `shasum -a 256` on a file
+ * in this repo reproduces it -- and a spec that could inject IR text would make
+ * half the records in a run name an artifact nobody can produce. Adding a
+ * compiled policy here is one line and keeps that property.
+ */
+const IR_FIXTURES: Readonly<Record<string, string>> = {
+  minimal: minimalIrJson,
+  multiclass: multiclassIrJson,
+};
+
+export type IrName = keyof typeof IR_FIXTURES & string;
+
+/** The default, so every existing spec and every record keeps the IR it had. */
+const DEFAULT_IR: IrName = "minimal";
+
+const digestHex = async (text: string): Promise<string> =>
+  Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+
+// BOTH fixtures are parsed at module scope, not just the selected one, so a
+// malformed IR fails BEFORE `__sih` is published rather than on the first spec
+// that happens to select it. The cost is that the failure reaches the driver
+// only as a pageerror -- `openHarness` in smoke.spec.ts listens for exactly
+// that and re-throws it with the message.
+const PARSED_IRS: Readonly<Record<string, PolicyIr>> = Object.fromEntries(
+  Object.entries(IR_FIXTURES).map(([name, json]) => [name, loadPolicyIr(json)]),
+);
+
+let irJson: string = IR_FIXTURES[DEFAULT_IR] as string;
+let ir: PolicyIr = PARSED_IRS[DEFAULT_IR] as PolicyIr;
 
 /**
  * sha256 of `irJson` -- the exact bytes of the IR file this page loaded. This is
@@ -197,11 +262,34 @@ const ir = loadPolicyIr(irJson);
  * relies on to report a malformed IR by name. Keeping the module synchronous
  * leaves that path exactly as Task 1 left it.
  */
-const irHash = crypto.subtle
-  .digest("SHA-256", new TextEncoder().encode(irJson))
-  .then((digest) =>
-    Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join(""),
-  );
+let irHash: Promise<string> = digestHex(irJson);
+
+/**
+ * Switch this page to another pinned IR, and re-derive the digest with it.
+ *
+ * The digest is recomputed rather than left alone, which is the only part of
+ * this that can go wrong quietly: a record stamped with the old `irHash` while
+ * the new IR produced the findings is exactly the unfalsifiable provenance the
+ * two-hash split exists to prevent.
+ *
+ * Any tier-1 model already loaded stays loaded and is REUSED, deliberately.
+ * `buildLabels` reads `ir.entityTypes` on every `tag` call, so the same graph
+ * answers under the new label set -- which is the point: the class axis widens
+ * without reloading 665 MB. What does NOT follow the switch is `loadTier1`'s
+ * warm-up, which ran under whatever IR was active then; nothing reads it after
+ * the load returns.
+ */
+async function useIr(name: string): Promise<string> {
+  if (!Object.hasOwn(IR_FIXTURES, name)) {
+    throw new Error(
+      `unknown IR "${name}"; this page carries ${Object.keys(IR_FIXTURES).join(", ")}`,
+    );
+  }
+  irJson = IR_FIXTURES[name] as string;
+  ir = PARSED_IRS[name] as PolicyIr;
+  irHash = digestHex(irJson);
+  return irHash;
+}
 
 // -- tier 1 ------------------------------------------------------------------
 
@@ -573,6 +661,7 @@ const api: SihPageApi = {
   },
   irHash: () => irHash,
   policyHash: () => ir.policyHash,
+  useIr,
   backendAvailable,
   loadTier1,
   tier1Status: () =>

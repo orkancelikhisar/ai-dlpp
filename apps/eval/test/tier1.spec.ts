@@ -1,4 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { MODEL_MANIFEST, TIER1_BACKENDS, type Tier1Backend } from "@sih/tier1";
 import type { ResolvedFinding } from "@sih/core";
 import { BACKEND_AGREEMENT } from "../src/driver/main.js";
@@ -289,6 +292,119 @@ for (const modelId of ["gliner-pii-edge-fp16", "gliner-pii-base-fp16"]) {
     // And the page is left with no tier-1 engine, so a caller cannot go on to
     // measure some earlier rung under this one's name.
     expect(await page.evaluate(() => window.__sih!.tier1Status())).toBeUndefined();
+  });
+}
+
+/**
+ * More than one tier-1 class, in the browser.
+ *
+ * THE GAP THIS CLOSES. `fixtures/minimal-ir.json` declares exactly one tier-1
+ * entityType, so every other browser assertion in this file runs at
+ * `classes = 1`. At that width `buildLabels` only ever assigns classIndex 0,
+ * `decodeEdgeSpans`' `(word * classes + classIndex) * slots` collapses to
+ * `word * slots`, and `decodeBaseSpans`' `(firstWord * widths + width) * classes
+ * + classIndex` collapses to `firstWord * widths + width` -- so a class-axis
+ * stride bug reads exactly the cells a correct implementation reads, and every
+ * label that comes back is the only label there was. The multi-class coverage
+ * that did exist ran under onnxruntime-NODE (packages/tier1/test/e2e.test.ts),
+ * which spec 2.2 says is not the runtime being measured.
+ *
+ * `fixtures/multiclass-ir.json` declares three, in the order client-name,
+ * person-name, email-address, and `window.__sih.useIr` switches the page onto
+ * it. The order is the assertion's teeth: a decoder that ignored the class axis
+ * would label every span `client-name`, which is classIndex 0 -- and the two
+ * spans this test demands are classIndex 1 and 2.
+ *
+ * Both rungs, because the two span modes have DIFFERENT class strides and only
+ * one of them can be checked by any one graph. Both on wasm: three of the four
+ * loadable rungs return wrong numbers on webgpu (see BACKEND_AGREEMENT), so a
+ * webgpu arm here would be asserting against a known-broken provider.
+ *
+ * MEASURED in this browser, and identical to what packages/tier1/test/e2e.test.ts
+ * gets from onnxruntime-node on the same message with the same three labels --
+ * `gliner-pii-edge` 0.722/0.586 and `gliner-pii-base` 0.635/0.990/0.643. Scores
+ * are deliberately NOT asserted: the spans and the labels are what a stride bug
+ * moves.
+ */
+const MULTICLASS_IR = join(import.meta.dirname, "..", "fixtures", "multiclass-ir.json");
+
+const MULTICLASS_EXPECTED: Readonly<Record<string, readonly string[]>> = {
+  "gliner-pii-edge": [
+    'person-name[46,58)="Priya Sharma"',
+    'email-address[62,75)="priya@acme.io"',
+  ],
+  "gliner-pii-base": [
+    'person-name[46,58)="Priya Sharma"',
+    'email-address[62,75)="priya@acme.io"',
+    'client-name[86,103)="Northwind Traders"',
+  ],
+};
+
+for (const modelId of Object.keys(MULTICLASS_EXPECTED)) {
+  test(`${modelId} labels spans of different tier-1 classes distinctly`, async ({ page }) => {
+    test.setTimeout(ARM_TIMEOUT_MS);
+    await openHarness(page);
+
+    // Read out of the fixture FILE, in Node, so this test states which class
+    // index each label has rather than trusting the page to agree with itself.
+    // buildLabels assigns classIndex over the tier-1 entityTypes in IR order.
+    const fixture = readFileSync(MULTICLASS_IR, "utf8");
+    const tier1Ids = (JSON.parse(fixture) as { entityTypes: { id: string; tier: number }[] })
+      .entityTypes.filter((e) => e.tier === 1)
+      .map((e) => e.id);
+    expect(tier1Ids.length).toBeGreaterThanOrEqual(3);
+    const classZero = tier1Ids[0]!;
+
+    const out = await page.evaluate(
+      async (args: { modelId: string; text: string }) => {
+        const irHash = await window.__sih!.useIr("multiclass");
+        const report = await window.__sih!.loadTier1({ backend: "wasm", modelId: args.modelId });
+        const result = await window.__sih!.detect({
+          text: args.text,
+          provider: "claude",
+          config: { tier0: false, tier1: true, tier2: false },
+        });
+        return {
+          irHash,
+          policyHash: window.__sih!.policyHash(),
+          classes: report.config.labelForm,
+          findings: result.findings,
+          status: window.__sih!.tier1Status(),
+        };
+      },
+      { modelId, text: MESSAGE },
+    );
+
+    // The page really switched artifact, and says so in the field a record
+    // carries: without this the whole test could be running the 1-class IR.
+    expect(out.irHash).toBe(createHash("sha256").update(fixture).digest("hex"));
+    expect(out.policyHash).toBe("multiclass-fixture-hash");
+    // Prompts are built from the entityType ids (labelForm "id"), which is what
+    // makes the label set policy-derived rather than baked into the model.
+    expect(out.classes).toBe("id");
+
+    const spans = out.findings.map(
+      (f) => `${f.entityType}[${String(f.start)},${String(f.end)})=${JSON.stringify(f.text)}`,
+    );
+    expect(spans).toEqual(MULTICLASS_EXPECTED[modelId]);
+
+    // Said again, as the property rather than as a list, because THIS is the
+    // thing the one-class fixture could not express: more than one class came
+    // back, and not the one a collapsed stride would produce.
+    const labels = new Set(out.findings.map((f) => f.entityType));
+    expect(labels.size).toBeGreaterThanOrEqual(2);
+    expect(labels.has(classZero)).toBe(modelId === "gliner-pii-base");
+    for (const f of out.findings) {
+      expect(tier1Ids).toContain(f.entityType);
+      expect(MESSAGE.slice(f.start, f.end)).toBe(f.text);
+      expect(f.tier).toBe(1);
+      expect(f.source).toBe(modelId);
+    }
+
+    // Ran, versus never ran, and nothing silently thrown away on the way.
+    expect(out.status!.lastDetect!.inferences).toBeGreaterThan(0);
+    expect(out.status!.lastDetect!.unmappableSpans).toBe(0);
+    expect(out.status!.lastDetect!.nonFiniteScores).toBe(0);
   });
 }
 
