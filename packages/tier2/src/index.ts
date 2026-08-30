@@ -18,3 +18,8 @@ export {
   type JudgeResponse,
   type ParseResult,
 } from "./schema.js";
+export {
+  buildFoldMap,
+  resolveQuote,
+  type ResolvedQuote,
+} from "./spans.js";
