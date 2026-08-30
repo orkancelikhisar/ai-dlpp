@@ -60,8 +60,10 @@ export const LOGITS_OUTPUT = "logits";
  * This is not a formality. The two models take DIFFERENT inputs -- markerV0
  * adds `span_idx` and `span_mask` that token_level has no use for -- and the
  * feed builder branches on that. Getting the pairing wrong is a realistic
- * mistake in a six-rung experiment matrix where all six files are called
- * `model.onnx` or `model_quantized.onnx`, and it does not fail cleanly: an
+ * mistake in a six-rung experiment matrix whose six weight files carry only
+ * three distinct names -- `onnx/model.onnx`, `onnx/model_fp16.onnx` and
+ * `onnx/model_quint8.onnx`, each shared by one edge rung and one base rung
+ * (manifest.ts `weightsPath`) -- and it does not fail cleanly: an
  * edge feed run on base is missing two required inputs, while a base feed run
  * on edge carries two the graph ignores, and the second of those returns
  * confident, wrongly shaped logits.

@@ -184,39 +184,81 @@ export function decodeBaseSpans(
  * threshold: slot 0 at `i`, slot 1 at `j`, and slot 2 at EVERY word from `i`
  * to `j`. Its score is the smallest of them.
  *
+ * ## What is reproducible here, and what is not
+ *
+ * An earlier version of this block cited a comparison over "seven sentences"
+ * -- nearest-end against every-pair at 3 false positives to 10, and product
+ * against minimum at 6 of 9 true spans lost. THAT EXPERIMENT HAS NO ARTIFACT IN
+ * THIS REPO. `test/fixtures/model-signature.json` commits three sentences under
+ * `slotSemantics`, not seven, so the two counts cannot be checked by anyone
+ * reading this. They are struck rather than repeated; what follows is either
+ * structural, or recomputable from those three committed rows.
+ *
  * ## Why every pair, and not the nearest end
  *
  * Real output has many peaks, and start/end alone do not say which start goes
- * with which end. Taking the nearest qualifying end scores better on the seven
- * sentences this task measured -- 3 false positives against 10 -- and is still
- * the wrong rule here, because all the pairs sharing a start word overlap each
- * other, so choosing between them is overlap resolution, which belongs to
- * core's merge and not to one tier.
+ * with which end. Every pair is kept because all the pairs sharing a start word
+ * overlap each other, so choosing between them is overlap resolution, which
+ * belongs to core's merge and not to one tier. That argument stands on its own
+ * and needs no corpus.
  *
- * The inside slot is what makes that affordable. MEASURED on "Email Priya
- * Sharma and Rahul Mehta before Friday": start peaks at "Priya" and "Rahul",
- * end peaks at "Sharma" and "Mehta", and start/end alone admit a third pair,
- * 1..5, that swallows both names and the word between them at score 0.782.
- * Slot 2 is 0.091 on "and" and rejects it, on the model's own evidence about
- * that word rather than on a comparison between candidates. Aggregating slot 2
- * by mean instead of min does NOT reject it (the mean over words 1..5 is
- * 0.662): one dip is exactly what a mean absorbs.
+ * The three committed rows cannot separate the two rules, and it is worth
+ * saying so: I ran both over them, and on every start word that clears the
+ * threshold the inside run breaks before a second qualifying end appears, so
+ * nearest-end and every-pair emit the identical set. The rule below is
+ * therefore chosen on the structural argument, not on a score.
+ *
+ * The inside slot is what makes every-pair affordable. MEASURED, and this one
+ * IS in the fixture (`gap-between-two-names`, "Email Priya Sharma and Rahul
+ * Mehta before Friday", class person): start peaks at "Priya" (0.859) and
+ * "Rahul" (0.789), end peaks at "Sharma" (0.799) and "Mehta" (0.782), and
+ * start/end alone admit a third pair, 1..5, that swallows both names and the
+ * word between them at min(0.859, 0.782) = 0.782. Slot 2 is 0.0915 on "and" and
+ * rejects it, on the model's own evidence about that word rather than on a
+ * comparison between candidates. Aggregating slot 2 by mean instead of min does
+ * NOT reject it (the mean over words 1..5 is 0.662): one dip is exactly what a
+ * mean absorbs.
  *
  * ## Why the score is a minimum
  *
  * `Tier1Config.threshold` is one number shared by both rungs, so an edge score
  * has to be on the same 0..1 scale as base's single sigmoid or the same
- * configured value silently means something stricter here. MEASURED at
- * threshold 0.5 over those seven sentences: multiplying the three components
- * instead lost 6 of the 9 true spans that the minimum kept, because three
- * components at 0.8 multiply to 0.512. A minimum also states what it means --
- * a span is as confident as the weakest thing the model said about it -- and
- * makes the score and the filter the same rule rather than two.
+ * configured value silently means something stricter here.
+ *
+ * MEASURED by me, over the three `slotSemantics` sentences in the fixture at
+ * threshold 0.5 -- the whole of the evidence this repo holds, and reproducible
+ * from that file with no weights on disk: on `gliner-pii-edge` the minimum
+ * keeps 4 spans and multiplying the three components keeps 2, losing 4..5
+ * ("Rahul Mehta", 0.789 x 0.782 x 0.769 = 0.474) and 1..1 ("Priya", 0.723 x
+ * 0.728 x 0.690 = 0.363). On `gliner-pii-edge-uint8` the product keeps 0 of the
+ * same 4. Every span the product drops here is a TRUE one, which is the shape
+ * of the failure: three components at 0.8 multiply to 0.512, so the product
+ * reads a confident three-way agreement as a marginal span. A minimum also
+ * states what it means -- a span is as confident as the weakest thing the model
+ * said about it -- and makes the score and the filter the same rule rather than
+ * two.
+ *
+ * ## The width bound
+ *
+ * `maxWidth` bounds the inner walk instead of leaving every reachable end to be
+ * enumerated and thrown away by the caller. The emitted set is UNCHANGED for
+ * any caller that filters at the same width -- src/tagger.ts does, and it is
+ * the only non-test caller -- because the candidates cut here are exactly the
+ * ones it discards. What changes is the count: for the 16-word probe segment
+ * this file's tests use, an unbounded walk enumerates 136 (first, last) pairs
+ * per class against 126 bounded at 12, and the gap grows as O(words^2) against
+ * O(words x maxWidth) -- at `maxLen`'s 2048 words that is 2.1M pairs against
+ * 24.5K. The cut is a real one on long input and a rounding error on short.
+ *
+ * NOTE for whoever reads `Tier1TaggerStats.overWideSpans`: because of this
+ * bound, that counter can no longer be non-zero on a token_level rung. It
+ * counts markerV0's over-wide cells only. See tagger.ts.
  */
 export function decodeEdgeSpans(
   logits: Float32Array,
   dims: EdgeLogitsDims,
   threshold: number,
+  maxWidth: number,
 ): DecodedSpan[] {
   const { words, classes, slots } = dims;
   requireLength(
@@ -228,6 +270,12 @@ export function decodeEdgeSpans(
     throw new Error(
       `tier-1 token_level logits must carry ${EDGE_SLOTS} slots per word and class, got ${slots}`,
     );
+  }
+  // Rejected rather than clamped. A zero or fractional width silently returns
+  // nothing, which is the one failure this file is arranged to make impossible
+  // to confuse with a model that found nothing.
+  if (!(Number.isInteger(maxWidth) && maxWidth > 0)) {
+    throw new Error(`tier-1 token_level maxWidth must be a positive integer, got ${maxWidth}`);
   }
 
   const at = (word: number, classIndex: number, slot: number): number =>
@@ -245,7 +293,12 @@ export function decodeEdgeSpans(
       // slot 2 measured 0.018-0.091 on the non-entity words of the probe
       // sentences, well under any workable threshold.
       let insideRun = Infinity;
-      for (let lastWord = firstWord; lastWord < words; lastWord += 1) {
+      // `firstWord + maxWidth` is exclusive, so a span is at most `maxWidth`
+      // words wide counting both ends -- the same reading tagger.ts filters by
+      // (`lastWord - firstWord + 1 > maxWidth`), so the two cannot disagree
+      // about what a width of 1 means.
+      const lastAllowed = Math.min(words, firstWord + maxWidth);
+      for (let lastWord = firstWord; lastWord < lastAllowed; lastWord += 1) {
         insideRun = Math.min(insideRun, at(lastWord, classIndex, EDGE_SLOT_INSIDE));
         if (insideRun < threshold) break;
         const end = at(lastWord, classIndex, EDGE_SLOT_END);

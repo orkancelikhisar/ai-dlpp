@@ -28,8 +28,16 @@
  * this machine, with the same 1-class IR and the same message, onnxruntime-node
  * 1.21 CPU and onnxruntime-web 1.22-dev WASM produced IDENTICAL spans on all
  * four loadable rungs, and identical scores to 3 dp on both fp32 rungs; only
- * `gliner-pii-edge-uint8` drifted, by <= 0.03. That is why the score assertions
- * below carry a tolerance rather than an exact value.
+ * `gliner-pii-edge-uint8` drifted, by <= 0.03.
+ *
+ * READ THE TOLERANCE OFF THE ASSERTIONS, not off that 0.03. `EXPECTED` below
+ * covers exactly the two fp32 rungs -- `gliner-pii-edge` and `gliner-pii-base`
+ * -- and asserts with `toBeCloseTo(score, 2)`, which is +/-0.005, not +/-0.03.
+ * The 0.03 belongs to `gliner-pii-edge-uint8`, a rung this file does not assert
+ * at all. So the tolerance in force is +/-0.005 over two rungs whose two
+ * runtimes agreed to 3 dp, which is a real margin above the observed gap rather
+ * than a number borrowed from the worst rung on the ladder. An earlier version
+ * of this comment presented the 0.03 as the tolerance's basis; it is not.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";

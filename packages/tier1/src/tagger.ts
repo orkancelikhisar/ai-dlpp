@@ -75,10 +75,40 @@ export interface Tier1TaggerStats {
   droppedWords: number;
   /** Trailing words `maxLen` cut off before they reached the graph. */
   truncatedWords: number;
-  /** Decoded spans wider than `Tier1Config.maxWidth`. */
+  /**
+   * Decoded spans wider than `Tier1Config.maxWidth`.
+   *
+   * markerV0 ONLY, and not because markerV0 is special: `decodeEdgeSpans` is
+   * now handed the same `maxWidth` and stops enumerating at it, so a
+   * token_level rung can never reach the filter below. On markerV0 the width
+   * axis is baked into the export at 12 and the decoder returns every width the
+   * tensor carries, so this counts what a `maxWidth` under 12 rejected. Read a
+   * zero here on an edge rung as "not measurable", not as "the model proposed
+   * nothing too wide".
+   */
   overWideSpans: number;
   /** Decoded spans `spanFromTokens` refused to turn into a character range. */
   unmappableSpans: number;
+  /**
+   * Decoded spans whose score was not a finite number in 0..1, dropped here.
+   *
+   * The boundary this tier owes core. `packages/core/src/detect/merge.ts` says
+   * it in as many words: both of its comparators assume `confidence` is finite,
+   * a NaN makes every comparison false, that makes Array#sort's ordering
+   * inconsistent, and the determinism everything below depends on is quietly
+   * gone -- "so tier adapters must validate confidence at the boundary". This
+   * is that validation, and this counter is what stops the drop from looking
+   * like a model that found less.
+   *
+   * REACHABLE, not defensive. `sigmoid` returns NaN for a NaN logit and nothing
+   * upstream rejects one: decode.ts's `requireLength` catches a short array (the
+   * other NaN source) but a correctly sized tensor CARRYING a NaN passes
+   * straight through, and `NaN < threshold` is false, so the cell is emitted as
+   * a span rather than filtered. Task 11 measured this runtime returning
+   * finite-but-wrong logits from three of four WebGPU rungs, which is one
+   * upstream defect away from returning a NaN instead.
+   */
+  nonFiniteScores: number;
 }
 
 const int64 = (values: readonly number[], dims: readonly number[]): OnnxTensor => ({
@@ -97,6 +127,7 @@ export class GlinerSpanTagger implements SpanTagger {
     truncatedWords: 0,
     overWideSpans: 0,
     unmappableSpans: 0,
+    nonFiniteScores: 0,
   };
 
   /**
@@ -107,8 +138,10 @@ export class GlinerSpanTagger implements SpanTagger {
    *
    * The signature check is here rather than left to a loader because there is
    * no loader: this constructor is the only place where a session and the
-   * config naming its graph meet. All six pinned weight files are called
-   * `model.onnx` or `model_quint8.onnx`, so pairing an edge session with a base
+   * config naming its graph meet. The six pinned weight files carry only THREE
+   * distinct names between them -- `onnx/model.onnx`, `onnx/model_fp16.onnx`
+   * and `onnx/model_quint8.onnx`, each used once by edge and once by base (read
+   * off `weightsPath` in manifest.ts) -- so pairing an edge session with a base
    * config is a realistic mistake, and it does not fail cleanly: an edge feed
    * run on base is missing two required inputs, while a base feed run on edge
    * carries two the graph ignores and returns confident, wrongly shaped logits
@@ -185,10 +218,21 @@ export class GlinerSpanTagger implements SpanTagger {
       const spans = this.decode(outputs, encoded.textLengths, labels.length);
 
       for (const span of spans) {
-        // `maxWidth` is a POST-DECODE filter on both rungs. On markerV0 the
-        // enumeration width is baked into the export (Task 7: enumerating to 4
-        // instead of 12 fails inside span_rep_layer's Reshape), and token_level
-        // has no width axis at all, so narrowing can only happen here.
+        // BEFORE anything else is done with the span, because everything after
+        // this point either records the score or carries it further. See
+        // `Tier1TaggerStats.nonFiniteScores` for why a NaN gets this far and
+        // what it costs core's merge if it leaves here.
+        if (!(Number.isFinite(span.score) && span.score >= 0 && span.score <= 1)) {
+          this.stats.nonFiniteScores += 1;
+          continue;
+        }
+        // markerV0's narrowing, and only markerV0's. Its enumeration width is
+        // baked into the export (Task 7: enumerating to 4 instead of 12 fails
+        // inside span_rep_layer's Reshape), so the graph always returns twelve
+        // widths per word and the only place to narrow is here. token_level has
+        // no width axis at all and its decoder is handed `maxWidth` directly,
+        // so nothing this branch could catch survives to reach it -- see
+        // `Tier1TaggerStats.overWideSpans`.
         if (span.lastWord - span.firstWord + 1 > this.config.maxWidth) {
           this.stats.overWideSpans += 1;
           continue;
@@ -312,7 +356,16 @@ export class GlinerSpanTagger implements SpanTagger {
     // Batch is 1 -- asserted by the axis check above -- so the whole array is
     // the single row both decoders expect.
     return this.entry.spanMode === "token_level"
-      ? decodeEdgeSpans(data, { words, classes, slots: EDGE_SLOTS }, this.config.threshold)
+      ? decodeEdgeSpans(
+          data,
+          { words, classes, slots: EDGE_SLOTS },
+          this.config.threshold,
+          // The same width the post-decode filter below applies, handed to the
+          // decoder so it stops enumerating candidates that filter would throw
+          // away. The emitted set is identical; see the width-bound note in
+          // decode.ts for what changes and what does not.
+          this.config.maxWidth,
+        )
       : decodeBaseSpans(
           data,
           { words, widths: this.entry.maxWidth, classes },

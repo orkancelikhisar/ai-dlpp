@@ -413,6 +413,7 @@ const statsDelta = (
   truncatedWords: after.truncatedWords - before.truncatedWords,
   overWideSpans: after.overWideSpans - before.overWideSpans,
   unmappableSpans: after.unmappableSpans - before.unmappableSpans,
+  nonFiniteScores: after.nonFiniteScores - before.nonFiniteScores,
   gpuSubmits: gpu,
 });
 

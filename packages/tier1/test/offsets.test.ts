@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { spanFromTokens, type TokenOffset } from "../src/offsets.js";
+import { splitWords } from "../src/words.js";
 
 /**
  * Builds an offset array in the shape a fast tokenizer's `offset_mapping` has.
@@ -309,7 +310,12 @@ describe("spanFromTokens: the pinned tokenizer's actual offset convention", () =
     // accented text, and a dropped finding leaks the value it was meant to
     // catch. Widening is the safe direction because a Mark modifies the
     // character BEFORE it, which the span already contains, so it cannot reach
-    // a neighbouring word.
+    // a base character, and therefore cannot reach a neighbouring word in any
+    // sense that changes a value.
+    //
+    // The offsets in THIS test are the subword tokenizer's, which is a path
+    // nothing feeds any more -- see the word-path test below for what the live
+    // caller actually hands in, which is not the same shape.
     const text = "cafe\u0301 Ltd";
     expect(text.length).toBe(9);
     expect(text.charCodeAt(4)).toBe(0x0301);
@@ -317,6 +323,31 @@ describe("spanFromTokens: the pinned tokenizer's actual offset convention", () =
     expect(span).toEqual({ start: 0, end: 5, text: "cafe\u0301" });
     expect(text.slice(span!.start, span!.end)).toBe(span!.text);
     expect(span!.text.normalize("NFC")).toBe("caf\u00e9");
+  });
+
+  it("absorbs the mark WORD splitWords emits, which is not the same case as above", () => {
+    // The live path, and the thing the header's adjustment 2 is about. On the
+    // subword path the acute belonged to no token; on the WORD path it is a
+    // word of its own, with its own slot on the model's axis and its own
+    // scores, because a combining mark is neither \p{L} nor \p{N} and so falls
+    // to the splitter's single-code-point branch. The widening therefore
+    // reaches PAST the words the caller named -- deliberately, and this test is
+    // what stops that from being rediscovered as a surprise.
+    const text = "call Andre\u0301 Corp today";
+    const words = splitWords(text);
+    // Derived from the splitter, not restated: word 2 IS the bare acute.
+    expect(words.map((w) => w.text)).toEqual(["call", "Andre", "\u0301", "Corp", "today"]);
+    expect(words[2]).toEqual({ text: "\u0301", start: 10, end: 11 });
+
+    // The model said ONE word wide, word 1, ending at index 10.
+    const span = spanFromTokens(text, words, 1, 1);
+    expect(words[1]!.end).toBe(10);
+    expect(span).toEqual({ start: 5, end: 11, text: "Andre\u0301" });
+    // Still exactly a slice of the message, which is core's whole contract.
+    expect(text.slice(span!.start, span!.end)).toBe(span!.text);
+    // And it stops at the end of the grapheme cluster: "Corp" is untouched.
+    expect(span!.end).toBeLessThan(words[3]!.start);
+    expect(span!.text.normalize("NFC")).toBe("Andr\u00e9");
   });
 
   it("widens over a RUN of stacked combining marks", () => {

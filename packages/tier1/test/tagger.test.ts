@@ -301,12 +301,82 @@ describe("GlinerSpanTagger", () => {
   });
 
   it("refuses a session whose graph is not the one the config names", () => {
-    // The realistic six-rung mix-up: all six weight files are called model.onnx
-    // or model_quantized.onnx, and a base feed run on an edge graph returns
-    // confident, wrongly shaped logits.
+    // The realistic six-rung mix-up: the six weight files carry only three
+    // distinct names between them -- onnx/model.onnx, onnx/model_fp16.onnx and
+    // onnx/model_quint8.onnx, each shared by one edge rung and one base rung --
+    // and a base feed run on an edge graph returns confident, wrongly shaped
+    // logits.
     expect(
       () =>
         new GlinerSpanTagger(fakeSession({ modelId: EDGE }), fakeTokenizer(), cfg({ modelId: BASE })),
     ).toThrow(/span_idx/);
+  });
+
+  it("drops a span whose score is not a finite number, and counts the drop", async () => {
+    // The boundary packages/core/src/detect/merge.ts asks tier adapters to
+    // hold: "Both comparators assume `confidence` is a finite number. A NaN
+    // makes every comparison false, which makes Array#sort's ordering
+    // inconsistent and quietly destroys the determinism everything below
+    // depends on." A NaN reaches here without help -- decode.ts guards a SHORT
+    // logits array, but a correctly sized one carrying a NaN passes
+    // requireLength, `sigmoid(NaN)` is NaN, and `NaN < threshold` is false, so
+    // the cell is emitted as a span rather than filtered.
+    const tagger = new GlinerSpanTagger(
+      fakeSession({ modelId: EDGE, hit: [1, 2], rawLogitOverride: Number.NaN }),
+      fakeTokenizer(),
+      cfg({ modelId: EDGE }),
+    );
+    const findings = await tagger.tag(
+      [{ kind: "prose", start: 0, end: 20, text: "call Acme Corp today" }],
+      tier1Ir(),
+    );
+    expect(findings).toEqual([]);
+    // Counted, not merely absent -- which is the whole point. Without this the
+    // record is byte-identical to a model that found nothing, and offsets.ts
+    // asks in as many words that whoever wires this to a model count the drops.
+    expect(tagger.stats.nonFiniteScores).toBe(1);
+    // And nothing else claims the drop: a NaN is not an unmappable span or an
+    // over-wide one, so a reader of the counters can tell which happened.
+    expect(tagger.stats.unmappableSpans).toBe(0);
+    expect(tagger.stats.overWideSpans).toBe(0);
+  });
+
+  it("leaves the counter at zero when the model genuinely found nothing", async () => {
+    // The control the test above needs: same tagger, same text, no hit. Both
+    // runs return no findings, and only the counter separates them.
+    const tagger = new GlinerSpanTagger(
+      fakeSession({ modelId: EDGE }),
+      fakeTokenizer(),
+      cfg({ modelId: EDGE }),
+    );
+    const findings = await tagger.tag(
+      [{ kind: "prose", start: 0, end: 20, text: "call Acme Corp today" }],
+      tier1Ir(),
+    );
+    expect(findings).toEqual([]);
+    expect(tagger.stats.nonFiniteScores).toBe(0);
+    expect(tagger.stats.inferences).toBe(1);
+  });
+
+  it("never lets a NaN score reach core's merge through detect()", async () => {
+    // The end of the chain, asserted through core rather than at this class's
+    // edge: merge sorts by confidence, and one NaN is enough to make that sort
+    // order depend on the input permutation.
+    const message = "call Acme Corp today";
+    const result = await detect({
+      ir: loadPolicyIr(JSON.stringify(tier1Ir())),
+      provider: "claude",
+      text: message,
+      config: { tier0: false, tier1: true, tier2: false },
+      engines: {
+        tier1: new GlinerSpanTagger(
+          fakeSession({ modelId: EDGE, hit: [1, 2], rawLogitOverride: Number.NaN }),
+          fakeTokenizer(),
+          cfg({ modelId: EDGE }),
+        ),
+      },
+    });
+    expect(result.findings).toEqual([]);
+    for (const f of result.findings) expect(Number.isFinite(f.confidence)).toBe(true);
   });
 });

@@ -141,7 +141,7 @@ describe("decodeEdgeSpans", () => {
       1: { 0: [0.859, 0.052, 0.859] },
       2: { 0: [0.014, 0.799, 0.797] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12)).toEqual([
       { firstWord: 1, lastWord: 2, classIndex: 0, score: expect.any(Number) },
     ]);
   });
@@ -152,7 +152,7 @@ describe("decodeEdgeSpans", () => {
       1: { 0: [0.9, 0.05, 0.9], 1: [0.05, 0.05, 0.9] },
       2: { 0: [0.05, 0.05, 0.9], 1: [0.05, 0.9, 0.9] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([]);
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12)).toEqual([]);
   });
 
   it("does not pair an end that precedes its start", () => {
@@ -162,7 +162,7 @@ describe("decodeEdgeSpans", () => {
       2: { 0: [0.05, 0.05, 0.9] },
       3: { 0: [0.9, 0.05, 0.9] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([]);
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12)).toEqual([]);
   });
 
   it("reads slot 2 as INSIDE, so a gap between two entities cannot be spanned", () => {
@@ -195,7 +195,7 @@ describe("decodeEdgeSpans", () => {
       6: { 0: [0.01, 0.01, 0.018] },
       7: { 0: [0.053, 0.07, 0.063] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5)).toEqual([
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12)).toEqual([
       { firstWord: 1, lastWord: 2, classIndex: 0, score: expect.closeTo(0.797, 3) },
       { firstWord: 4, lastWord: 5, classIndex: 0, score: expect.closeTo(0.769, 3) },
     ]);
@@ -217,7 +217,7 @@ describe("decodeEdgeSpans", () => {
       4: { 0: [0.033, 0.782, 0.769] },
       5: { 0: [0.01, 0.01, 0.018] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5).map((s) => [s.firstWord, s.lastWord])).toEqual([
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12).map((s) => [s.firstWord, s.lastWord])).toEqual([
       [0, 1],
       [3, 4],
     ]);
@@ -230,22 +230,29 @@ describe("decodeEdgeSpans", () => {
     // an inside score of its own to clear and is treated no differently from a
     // longer one.
     const dims = { words: 3, classes: 1, slots: 3 };
-    expect(decodeEdgeSpans(edgeLogits(dims, { 1: { 0: [0.723, 0.728, 0.69] } }), dims, 0.5)).toEqual(
+    expect(decodeEdgeSpans(edgeLogits(dims, { 1: { 0: [0.723, 0.728, 0.69] } }), dims, 0.5, 12)).toEqual(
       [{ firstWord: 1, lastWord: 1, classIndex: 0, score: expect.closeTo(0.69, 3) }],
     );
-    expect(decodeEdgeSpans(edgeLogits(dims, { 1: { 0: [0.723, 0.728, 0.2] } }), dims, 0.5)).toEqual(
+    expect(decodeEdgeSpans(edgeLogits(dims, { 1: { 0: [0.723, 0.728, 0.2] } }), dims, 0.5, 12)).toEqual(
       [],
     );
   });
 
   it("pairs one start with EVERY qualifying end, not just the nearest", () => {
-    // Nearest-end scores better on the sentences this task measured -- 3 false
-    // positives against 10 over seven probe sentences -- and it is still
-    // wrong here, because every (i, j) pair sharing a start word overlaps
-    // every other, so picking one of them IS overlap resolution. Core's merge
-    // owns that, across all tiers together, severity-first and then by
-    // confidence; a tier that resolved its own overlaps first would hand the
-    // merge a choice already made.
+    // The rule rests on a structural argument, not on a score: every (i, j)
+    // pair sharing a start word overlaps every other, so picking one of them
+    // IS overlap resolution. Core's merge owns that, across all tiers
+    // together, severity-first and then by confidence; a tier that resolved
+    // its own overlaps first would hand the merge a choice already made.
+    //
+    // An earlier version of this comment cited "3 false positives against 10
+    // over seven probe sentences". That experiment has no artifact in this
+    // repo -- test/fixtures/model-signature.json commits three sentences, not
+    // seven -- so the figure is struck rather than repeated. MEASURED over the
+    // three that ARE committed: nearest-end and every-pair emit the identical
+    // set on all of them, because the inside run always breaks before a second
+    // qualifying end appears. The fixture cannot separate the two rules, which
+    // is why THIS test builds an input where they visibly differ.
     const dims = { words: 4, classes: 1, slots: 3 };
     const logits = edgeLogits(dims, {
       0: { 0: [0.9, 0.05, 0.9] },
@@ -253,24 +260,31 @@ describe("decodeEdgeSpans", () => {
       2: { 0: [0.05, 0.7, 0.9] },
       3: { 0: [0.05, 0.6, 0.9] },
     });
-    expect(decodeEdgeSpans(logits, dims, 0.5).map((s) => s.lastWord)).toEqual([1, 2, 3]);
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12).map((s) => s.lastWord)).toEqual([1, 2, 3]);
   });
 
   it("scores a span as the weakest of its start, end and inside evidence", () => {
     // DECISION: min, not product and not mean. Tier1Config.threshold is one
     // number shared by both rungs, so edge's score has to live on the same
     // 0..1 scale as base's single sigmoid or the same config value means two
-    // different things. MEASURED: at threshold 0.5 over seven probe sentences,
-    // multiplying the three components lost 6 of the 9 true spans that min
-    // kept -- three 0.8s multiply to 0.512, so a product decoder silently
-    // demands ~0.79 per component where base demands 0.5.
+    // different things -- three 0.8s multiply to 0.512, so a product decoder
+    // silently demands ~0.79 per component where base demands 0.5.
+    //
+    // MEASURED over the three sentences test/fixtures/model-signature.json
+    // commits under `slotSemantics` (the whole of the evidence this repo
+    // holds; the "seven probe sentences" an earlier comment cited are not in
+    // it): at threshold 0.5 on gliner-pii-edge the minimum keeps 4 spans and
+    // the product keeps 2, losing "Rahul Mehta" (0.789 x 0.782 x 0.769 =
+    // 0.474) and "Priya" (0.723 x 0.728 x 0.690 = 0.363). On
+    // gliner-pii-edge-uint8 the product keeps 0 of the same 4. Every span the
+    // product drops there is a TRUE one.
     const dims = { words: 3, classes: 1, slots: 3 };
     const logits = edgeLogits(dims, {
       0: { 0: [0.9, 0.05, 0.75] },
       1: { 0: [0.05, 0.8, 0.7] },
       2: { 0: [0.05, 0.05, 0.9] },
     });
-    const [span] = decodeEdgeSpans(logits, dims, 0.5);
+    const [span] = decodeEdgeSpans(logits, dims, 0.5, 12);
     expect(span!.score).toBeCloseTo(0.7, 6);
     // The three combiners this task rejected. Each returns a different number
     // on this same input, so an assertion that only checked "a span came back"
@@ -280,11 +294,50 @@ describe("decodeEdgeSpans", () => {
     expect(span!.score).not.toBeCloseTo((0.9 + 0.8 + 0.75 + 0.7) / 4, 6);
   });
 
+  it("stops the walk at maxWidth instead of enumerating to the end of the text", () => {
+    // The bound exists for cost, so what it must NOT do is change the answer.
+    // Every end here clears the threshold with the inside run wide open, so an
+    // unbounded walk would propose 0..1 through 0..5 and a bounded one only
+    // 0..1 and 0..2. The tagger discards the rest at exactly this width, which
+    // is why cutting them here is free -- see the width-bound note in
+    // src/decode.ts.
+    const dims = { words: 6, classes: 1, slots: 3 };
+    const logits = edgeLogits(dims, {
+      0: { 0: [0.9, 0.05, 0.9] },
+      1: { 0: [0.05, 0.9, 0.9] },
+      2: { 0: [0.05, 0.9, 0.9] },
+      3: { 0: [0.05, 0.9, 0.9] },
+      4: { 0: [0.05, 0.9, 0.9] },
+      5: { 0: [0.05, 0.9, 0.9] },
+    });
+    expect(decodeEdgeSpans(logits, dims, 0.5, 12).map((s) => s.lastWord)).toEqual([1, 2, 3, 4, 5]);
+    expect(decodeEdgeSpans(logits, dims, 0.5, 3).map((s) => s.lastWord)).toEqual([1, 2]);
+    // Inclusive at both ends, the same reading tagger.ts filters by: width 1
+    // is the one-word span at the start word, and here that word's own end
+    // slot is silent, so nothing comes back rather than a self-pair.
+    expect(decodeEdgeSpans(logits, dims, 0.5, 1)).toEqual([]);
+  });
+
+  it("rejects a maxWidth that is not a positive integer rather than returning nothing", () => {
+    // A zero or fractional width makes `Math.min(words, firstWord + maxWidth)`
+    // cut the walk before its first iteration, so the decoder returns an empty
+    // array -- indistinguishable from a model that found nothing, which is the
+    // one confusion this whole file is arranged to prevent.
+    const dims = { words: 4, classes: 1, slots: 3 };
+    const logits = edgeLogits(dims, { 1: { 0: [0.9, 0.9, 0.9] } });
+    expect(decodeEdgeSpans(logits, dims, 0.5, 1)).toEqual([
+      { firstWord: 1, lastWord: 1, classIndex: 0, score: expect.any(Number) },
+    ]);
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => decodeEdgeSpans(logits, dims, 0.5, bad)).toThrow(/maxWidth/);
+    }
+  });
+
   it("rejects a slot axis that is not the measured 3", () => {
     // The slot indices are hard-coded constants, so a rung whose trailing axis
     // is a different size is not something to decode on a best guess.
     const dims = { words: 4, classes: 2, slots: 4 };
-    expect(() => decodeEdgeSpans(new Float32Array(4 * 2 * 4), dims, 0.5)).toThrow(/slot/i);
+    expect(() => decodeEdgeSpans(new Float32Array(4 * 2 * 4), dims, 0.5, 12)).toThrow(/slot/i);
   });
 });
 
@@ -296,7 +349,7 @@ describe("both decoders", () => {
       decodeBaseSpans(new Float32Array(5), { words: 4, widths: 12, classes: 2 }, 0.5),
     ).toThrow(/length/i);
     expect(() =>
-      decodeEdgeSpans(new Float32Array(5), { words: 4, classes: 2, slots: 3 }, 0.5),
+      decodeEdgeSpans(new Float32Array(5), { words: 4, classes: 2, slots: 3 }, 0.5, 12),
     ).toThrow(/length/i);
   });
 
@@ -320,6 +373,7 @@ describe("both decoders", () => {
       }),
       edgeDims,
       0.5,
+      12,
     );
     const scores = edgeSpans.map((s) => s.score);
     expect(scores).toEqual([...scores].sort((a, b) => b - a));
@@ -344,6 +398,7 @@ describe("both decoders", () => {
       edgeLogits(dims, { 0: { 0: tie, 1: tie }, 2: { 0: tie, 1: tie } }),
       dims,
       0.5,
+      12,
     );
     expect(spans.map((s) => s.score)).toEqual([0.8, 0.8, 0.8, 0.8].map(() => spans[0]!.score));
     expect(spans.map((s) => `${s.firstWord}:${s.classIndex}`)).toEqual([
@@ -377,7 +432,7 @@ describe("both decoders", () => {
     expect(decodeBaseSpans(new Float32Array(0), { words: 0, widths: 12, classes: 2 }, 0.5)).toEqual(
       [],
     );
-    expect(decodeEdgeSpans(new Float32Array(0), { words: 0, classes: 2, slots: 3 }, 0.5)).toEqual(
+    expect(decodeEdgeSpans(new Float32Array(0), { words: 0, classes: 2, slots: 3 }, 0.5, 12)).toEqual(
       [],
     );
   });
@@ -473,7 +528,7 @@ describe("the layout the decoders are written against", () => {
     put(2, 0, EDGE_SLOT_END, 0.846);
     put(1, 0, EDGE_SLOT_INSIDE, 0.804);
     put(2, 0, EDGE_SLOT_INSIDE, 0.883);
-    expect(decodeEdgeSpans(logits, { words, classes, slots: EDGE_SLOTS }, 0.5)).toEqual([
+    expect(decodeEdgeSpans(logits, { words, classes, slots: EDGE_SLOTS }, 0.5, 12)).toEqual([
       { firstWord: 1, lastWord: 2, classIndex: 0, score: expect.closeTo(0.804, 3) },
     ]);
   });

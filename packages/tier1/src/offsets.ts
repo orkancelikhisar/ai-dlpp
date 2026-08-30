@@ -101,11 +101,18 @@ function splitsSurrogatePair(text: string, index: number): boolean {
  * repaired span is a wrong span that reaches `applyActions`, which rewrites BY
  * SPAN -- so a drifted finding sends a neighbouring word to the vault and
  * leaves the real value in the message. Dropping one uncertain finding is
- * strictly better than that. (There is no non-test caller yet; whoever wires
- * this to the model should count the drops rather than let them vanish.)
+ * strictly better than that. That drop is COUNTED rather than silent: the one
+ * non-test caller, `GlinerSpanTagger.tag` in tagger.ts, increments
+ * `Tier1TaggerStats.unmappableSpans` on every `undefined` returned from here,
+ * and apps/eval carries the counter into its JSONL. This paragraph used to say
+ * there was no such caller and to ask whoever wrote one to count the drops;
+ * that caller exists and does.
  *
- * Two boundary adjustments are made, both of which move a boundary to the edge
- * of the thing it was already inside:
+ * Two boundary adjustments are made. One narrows the span and one WIDENS it,
+ * and the widening reaches outside the words the caller named -- an earlier
+ * version of this note claimed both merely "move a boundary to the edge of the
+ * thing it was already inside", which is false on the word path and is the
+ * thing worth knowing here:
  *
  * 1. TRIMMABLE separators come off both ends. On the word path this is what
  *    keeps a zero-width format word out of a span's ends: measured, `splitWords`
@@ -114,17 +121,39 @@ function splitsSurrogatePair(text: string, index: number): boolean {
  *    An untrimmed span starting on one would hand `applyActions` a value that
  *    differs invisibly from the same name written without it, and
  *    `vault.mint(conversationId, f.text, ...)` would issue two surrogates for
- *    one organisation. It was originally needed for a different reason, which
- *    still holds where it applies: measured on "call Acme Corp today", the
- *    pinned tokenizer's Metaspace pre-tokenizer reports the token for "Acme" as
- *    (4, 9), which slices to " Acme" -- the preceding separator is inside the
- *    token. Nothing feeds this function token offsets today.
- * 2. Trailing COMBINING_MARKs are taken IN. Measured: the pinned tokenizer's
- *    normalizer composes NFKC, so on decomposed "cafe" + U+0301 it reports
- *    (0, 4) and the acute at index 4 belongs to no token. Widening is safe in a
- *    way that widening over a base character would not be -- a Mark modifies
- *    the character before it, which is already inside the span, so this cannot
- *    reach a neighbouring word, let alone a neighbouring entity.
+ *    one organisation. HISTORICAL, and kept only because it names where the
+ *    rule came from: it was originally written for subword offsets, where the
+ *    pinned tokenizer's Metaspace pre-tokenizer reported "Acme" in "call Acme
+ *    Corp today" as (4, 9), slicing to " Acme" with the separator inside the
+ *    token. Nothing feeds this function token offsets any more, so that
+ *    measurement no longer describes any live path.
+ * 2. Trailing COMBINING_MARKs are taken IN, and on the word path this absorbs a
+ *    WHOLE WORD the caller did not name. The old justification -- that NFKC
+ *    composition inside the tokenizer left the acute of a decomposed "cafe" at
+ *    index 4 belonging to no token -- was about subword offsets and is
+ *    HISTORICAL for the same reason as above. Re-derived against `splitWords`,
+ *    which is what actually feeds this:
+ *
+ *    A combining mark is neither `\p{L}` nor `\p{N}`, so it never joins the
+ *    word branch and falls to the single-code-point branch. MEASURED: on
+ *    "call Andre" + U+0301 + " Corp today" the split is
+ *    "call"[0,4) "Andre"[5,10) U+0301[10,11) "Corp"[12,16) "today"[17,22), and
+ *    `spanFromTokens(text, words, 1, 1)` returns [5,11) -- word 2's character,
+ *    for a span the model said was one word wide. Also measured: a bare mark
+ *    does NOT tokenise to nothing on either pinned tokenizer (U+0301 is
+ *    [209,136,212] on edge and [7077] on base), so `encodeWords` does not drop
+ *    it and the model really did score it as a word of its own.
+ *
+ *    Kept anyway, deliberately. What is absorbed can only ever be marks: the
+ *    loop stops at the first non-`\p{M}` code point, and a `splitWords` word
+ *    that BEGINS with a mark is always exactly one mark, so this can never
+ *    reach a base character and therefore never reaches a neighbouring word in
+ *    any sense that changes a value. What it does reach is the end of the
+ *    grapheme cluster the span's last base character starts. Stopping short
+ *    instead would put `end` between a base character and its own mark -- the
+ *    character-level twin of the surrogate split this function rejects outright
+ *    below -- and `applyActions`, which rewrites BY SPAN, would leave the
+ *    orphaned acute hanging off the pseudonym.
  *
  * The asymmetry is deliberate: a mark at `start` belongs to a base character
  * OUTSIDE the span, so pulling it in would mean pulling in a base character the
@@ -195,6 +224,10 @@ export function spanFromTokens(
   // pinned tokenizer does emit bare U+2581 tokens covering a single space.
   if (start >= end) return undefined;
 
+  // The widening. It runs PAST `last.end` on the word path and that is
+  // intended -- see adjustment 2 in this function's header for the measurement
+  // and for why stopping short would be worse.
+  //
   // Advanced by whole CODE POINTS, not code units: an astral combining mark
   // (U+1D165 and friends) is two units, and `charAt` would hand `\p{M}` a lone
   // surrogate that never matches. This loop is the one place in the file that

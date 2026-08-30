@@ -115,13 +115,21 @@ export interface FakeSessionOptions {
    * instead of `text_lengths`. Only for the re-pin guard test.
    */
   readonly wordsOverride?: number;
+  /**
+   * Written into every cell of the winning span's logits INSTEAD of `score`,
+   * as a raw logit rather than a probability. The one use is NaN: the pinned
+   * graphs return float32 and nothing between the tensor and the decoder
+   * rejects a NaN in a correctly sized array, so this is how a test reaches
+   * the tagger's confidence guard without a broken GPU driver.
+   */
+  readonly rawLogitOverride?: number;
   readonly onRun?: (feeds: Readonly<Record<string, OnnxTensor>>) => void;
 }
 
 export function fakeSession(options: FakeSessionOptions): OnnxSession {
   const entry = MODEL_MANIFEST[options.modelId];
   if (entry === undefined) throw new Error(`no such model in the manifest: ${options.modelId}`);
-  const score = logit(options.score ?? 0.9);
+  const score = options.rawLogitOverride ?? logit(options.score ?? 0.9);
   const classIndex = options.classIndex ?? 0;
 
   return {
