@@ -183,7 +183,11 @@ test("runs the smoke corpus and emits one valid record per item", async ({ page 
     arm: "t0",
     backend: "wasm",
     provider: "claude",
-    policy: "p-fin",
+    // The corpus's own value, carried through untouched. It says
+    // "minimal-fixture" rather than "p-fin" because its gold was written
+    // against apps/eval/fixtures/minimal-ir.json and not against
+    // policies/p-fin.md -- see the `policy` field's note in driver/corpus.ts.
+    policy: "minimal-fixture",
     config: { tier0: true, tier1: false, tier2: false },
   });
 

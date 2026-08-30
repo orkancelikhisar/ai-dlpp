@@ -586,47 +586,77 @@ async function loadTier1(options: Tier1LoadOptions): Promise<Tier1LoadReport> {
 
   const runtime = await loadOrtRuntime();
   const session = await createOrtSession(weightsUrl, config.backend, () => Promise.resolve(runtime));
-  // AFTER the session exists, because @huggingface/transformers is imported by
-  // loadTokenizer below and this is the assignment it would have made.
-  const tokenizer = await loadTokenizer(config.modelId);
-  // After loadTokenizer, because that is where @huggingface/transformers is
-  // imported and its module body is what would have reassigned wasmPaths.
-  assertLocalWasm(runtime);
 
-  const tagger = new GlinerSpanTagger(session, tokenizer, config);
-  const warmup = await measuredDetect(
-    { text: WARMUP_TEXT, provider: "claude", config: { tier0: false, tier1: true, tier2: false } },
-    tagger,
-  );
-  const warmupInferences = warmup.tier1?.inferences ?? 0;
-  const warmupGpuSubmits = warmup.tier1?.gpuSubmits ?? 0;
-  if (warmupInferences === 0) {
-    await session.release();
-    throw new Error(
-      `${config.modelId}: the warm-up produced no inference, so nothing verified which ` +
-        "execution provider ran (check that the IR declares at least one tier-1 entityType)",
-    );
-  }
-  const observedBackend: Tier1Backend = warmupGpuSubmits > 0 ? "webgpu" : "wasm";
-  if (observedBackend !== config.backend) {
-    await session.release();
-    throw new Error(
-      `${config.modelId}: asked for the ${config.backend} backend but ${String(warmupGpuSubmits)} ` +
-        `GPUQueue.submit calls over ${String(warmupInferences)} warm-up inference(s) say ` +
-        `${observedBackend} executed; refusing to report ${config.backend} latency for ` +
-        `${observedBackend} work`,
-    );
-  }
+  // EVERYTHING from here to the assignment at the bottom runs inside this try,
+  // and the reason is arithmetic. Between the line above and the only
+  // `release()` there were four throw paths with no cleanup on them --
+  // `loadTokenizer` (a missing or unparseable tokenizer.json), `assertLocalWasm`
+  // (transformers.js having reassigned wasmPaths), the GlinerSpanTagger
+  // constructor (a signature mismatch), and the warm-up `detect` itself -- and
+  // an onnxruntime session holds the whole graph. For `gliner-pii-base` that is
+  // 665 MB abandoned per failed attempt, in a page that `test/tier1.spec.ts`
+  // deliberately drives through repeated failing loads. The two explicit
+  // releases that were already here are now redundant with this and have been
+  // folded into it, so there is exactly one place that lets go of the session.
+  //
+  // Rethrows rather than swallowing: the caller's error is the diagnosis, and
+  // the release is only bookkeeping on the way out.
+  let report: Tier1LoadReport;
+  let tagger: GlinerSpanTagger;
+  try {
+    // AFTER the session exists, because @huggingface/transformers is imported by
+    // loadTokenizer below and this is the assignment it would have made.
+    const tokenizer = await loadTokenizer(config.modelId);
+    // After loadTokenizer, because that is where @huggingface/transformers is
+    // imported and its module body is what would have reassigned wasmPaths.
+    assertLocalWasm(runtime);
 
-  const report: Tier1LoadReport = {
-    config,
-    observedBackend,
-    weightsUrl,
-    weightsBytes,
-    loadMs: performance.now() - started,
-    warmupInferences,
-    warmupGpuSubmits,
-  };
+    tagger = new GlinerSpanTagger(session, tokenizer, config);
+    const warmup = await measuredDetect(
+      { text: WARMUP_TEXT, provider: "claude", config: { tier0: false, tier1: true, tier2: false } },
+      tagger,
+    );
+    const warmupInferences = warmup.tier1?.inferences ?? 0;
+    const warmupGpuSubmits = warmup.tier1?.gpuSubmits ?? 0;
+    if (warmupInferences === 0) {
+      throw new Error(
+        `${config.modelId}: the warm-up produced no inference, so nothing verified which ` +
+          "execution provider ran (check that the IR declares at least one tier-1 entityType)",
+      );
+    }
+    const observedBackend: Tier1Backend = warmupGpuSubmits > 0 ? "webgpu" : "wasm";
+    if (observedBackend !== config.backend) {
+      throw new Error(
+        `${config.modelId}: asked for the ${config.backend} backend but ${String(warmupGpuSubmits)} ` +
+          `GPUQueue.submit calls over ${String(warmupInferences)} warm-up inference(s) say ` +
+          `${observedBackend} executed; refusing to report ${config.backend} latency for ` +
+          `${observedBackend} work`,
+      );
+    }
+
+    report = {
+      config,
+      observedBackend,
+      weightsUrl,
+      weightsBytes,
+      loadMs: performance.now() - started,
+      warmupInferences,
+      warmupGpuSubmits,
+    };
+  } catch (cause) {
+    // Awaited, not fire-and-forget: a rejected release would otherwise be an
+    // unhandled rejection reaching Playwright's `pageerror` listener and
+    // reported as the failure instead of the real one. If it does reject, that
+    // is the more interesting fact and it carries the original as `cause`.
+    await session.release().catch((releaseFailure: unknown) => {
+      throw new Error(
+        `${config.modelId}: failed to load, and releasing the session then failed too ` +
+          `(${String(releaseFailure)})`,
+        { cause },
+      );
+    });
+    throw cause;
+  }
   tier1 = { tagger, report, release: () => session.release() };
   // Deliberately cleared: the warm-up is this page's own call, and a spec asking
   // "did tier 1 run during MY detect" must not be answered with it.

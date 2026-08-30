@@ -479,27 +479,45 @@ raw `logits` element by element:
 | `gliner-pii-base` | markerV0 | **0.000** | exact |
 | `gliner-pii-base-uint8` | markerV0 | 30.154 | **wrong** |
 
-Bit-identical across two independent full re-runs, so it is deterministic rather
-than numerical noise. The disagreement is a **collapse**, not drift:
-`gliner-pii-base-uint8` logits span `[-30.46, +2.05]` on wasm and `[-0.36, -0.16]`
-on webgpu, whose sigmoid is ≈0.46 for everything — which is exactly what the
-end-to-end findings show, every word scoring 0.44–0.47 in monotone order.
+The disagreement is a **collapse**, not drift: `gliner-pii-base-uint8` logits
+span `[-30.46, +2.05]` on wasm and `[-0.36, -0.16]` on webgpu, whose sigmoid is
+≈0.46 for everything — which is exactly what the end-to-end findings show, every
+word scoring 0.44–0.47 in monotone order. That scale, not a re-run, is what the
+three **wrong** verdicts rest on: they are three to four orders of magnitude
+above anything WebGPU varies by on its own (below).
 
 **Nothing reports this.** Session creation succeeds, `run` resolves, the logits
 are finite and correctly shaped. `gliner-pii-base` agreeing under the same page
 code and readback path is the control that says the harness is not the cause.
 
-That `0.000` is Task 11's, over raw logits on a single message, and **"exact" is
-not "bit for bit."** Measured in Task 12 over the whole 13-item smoke corpus at
+That `0.000` is Task 11's, over raw logits on a single short message, and
+**"exact" is not "bit for bit."** Measured over the whole 13-item smoke corpus at
 threshold 0.02, comparing a real wasm arm against a real webgpu arm: every span
 boundary and every entityType is identical on all 13 items (47 tier-1 findings
 per arm), while *confidences* differ by ~1e-7 typically and by up to **2.6e-4**
-on the two multi-line items — the longest inputs in the corpus. Close, not exact,
-and looser on longer sequences than one short message could show. Nothing that is
-scored moved, which is why the rung stays usable; four orders of magnitude still
-separate it from the other three. `test/tier1.spec.ts` pins the table above, so a future onnxruntime-web
-that fixes (or breaks) a rung fails the suite instead of quietly changing what a
-number means.
+on the two multi-line items — the longest inputs in the corpus.
+
+**WebGPU is not bit-reproducible against itself either.** An earlier version of
+this section said the table was "bit-identical across two independent full
+re-runs, so it is deterministic rather than numerical noise". Measured: six
+consecutive `detect` calls on the *same* text, in one page, on `gliner-pii-base`
+at threshold 0.02 —
+
+| provider | 153-char message | 2,148-char message |
+|---|---|---|
+| wasm | all six bit-identical | all six bit-identical |
+| webgpu | every pass differs from the last, max &#124;Δ&#124; 1.7e-4 | first three differ, then settles, max &#124;Δ&#124; 4.9e-3 |
+
+Spans, labels and ordering were identical in all twelve passes. So the `0.000`
+was read off one short message where the effect is smallest, and if
+`maxAbsLogitDiff` ever becomes an assertion rather than documentation it needs a
+tolerance — nothing under ~5e-3 would hold at that input length, and the spread
+grows with sequence length. It also puts the wasm-vs-webgpu gap on this rung in
+proportion: it is no larger than the provider's disagreement with itself.
+Nothing that is *scored* moved, which is why the rung stays usable.
+`test/tier1.spec.ts` pins the table above, so a future onnxruntime-web that fixes
+(or breaks) a rung fails the suite instead of quietly changing what a number
+means.
 
 **`runMatrix` refuses a WebGPU arm on any rung except `gliner-pii-base`**, and
 the table above is the constant it reads — `BACKEND_AGREEMENT`, exported from
@@ -508,8 +526,10 @@ measurement that justifies it cannot drift apart. The refusal happens before the
 browser is touched, and again on the config the page reports the tagger was
 actually built with. That is also why the smoke arms use the 665 MB fp32 rung
 rather than the 46 MB uint8 one: it is the only rung on which a wasm arm and a
-webgpu arm measure the same model. The size cost is 2.0–2.7 s of load in this
-browser.
+webgpu arm measure the same model. The size cost is real but smaller than it
+was recorded as: three cold loads each, median [min–max], `1.65 s [1.25–1.76]`
+on wasm and `2.20 s [1.58–2.22]` on webgpu, against `0.26 s [0.25–0.32]` for
+`gliner-pii-edge-uint8`. (A previous "2.0–2.7 s" here does not reproduce.)
 
 ### The ladder is four rungs, not six
 
@@ -534,17 +554,25 @@ identical spans on all four loadable rungs, and identical scores to 3 dp on both
 fp32 rungs. Only `gliner-pii-edge-uint8` drifts, by ≤0.03 — two ORT builds'
 quantized kernels, not a span difference.
 
-Latency for one 12-word prose segment, `tier1Ms`:
+Latency for one **16-word** prose segment, `tier1Ms` in ms, median [min–max].
+Browser cells are 3 cold loads x 5 detects; the node column is 15 detects after
+one warm-up. Re-measured, because the previous table here — which also called
+the segment 12 words — no longer reproduces on any of its three columns:
 
 | rung | onnxruntime-node CPU | browser wasm | browser webgpu |
 |---|---|---|---|
-| `gliner-pii-edge` | 10.9 | 20.1 | 66.9 |
-| `gliner-pii-edge-uint8` | 3.4 | 20.7 | 50.3 |
-| `gliner-pii-base` | 24.9 | 54.8 | 31.1 |
-| `gliner-pii-base-uint8` | 10.0 | 70.1 | 108.1 |
+| `gliner-pii-edge` | 8.0 [7.3–8.9] | 13.7 [9.2–22.1] | 11.7 [9.6–16.0] |
+| `gliner-pii-edge-uint8` | 4.4 [3.3–5.1] | 11.5 [8.8–16.9] | 41.7 [38.8–47.3] |
+| `gliner-pii-base` | 26.0 [24.8–28.3] | 41.0 [30.6–58.8] | 30.1 [20.1–63.8] |
+| `gliner-pii-base-uint8` | 11.7 [9.9–13.6] | 34.1 [31.4–55.3] | 68.1 [64.6–75.2] |
 
-WebGPU is **slower** than WASM on three of four rungs at this message size, and
-three of those four webgpu columns are measuring wrong numbers anyway. Only
+The ranges are wide enough that a single sample of any cell is not a
+measurement, which is how the earlier table came to be wrong. **Read the medians
+as this machine on this day, not as a property of the ladder.**
+
+WebGPU is **slower** than WASM on the two uint8 rungs and faster on the two fp32
+ones at this message size — an earlier "three of four" no longer holds — and
+three of the four webgpu columns are measuring wrong numbers anyway. Only
 `gliner-pii-base` both benefits and agrees.
 
 ### Telling "ran and found nothing" from "never ran"
@@ -556,6 +584,41 @@ carries the tagger's own counters as deltas over the one `detect` call —
 offset mapper refused, which are invisible in `findings` and would otherwise read
 as a model that found less), and `gpuSubmits`. The page clears `lastDetect` at
 the end of `loadTier1`, so the warm-up cannot supply it.
+
+**And they reach the file.** `RunRecordSchema.tier1Stats` carries
+`Tier1TaggerStats` whole — `inferences`, `droppedWords`, `truncatedWords`,
+`overWideSpans`, `unmappableSpans`, `nonFiniteScores` — per record, present
+exactly when `config.tier1` is set *and* `error` is null. Until it existed the
+counters stopped at the page: `runArm` built each record from `findings` and
+`timings` alone, so an item whose tail `maxLen` cut off emitted a row
+byte-indistinguishable from one where the model read the whole message and found
+nothing, which is the exact recall miss the counters were introduced to expose.
+`error` is part of the coupling because `detect` throws whole — on a thrown item
+the page's `lastDetect` still holds the *previous* item's delta, so absent is the
+only honest answer and a row of zeros would be a false one. `gpuSubmits` is not
+carried: it counts the page's GPU submissions, not the tagger's work.
+
+### `abandonedWorkInFlight`, and why a timeout does not abort the arm
+
+`page.evaluate` accepts no timeout and offers no cancellation channel, so when
+`runArm`'s per-item deadline expires the detection **keeps running in the
+browser**. Every later item is then timed under contention with work belonging to
+a different row — and only the expired row gets an `error`, so a latency
+aggregate over `error === null` rows silently includes the contaminated ones.
+
+Every row measured after an expiry therefore carries
+`abandonedWorkInFlight: true`. The expired row itself does not: it already
+carries `error`, and what the flag marks is a row timed under someone else's
+work. Findings on a flagged row are still good — contention moves the clock, not
+the spans — so this is a filter for `timings`, not a reason to drop the row from
+a recall count.
+
+Aborting the arm instead is defensible, and is what `runArm` already does for a
+dead browser. It is rejected because an expiry says nothing about the items
+already measured, and aborting discards all of them and — through `runMatrix` —
+the rest of the matrix: one slow item at 1,400 of 1,500 would destroy hours of
+GPU time that had already produced good rows. A run where this flag is true
+anywhere is a deadline to fix, not a tolerable outcome.
 
 ### A record carries two hashes
 
@@ -601,12 +664,42 @@ strict replacement: setting it drops the pnpm-workspace-root default and with it
 to `safeModulePaths` — while a plain runtime `fetch()` for a file in the same
 tree gets a 403. Model weights are fetched that way. Leave it unset.
 
-## The IR fixture
+## The IR fixtures
 
-`fixtures/minimal-ir.json` is a placeholder copied from
-`packages/core/test/fixtures/minimal-ir.ts`, serialized so the page loads it the
-way the extension will: `loadPolicyIr` over JSON text. It is not a baseline and
-its numbers mean nothing on their own — it exists so the smoke test has a policy.
-Replacing it with a compiled policy is a later task, and doing so also closes the
-one gap the smoke spec documents: no tier-0 entity in this IR carries a provider
-override, so `provider` cannot change any assertion here.
+The page carries **two**, and `window.__sih.useIr(name)` switches between them,
+returning the new `irHash` so a record's provenance moves with the artifact. A
+named registry of `?raw` imports rather than a `loadIr(json)` taking arbitrary
+text: `irHash` is reproducible with `shasum -a 256` on a file in this repo, and
+injectable IR text would destroy that.
+
+`fixtures/minimal-ir.json` (the default, `"minimal"`) is a placeholder copied
+from `packages/core/test/fixtures/minimal-ir.ts`, serialized so the page loads it
+the way the extension will: `loadPolicyIr` over JSON text. It is not a baseline
+and its numbers mean nothing on their own — it exists so the smoke test has a
+policy. Replacing it with a compiled policy is a later task, and doing so also
+closes the one gap the smoke spec documents: no tier-0 entity in this IR carries
+a provider override, so `provider` cannot change any assertion here.
+
+`fixtures/multiclass-ir.json` (`"multiclass"`) declares **three** tier-1
+entityTypes — `client-name`, `person-name`, `email-address`, in that order — and
+exists for one reason. The minimal fixture has exactly one, so every browser
+assertion ran at `classes = 1`, where `buildLabels` only ever assigns
+classIndex 0 and both decoders' class stride multiplies by zero: a class-axis
+bug reads the same cells a correct implementation reads, and the only label that
+can come back is the only label there was. The multi-class coverage that existed
+ran under `onnxruntime-node`, which §2.2 says is not the measured runtime. The
+order is the teeth of the assertion — a decoder ignoring the class axis would
+label everything `client-name`, and the spans `test/tier1.spec.ts` demands are
+classIndex 1 and 2.
+
+## The smoke corpus says `minimal-fixture`, not `p-fin`
+
+`corpora/fixtures/smoke.jsonl` labels every item `policy: "minimal-fixture"`.
+Its gold was written against `fixtures/minimal-ir.json`, not against
+`policies/p-fin.md`: two of its six positives use entityType ids (`aws-key`,
+`generic-secret`) that exist only in that placeholder and that no p-fin
+compilation produces, and one labels a secret `redact` where p-fin §4 blocks
+credentials outright. It used to claim `p-fin` and did not have it. Relabelling
+the *gold* to match p-fin is the other way to resolve that, and is deliberately
+not done — that is Plan 7's job, and doing it here would be tuning data to fit a
+claim.

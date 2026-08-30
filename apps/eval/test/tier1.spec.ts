@@ -27,15 +27,23 @@ test.describe.configure({ mode: "serial" });
  * measuring the same model. On the other three, a webgpu arm silently returns
  * different numbers, which is a far worse source of flakiness than a large file.
  *
- * "Agrees" is not "bit for bit", and the difference was measured in Task 12
- * rather than assumed. Task 11 diffed raw logits element-wise on ONE message and
- * got 0.000. Running the whole 13-item smoke corpus through both providers at
- * threshold 0.02 instead: every span boundary and every entityType is identical
- * on all 13 items (47 tier-1 findings per arm), while CONFIDENCES differ by
- * ~1e-7 typically and by up to 2.6e-4 on the two multi-line items -- the longest
- * inputs in the corpus. Close, not exact, and looser on longer sequences than
- * one short message could show. It stays usable because nothing that is scored
- * moved: no span, no label, no ordering.
+ * "Agrees" is not "bit for bit". Task 11 diffed raw logits element-wise on ONE
+ * message and got 0.000. Running the whole 13-item smoke corpus through both
+ * providers at threshold 0.02 instead: every span boundary and every entityType
+ * is identical on all 13 items (47 tier-1 findings per arm), while CONFIDENCES
+ * differ by ~1e-7 typically and by up to 2.6e-4 on the two multi-line items --
+ * the longest inputs in the corpus.
+ *
+ * Nor is it bit for bit against ITSELF, which is the sharper statement and the
+ * one that says why the rung is still usable. MEASURED here: six consecutive
+ * `detect` calls on the same text in one page, on this rung at 0.02. WASM
+ * returns bit-identical confidences all six times at 153 characters and at
+ * 2,148. WEBGPU differs from the previous pass every time at 153 characters
+ * (max |delta| 1.71e-4) and on the first three at 2,148 (max |delta| 4.89e-3).
+ * So the provider difference above is no larger than the provider's
+ * disagreement with itself, and it stays usable for the reason it always did:
+ * nothing that is SCORED moved. No span, no label, no ordering -- in all twelve
+ * of those passes.
  *
  * The size cost is small and measured: 2.0-2.7 s to load in this browser from
  * local disk, against 0.5-0.6 s for edge-uint8.
@@ -202,20 +210,38 @@ for (const backend of TIER1_BACKENDS) {
  *   gliner-pii-base         markerV0      max |wasm - webgpu| = 0.000
  *   gliner-pii-base-uint8   markerV0      max |wasm - webgpu| = 30.154
  *
- * Bit-identical over two independent full re-runs, so it is deterministic
- * rather than numerical noise, and the shape of the disagreement is a COLLAPSE
- * rather than drift: base-uint8's logits span [-30.46, +2.05] on wasm and
- * [-0.36, -0.16] on webgpu, whose sigmoid is ~0.46 for everything -- which is
- * exactly the "every word scores 0.44-0.47" pattern the findings below show.
+ * The shape of the disagreement is a COLLAPSE rather than drift, which is what
+ * makes these three verdicts safe despite the jitter recorded above:
+ * base-uint8's logits span [-30.46, +2.05] on wasm and [-0.36, -0.16] on
+ * webgpu, whose sigmoid is ~0.46 for everything -- exactly the "every word
+ * scores 0.44-0.47" pattern the findings below show. Three to four orders of
+ * magnitude separates that from the ~5e-3 webgpu varies by between two runs of
+ * the same input, so no re-run could turn a "wrong" verdict into an "exact"
+ * one. An earlier version of this comment claimed the four numbers were
+ * "bit-identical over two independent full re-runs, so it is deterministic
+ * rather than numerical noise"; the determinism half of that is false and the
+ * scale argument, which is what the verdicts actually rest on, is not.
  *
  * Nothing reports this. Session creation succeeds, `run` resolves, the logits
  * are finite and correctly shaped. `gliner-pii-base` agreeing to 0.000 under the
  * same page code and the same readback path is the control that says the
  * harness is not the cause.
  *
- * The threshold is 0.02 rather than the default 0.5 because at 0.5 THREE of
- * these four rungs return nothing on either provider, so the arms would agree by
- * both being empty and this test would pass while proving nothing.
+ * The threshold is 0.02 rather than the default 0.5, and the reason is
+ * measured. At 0.5 on this message and the 1-class minimal IR:
+ *
+ *   gliner-pii-edge         wasm 0 findings   webgpu 0
+ *   gliner-pii-edge-uint8   wasm 0            webgpu 0
+ *   gliner-pii-base         wasm 1            webgpu 0
+ *   gliner-pii-base-uint8   wasm 1            webgpu 0
+ *
+ * So TWO of the four -- not three, as this comment used to say -- return
+ * nothing on BOTH providers, and those two arms would agree by being equally
+ * empty while this test passed proving nothing. The other two are worse for
+ * this test rather than better: they return one finding on wasm and none on
+ * webgpu, so `expect(onWebgpu.length).toBeGreaterThan(0)` below would fail on a
+ * rung the table calls exact. 0.02 is what makes every cell of that grid
+ * non-empty.
  */
 for (const { modelId, agrees } of BACKEND_AGREEMENT) {
   test(`webgpu ${agrees ? "agrees with" : "DISAGREES with"} wasm on ${modelId}`, async ({ page }) => {
@@ -440,8 +466,15 @@ test("every span the model reports maps back to real characters", async ({ page 
     { modelId: SMOKE_MODEL, text: MESSAGE },
   );
 
-  // Guaranteed by the threshold, not by the model being good at anything: at
-  // 0.02 this graph reports spans for most word ranges it enumerates.
+  // Guaranteed by the threshold, not by the model being good at anything -- but
+  // NOT a flood, which is what this comment used to claim ("at 0.02 this graph
+  // reports spans for most word ranges it enumerates"). MEASURED: the prose
+  // segment of MESSAGE is 16 words, so at one class and width <= 12 the decoder
+  // enumerates 126 in-range word ranges; at 0.02 it decodes 5 of them (4%) and
+  // 3 survive core's merge, against 1 at the default 0.5. Tripling the spans
+  // the offset mapping has to get right is the whole benefit, and it is a
+  // modest one; the astral character before every span is what makes the three
+  // worth checking.
   expect(findings.length).toBeGreaterThan(0);
   for (const finding of findings) {
     expect(MESSAGE.slice(finding.start, finding.end)).toBe(finding.text);
@@ -471,11 +504,18 @@ test("every span the model reports maps back to real characters", async ({ page 
  * `TierConfig.backend` reconciled against what is actually loaded.
  *
  * MEASURED in Task 3 and still true: nothing under `packages/core/src` reads
- * `TierConfig.backend`, and `runArm` copies its own `ArmSpec.backend` onto every
- * record without plumbing it into the config it forwards. So a caller can hand
- * `detect` a config saying `webgpu` while the page is running wasm, and every
- * record from that arm would carry the wrong provider with nothing to catch it.
- * The page is the one place both values are known.
+ * `TierConfig.backend`. So a caller can hand `detect` a config saying `webgpu`
+ * while the page is running wasm, and nothing inside core would notice. The
+ * page is the one place both values are known.
+ *
+ * This comment used to add that `runArm` "copies its own `ArmSpec.backend` onto
+ * every record without plumbing it into the config it forwards". That was true
+ * when it was written and Task 12 closed it: `runArm` now builds ONE config
+ * object carrying `spec.backend`, uses it for both the `detect` call and the
+ * record, and refuses an arm whose `TierConfig` names a different backend.
+ * `test/run.spec.ts` covers that end. What remains for THIS test is the case
+ * neither of those catches -- a caller reaching `window.__sih.detect` directly
+ * with a contradicting config -- which is why the check lives in the page.
  *
  * The wasm arm is used because it is the one that exists on every machine, so
  * this cannot become a test that only runs where there is a GPU.

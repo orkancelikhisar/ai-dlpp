@@ -32,14 +32,36 @@ import { runArm } from "./run.js";
  * shaped. `gliner-pii-base` agreeing under the same page code and the same
  * readback path is the control that says the harness is not the cause.
  *
- * `maxAbsLogitDiff` is Task 11's number, over raw logits on one message, and is
- * not mine. What I measured is downstream and over more input: running the whole
- * 13-item smoke corpus through both providers on `gliner-pii-base` at threshold
- * 0.02 gives identical spans and labels on every item, with CONFIDENCES
- * differing by ~1e-7 typically and up to 2.6e-4 on the two multi-line items. So
- * the 0 below means "nothing that is scored moved", not "bit for bit" -- the
- * agreement is close rather than exact, and looser on longer sequences. That
- * still separates this rung from the other three by four orders of magnitude.
+ * ## What the 0 is, and what it is NOT
+ *
+ * `maxAbsLogitDiff` is Task 11's number, over raw logits on ONE short message,
+ * and is not mine. An earlier version of this block called the whole table
+ * "bit-identical over two independent full re-runs, so it is deterministic
+ * rather than numerical noise". THAT IS WRONG, and I measured it wrong:
+ *
+ * Six consecutive `detect` calls on the SAME text, in one page, on
+ * `gliner-pii-base` at threshold 0.02. On WASM all six return bit-identical
+ * confidences, at 153 characters and at 2,148. On WEBGPU every pass differs
+ * from the one before it at 153 characters (max |delta| 1.71e-4), and the first
+ * three differ before it settles at 2,148 (max |delta| 4.89e-3). Spans, labels
+ * and ordering were identical in all twelve passes.
+ *
+ * So webgpu output on this rung is not reproducible run to run, and the 0 below
+ * was read from a single short message where the effect is smallest. If this
+ * field ever becomes an assertion rather than documentation it needs a
+ * tolerance, and no tolerance under ~5e-3 would hold at this input length --
+ * the spread grows with sequence length and nothing here bounds it above.
+ *
+ * NONE OF WHICH WEAKENS THE TABLE. The three rungs marked `agrees: false`
+ * disagree by 8.352, 8.134 and 30.154 -- three to four orders of magnitude
+ * above that jitter, and a collapse of the whole logit range rather than noise
+ * on it. And `gliner-pii-base` stays usable for the reason it always did:
+ * nothing that is SCORED moves. Running the whole 13-item smoke corpus through
+ * both providers at 0.02 gives identical spans and labels on every item, with
+ * confidences differing by ~1e-7 typically and up to 2.6e-4 on the two
+ * multi-line items -- the same order as the run-to-run jitter above, which is
+ * the point: on this rung the provider difference is no larger than the
+ * provider's disagreement with itself.
  */
 export const BACKEND_AGREEMENT: readonly {
   readonly modelId: string;

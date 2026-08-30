@@ -78,11 +78,24 @@ export const CorpusItemSchema = z
     id: z.string().min(1),
     text: z.string().min(1),
     /**
-     * Which policy DOCUMENT this item's gold labels were written against, as a
-     * short human-chosen name (the smoke corpus uses "p-fin"). Labels are only
-     * meaningful relative to a policy -- the same PAN is "block" under one and
-     * "allow" under another -- so an item scored against a different policy
-     * than it was labelled for is measuring nothing.
+     * Which policy this item's gold labels were written against, as a short
+     * human-chosen name. Labels are only meaningful relative to a policy -- the
+     * same PAN is "block" under one and "allow" under another -- so an item
+     * scored against a different policy than it was labelled for is measuring
+     * nothing.
+     *
+     * The smoke corpus says "minimal-fixture", NOT "p-fin", and the change is
+     * the point of this paragraph rather than a detail of it. Its gold was
+     * written against apps/eval/fixtures/minimal-ir.json, which is a
+     * placeholder copied from core's test fixtures, and not against
+     * policies/p-fin.md: two of its six positives use entityType ids
+     * (`aws-key`, `generic-secret`) that exist only in that placeholder and
+     * that no p-fin compilation produces, and one labels a secret `redact`
+     * where p-fin's §4 prose says credentials are blocked outright. Calling it
+     * "p-fin" claimed a provenance it did not have. Relabelling the GOLD to
+     * match p-fin would be the other way to resolve that and is deliberately
+     * not done here: that is Plan 7's job, and doing it now would be tuning
+     * data to fit a claim.
      *
      * Deliberately a NAME, not a hash: the corpus is authored by hand against a
      * policy in prose, and it must stay valid while that policy is recompiled.

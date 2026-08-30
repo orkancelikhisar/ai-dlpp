@@ -162,6 +162,17 @@ function toRuntimeTensors(
  * conversion above happens on every run. The wrapper is transparent otherwise:
  * `inputNames` and `outputNames` are read straight off the loaded graph, which
  * is what `assertSignature` checks.
+ *
+ * OWNERSHIP. The caller owns what this returns and must `release()` it on EVERY
+ * path out, including the failing ones -- there is no finalizer here and no
+ * reference this module keeps. That matters more than it usually would because
+ * of what a session holds: the pinned graphs are 46 MB to 665 MB, so a loader
+ * that throws between this call and its first `release()` abandons that much
+ * per attempt, and a page can be driven through the same failing load
+ * repeatedly. The stretch between creating a session and having something that
+ * can be trusted to release it -- a tokenizer load, a signature check, a warm-up
+ * inference -- is exactly where that goes wrong; apps/eval's `loadTier1` wraps
+ * the whole of it in one try and releases before rethrowing.
  */
 export async function createOrtSession(
   modelUrl: string,
