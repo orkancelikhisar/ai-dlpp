@@ -1,4 +1,10 @@
 export {
+  DeadlineExpired,
+  mlcInterruptible,
+  runWithDeadline,
+  type Interruptible,
+} from "./cancel.js";
+export {
   DEFAULT_TIER2_CONFIG,
   TIER2_MODELS,
   resolveTier2Config,
