@@ -220,8 +220,17 @@ export function spanFromTokens(
 
   while (start < end && TRIMMABLE.test(text.charAt(start))) start += 1;
   while (end > start && TRIMMABLE.test(text.charAt(end - 1))) end -= 1;
-  // A range that was nothing but separators is not a finding. Measured: the
-  // pinned tokenizer does emit bare U+2581 tokens covering a single space.
+  // A range that was nothing but separators is not a finding, and this is LIVE
+  // on the word path rather than left over from the subword one -- the old note
+  // here justified it with the pinned tokenizer emitting bare U+2581 tokens for
+  // a single space, which nothing feeds this function any more. Re-derived
+  // against splitWords: it emits U+200B, U+200C, U+200D and U+FEFF as words of
+  // their own (Python's `\s`, which the model's splitter used, holds none of
+  // them), so the model has a slot for each and can select a run of them.
+  // MEASURED on "call" + U+200B + U+200C + " Acme": the split is
+  // "call"[0,4) U+200B[5,6) U+200C[6,7) "Acme"[8,12), and spans 1..1, 1..2 and
+  // 2..2 all trim to empty and are rejected here. Without this they would reach
+  // applyActions as zero-width rewrites.
   if (start >= end) return undefined;
 
   // The widening. It runs PAST `last.end` on the word path and that is
