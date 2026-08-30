@@ -156,10 +156,25 @@ Tier 1:
 
 Tier 2 — **two-stage selection, not a fixed pick** (user decision: model family is itself an experiment variable):
 
-- **Stage 1 bake-off** (dev slice ~200 segments): `Qwen3-4B`, `Qwen3.5-2B`, `Gemma-3-4b-it`, `Phi-4-mini` (3.8 B), `Ministral-3-3B` — all q4f16_1 prebuilt MLC builds (verified present in mlc-ai HF registry), thinking modes disabled. Measured: JSON-schema compliance (pre/post one repair), span F1, p50/p95 latency + tok/s on WebGPU, VRAM, cold-load. Kill rules: compliance <95 % pre-repair, or p95 segment latency >3 s.
+- **Stage 1 bake-off** (dev slice ~200 segments) — **AMENDED 2026-08-30 after measurement on `@mlc-ai/web-llm@0.2.84` in real Chrome.** Slate is **four** arms, not five: `Qwen3.5-2B` (2245 MB, fastest, recommended primary), `Phi-4-mini` (3438 MB), `Qwen3-4B` (3432 MB), `Ministral-3-3B` (2864 MB) — all q4f16_1 prebuilt MLC builds, each **executed end to end**, not merely present in the registry. Measured per arm: span P/R/F1 against gold, TTFT, decode tok/s, VRAM, cold-load, plus the reporting requirements below.
+
+  **`Gemma-3-4b-it` is dropped.** Its weights exist (2.22 GB) but **no WebGPU lib is compiled** and it is absent from `prebuiltAppConfig`, so the shipped runtime cannot execute it. The only Gemma-3 build is `gemma3-1b-it`, a different weight class. Substitute `Qwen2.5-3B-Instruct` or `Qwen3-8B` if a fifth arm is wanted.
+
+  **Both original kill rules were replaced, because both measured the wrong thing:**
+
+  - *"JSON-schema compliance <95 % pre-repair"* is near-vacuous under grammar-constrained decoding — **0 malformed outputs in 77 calls**, and 100 % of parse failures were truncation rather than malformation. It would never fire, including for an arm that returns entirely **empty** findings on a message full of secrets. Replaced by a **semantic-correctness gate**: required fields populated, spans resolvable at rung ≤ 2, no duplicate-only output. Unconstrained compliance is still worth measuring, as a diagnostic of instruction-following, not as a gate.
+  - *"p95 segment latency >3 s"* is unachievable by **any** model here at realistic output length, so it would have killed all five arms for reasons unrelated to capability. Measured: a tier-2-shaped call is **4.6 s** on the cheapest usable model and 21 s on Phi-4-mini; an Approach-B-shaped call is **7.5 s**, whose TTFT alone (2.8-3.9 s) exceeds the budget before one token is emitted. Latency is dominated by output length, not prompt length. Replaced by **normalized throughput** — p95 TTFT ≤ 1.5 s at tier-2 segment size, and decode ≥ 25 tok/s — with the wall-clock budget derived from a **measured** segment-size distribution over the tier-0/1 corpus, computed before the bake-off runs.
+
+  **Pinned recipe** (each item measured, each avoids a specific failure): `@mlc-ai/web-llm@0.2.84`; `response_format: { type: "json_object", schema }` with the schema **stringified**; **never pass `enable_thinking` under constrained decoding** — it injects a literal think tag into `message.content` and breaks `JSON.parse`; never `structural_tag` (hangs); `launchPersistentContext` in the harness or 3 of 4 cold loads fail with `QuotaExceededError`; one engine per arm.
+
+  **Cancellation must interrupt and drain, never `Promise.race`.** Measured on the real pipeline: abandoning a stream leaves the engine wedged and the *next* call does not return.
 - **Stage 2:** winner joins the full ladder as mid rung; size axis runs within the winner's family (e.g. Qwen3.5 0.8B/2B). If the winner has no size siblings (Phi-4-mini), the size axis stays on Qwen3 (0.6/1.7/4 B) and family/size are reported as separate comparisons. Selection = best F1 subject to latency + compliance constraints; full Pareto frontier reported.
 - **Watch list (no MLC build → cannot run in WebLLM today):** Gemma 4 E2B/E4B (MatFormer, LiteRT-only for now), SmolLM3-3B, LFM2/2.5. Revisit if MLC builds land.
-- **Risk:** Qwen3.5/Ministral-3 MLC weights exist, but current `@mlc-ai/web-llm` npm may lag their architectures. Verify week 1; fallback slate = Qwen3 + Gemma-3 + Phi-4-mini (all confirmed working).
+- **Risk (RETIRED 2026-08-30, and it was right in kind but wrong in target).** The concern was that `@mlc-ai/web-llm` would lag the Qwen3.5 and Ministral-3 architectures. Both ship libs and both were executed end to end. The model that actually has no runnable build is **Gemma-3-4b-it**, which this note listed as part of the safe fallback slate.
+
+- **The live risk is model capability, not runtime support.** On one message containing a name, an email, a salary, a codename and an AWS key: `Qwen3.5-2B` with the full policy found only the AWS key, three times over; the same model with a short system prompt found only the salary and missed the key; `Ministral-3-3B` found nothing at all; `Qwen3-4B` false-positived "The weather is nice today." as a secret. Duplicate findings were common. **Task accuracy must be the primary gate, and the dev slice must run before committing to a full slate.**
+
+- **When WebGPU is unavailable, tier 2 is ABSENT, not degraded.** `web-llm` throws at init rather than silently substituting — the good failure mode, and the opposite of what onnxruntime-web does. Such a machine routes to the same fail-closed "flag for user review" path. Note two adapter limits on the development machine sit at exactly web-llm's hard minimum with zero headroom, so a device one unit below throws outright.
 
 ### 4.3 Approach-B baseline
 
