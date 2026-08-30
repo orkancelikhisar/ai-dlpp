@@ -627,6 +627,16 @@ git add -A && git commit -m "feat(tier2): interrupt-and-drain cancellation, neve
 
 **What works instead:** ask for a longer verbatim quote and resolve it locally. Measured ambiguity at a 1,000-character window: one-word capitalized quotes are non-unique 22-51% of the time, two-word 7-38%, **three-word ≈ 0%**.
 
+**Three defects Task 4 found in this plan's own `spans.ts`, by installing it verbatim and testing it — it passed all 9 of its own tests and failed 7 of the adversarial ones:**
+
+1. **The fold map desynchronizes on a casefold that expands.** `out.push(ch.toLowerCase())` pushes a *string* while `map.push(i)` pushes one entry, assuming `toLowerCase()` preserves length per code unit. Enumerating all 65,536 BMP code units found **exactly one that does not: U+0130, Turkish dotted capital İ**, which lowercases to two code units. From there the two arrays are off by one for the rest of the string. Measured: a quote in `"İstanbul office: … codename is Bluebird …"` resolved to `{start: 18}` instead of `{start: 17}`, yielding `"he merger codename is Bluebird "`. **`text === message.slice(start, end)` still holds, so core accepts it** — this is the mis-location hazard in its purest form, and `applyActions` would vault the wrong string and leave the `t` behind.
+
+2. **Rung 2 sheds the word carrying the secret — a security defect, not a quality one.** Word-level prefix descent drops a whole word to shed one appended punctuation mark, and for a quote shaped `<label> <secret>.` the last word *is* the secret. Measured: `"the AWS key AKIAIOSFODNN7EXAMPLE."` resolved to `"the AWS key"` — **a finding that names the credential without covering it**, so the vault takes the label and the key stays in the message. Not hypothetical: Phi-4-mini appended exactly that trailing punctuation in this very corpus. Fixed by stripping trailing non-word characters *before* the word descent, which returns a longer and better-located span without adding a rung or ever word-searching.
+
+3. **A span boundary could split a surrogate pair**, producing a lone surrogate that still satisfies core's fidelity check.
+
+**Also worth knowing:** this plan's test `"never returns a span whose text disagrees with its offsets"` is **tautological** — the implementation defines `text` as the slice, so it cannot fail. The tests that actually catch drift assert offsets against `indexOf` ground truth. And the ladder was validated against the **six real model quotes** in the probe corpus, nothing selected out; the one non-verbatim quote came from the **Approach B arm** specifically, which is the arm that must not lose on offset arithmetic.
+
 **The honesty requirement.** Because a recovered span is sliced from the message, a *mis-located* span is schema-valid and passes core's fidelity check — that check catches incoherence, not mis-location. So **which rung resolved each finding is a first-class reported metric**, not an implementation detail. An arm whose findings mostly resolve at rung 3 is reporting guesses.
 
 - [ ] **Step 1: Write the failing test**
