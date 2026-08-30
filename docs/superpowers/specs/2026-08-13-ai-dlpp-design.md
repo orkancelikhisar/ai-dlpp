@@ -176,6 +176,32 @@ Tier 2 — **two-stage selection, not a fixed pick** (user decision: model famil
 
 - **When WebGPU is unavailable, tier 2 is ABSENT, not degraded.** `web-llm` throws at init rather than silently substituting — the good failure mode, and the opposite of what onnxruntime-web does. Such a machine routes to the same fail-closed "flag for user review" path. Note two adapter limits on the development machine sit at exactly web-llm's hard minimum with zero headroom, so a device one unit below throws outright.
 
+### 4.2b Future arm: a local SERVER ceiling (added 2026-08-30)
+
+The tier-2 measurements exposed that the binding constraint is **model capability, not backend
+correctness** — the browser-runnable models miss most entities, duplicate findings, and one
+false-positived an innocuous sentence as a secret. That makes an important question unanswerable
+with the current arms: *is the browser the bottleneck, or is small-model capability the
+bottleneck?*
+
+A **local-server arm** answers it. A larger instruct model served by llama.cpp or Ollama on the
+same machine is still **fully local in the sense this project cares about** — no prompt leaves
+the user's machine, so the cloud boundary is intact — but it is not in-browser, so it is not a
+shippable configuration for the extension. Run it as a **capability ceiling**, explicitly
+labelled as non-shippable:
+
+- If the ceiling arm also performs poorly, the task is hard and the browser constraint is not
+  what is costing accuracy.
+- If it performs well, the gap between it and the best browser arm **is** the price of the
+  in-browser constraint — which is precisely the "accuracy vs hardware cost" trade this project
+  set out to quantify, and a far more informative number than any single browser arm.
+
+Design notes for whoever builds it: it reuses the same `Detector` interface, the same JSON
+schema and the same span-recovery ladder, so only the transport differs; it must be reported in
+a separate column from the shippable arms so no reader mistakes it for a product configuration;
+and its latency is not comparable to the browser arms', since it does not pay WebGPU load or
+share the page's memory budget.
+
 ### 4.3 Approach-B baseline
 
 `detect/baselineB.ts`: same `Detector` interface; implementation = tier-2 LLM given (policy chunks + full message), no compiler, no tiers. Runs in the eval harness as just another arm.
