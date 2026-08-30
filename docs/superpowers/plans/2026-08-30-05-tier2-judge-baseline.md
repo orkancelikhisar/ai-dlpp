@@ -51,7 +51,9 @@ Measured on the real pipeline in the browser: after abandoning a stream with a n
 | `Qwen3.5-2B-q4f16_1-MLC` | 2245 MB | Fastest; recommended primary. Decode 33-46 tok/s |
 | `Phi-4-mini-instruct-q4f16_1-MLC` | 3438 MB | No thinking mode. Decode 20-29 tok/s |
 | `Qwen3-4B-q4f16_1-MLC` | 3432 MB | Likely killed on throughput |
-| `Ministral-3-3B-Instruct-2512-BF16` | 2864 MB | Weak: returned **empty** findings on a message full of secrets |
+| `Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC` | 2864 MB | Weak: returned **empty** findings on a message full of secrets |
+
+**Note on that id:** the first draft of this plan wrote it without the `-q4f16_1-MLC` suffix. That is a strict PREFIX of the real `prebuiltAppConfig` entry, and `MLCEngine` resolves ids by string equality — so the arm would have thrown at load with an error reading like a bug in our code, exactly the way the dropped `gemma3-4b` would. **Verify every model id against the installed `prebuiltAppConfig` rather than against this plan.**
 
 **`Gemma-3-4b-it` is dropped** — weights exist, but no WebGPU lib is compiled and it is absent from `prebuiltAppConfig`. Run the bake-off **cheapest-first**; decode rate falls with context on both measured models.
 
@@ -116,7 +118,7 @@ describe("TIER2_MODELS", () => {
     // throughput should not be paid for before a cheap one has been measured.
     expect(TIER2_MODELS.map((m) => m.id)).toEqual([
       "Qwen3.5-2B-q4f16_1-MLC",
-      "Ministral-3-3B-Instruct-2512-BF16",
+      "Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC",
       "Qwen3-4B-q4f16_1-MLC",
       "Phi-4-mini-instruct-q4f16_1-MLC",
     ]);
@@ -200,7 +202,7 @@ export interface Tier2Model {
 export const TIER2_MODELS: readonly Tier2Model[] = [
   { id: "Qwen3.5-2B-q4f16_1-MLC", sizeMb: 2245, decodeTokPerSec: 40, hasThinkingMode: true,
     note: "Fastest measured. Found only the AWS key on a 5-entity message, three times over." },
-  { id: "Ministral-3-3B-Instruct-2512-BF16", sizeMb: 2864, decodeTokPerSec: 30, hasThinkingMode: false,
+  { id: "Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC", sizeMb: 2864, decodeTokPerSec: 30, hasThinkingMode: false,
     note: "Schema-valid but returned EMPTY findings on a message full of secrets." },
   { id: "Qwen3-4B-q4f16_1-MLC", sizeMb: 3432, decodeTokPerSec: 25, hasThinkingMode: true,
     note: "False-positived 'The weather is nice today.' as a secret." },
