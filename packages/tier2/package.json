@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@mlc-ai/web-llm": "0.2.84",
-    "@sih/core": "workspace:*"
+    "@sih/core": "workspace:*",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

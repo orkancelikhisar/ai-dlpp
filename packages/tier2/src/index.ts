@@ -5,3 +5,10 @@ export {
   type Tier2Config,
   type Tier2Model,
 } from "./manifest.js";
+export {
+  JUDGE_SCHEMA,
+  JudgeResponseSchema,
+  parseJudgeResponse,
+  type JudgeResponse,
+  type ParseResult,
+} from "./schema.js";
