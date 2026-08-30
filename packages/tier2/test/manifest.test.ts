@@ -22,19 +22,21 @@ describe("TIER2_MODELS", () => {
     expect(TIER2_MODELS.map((m) => m.id).join(" ")).not.toMatch(/gemma/i);
   });
 
-  it("records the measured cost of each model, not a guess", () => {
+  it("records each model's VRAM requirement and decode rate, not a guess", () => {
     for (const m of TIER2_MODELS) {
-      expect(m.sizeMb, m.id).toBeGreaterThan(0);
+      expect(m.vramRequiredMb, m.id).toBeGreaterThan(0);
       expect(m.decodeTokPerSec, m.id).toBeGreaterThan(0);
       expect(typeof m.hasThinkingMode, m.id).toBe("boolean");
     }
   });
 
-  it("is ordered by non-decreasing download size, which is what cheapest-first means", () => {
+  it("is ordered by non-decreasing VRAM, which is what cheapest-first means here", () => {
     // The list-equality test above pins today's order but not the rule behind
     // it, so an edit that reorders the slate and updates that literal would
     // pass. This asserts the invariant a future arm has to satisfy too.
-    const sizes = TIER2_MODELS.map((m) => m.sizeMb);
+    // NB the ordering key is VRAM, not download size -- see Tier2Model. They
+    // are not the same number and the library only reports the former.
+    const sizes = TIER2_MODELS.map((m) => m.vramRequiredMb);
     expect(sizes).toEqual([...sizes].sort((a, b) => a - b));
   });
 
@@ -50,7 +52,10 @@ describe("TIER2_MODELS", () => {
       expect(record, `${m.id} is not in prebuiltAppConfig`).toBeDefined();
       // A record with no compiled lib is the gemma3-4b failure mode exactly.
       expect(record!.model_lib, `${m.id} has no compiled WebGPU lib`).toBeTruthy();
-      expect(Math.round(record!.vram_required_MB!), m.id).toBe(m.sizeMb);
+      // This equality is also the proof that the field is VRAM and not the
+      // download: Qwen3.5-2B records 2245 here but leaves 1079 MB of origin
+      // storage after a full cold load.
+      expect(Math.round(record!.vram_required_MB!), m.id).toBe(m.vramRequiredMb);
     }
   });
 });
@@ -126,11 +131,37 @@ describe("resolveTier2Config", () => {
     expect(() => resolveTier2Config({ maxTokens: 1.5 })).toThrow(/maxTokens/);
   });
 
+  it("rejects a contextWindowSize that is not a positive integer", () => {
+    // web-llm does not screen this for us -- its chat path only tests
+    // `!== -1`, so every value below loads and then fails much later at
+    // KV-cache allocation or on the first prompt, far from the cause.
+    // The string case is the interesting one: Object.fromEntries erases value
+    // types, so `as Tier2Config` lets a string through the compiler entirely.
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "8192"]) {
+      expect(
+        () => resolveTier2Config({ contextWindowSize: bad as number }),
+        String(bad),
+      ).toThrow(/contextWindowSize/);
+    }
+  });
+
   it("does not hand back a reference a caller can mutate into the defaults", () => {
     const c = resolveTier2Config({});
     expect(c).not.toBe(DEFAULT_TIER2_CONFIG);
     expect(DEFAULT_TIER2_CONFIG.modelId).toBe("Qwen3.5-2B-q4f16_1-MLC");
     expect(DEFAULT_TIER2_CONFIG.contextWindowSize).toBe(8192);
     expect(DEFAULT_TIER2_CONFIG.maxTokens).toBe(512);
+  });
+});
+
+describe("shared state", () => {
+  it("is frozen, because readonly is erased at runtime", () => {
+    // Both are module-level singletons every caller shares. Without freezing,
+    // one caller writing to DEFAULT_TIER2_CONFIG changes what resolve()
+    // returns for everyone -- which is the failure the non-aliasing test
+    // above only half-prevents.
+    expect(Object.isFrozen(DEFAULT_TIER2_CONFIG)).toBe(true);
+    expect(Object.isFrozen(TIER2_MODELS)).toBe(true);
+    for (const m of TIER2_MODELS) expect(Object.isFrozen(m), m.id).toBe(true);
   });
 });
