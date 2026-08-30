@@ -40,6 +40,8 @@ await engine.chat.completions.create({
 - **One engine per arm.** Swapping models in one page leaks VRAM.
 - **`context_window_size: 8192` loads fine** on the shipped lib (1.7 s warm) and prefills a 4,360-token prompt at 452 tok/s. The 4096 default is a WebLLM override and is liftable — raise it for **both** tier 2 and Approach B so B does not fail on long messages for a reason unrelated to its design.
 
+  **But that was measured on `Qwen3.5-2B` ONLY.** The other three arms each ship their own `overrides.context_window_size: 4096` and are **unmeasured at 8192**. Before Task 12 commits four arms to it, probe each remaining model at 8192 and record what happens — a model that refuses the larger window, or that loads but thrashes, is a finding, and discovering it as three failed arms mid-bake-off would waste a full run. If a model cannot take 8192, the honest options are to run that arm at 4096 and **report the asymmetry**, or to drop the arm; silently mixing window sizes across arms would make the comparison measure context rather than method.
+
 ### Cancellation must interrupt and drain — `Promise.race` wedges the engine
 
 Measured on the real pipeline in the browser: after abandoning a stream with a naive timeout race, **the next call did not return within 8 s**. The engine is permanently deadlocked. Task 3 exists entirely for this.
