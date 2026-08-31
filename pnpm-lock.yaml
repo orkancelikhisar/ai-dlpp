@@ -19,6 +19,9 @@ importers:
       '@sih/tier1':
         specifier: workspace:*
         version: link:../../packages/tier1
+      '@sih/tier2':
+        specifier: workspace:*
+        version: link:../../packages/tier2
       onnxruntime-web:
         specifier: 1.22.0-dev.20250409-89f8206ba4
         version: 1.22.0-dev.20250409-89f8206ba4

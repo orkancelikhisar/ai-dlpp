@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { BASE_URL } from "./test/tier2-profile.js";
 
 export default defineConfig({
   // *.spec.ts only. Sibling tasks add vitest *.test.ts under the same tree for
@@ -29,9 +30,20 @@ export default defineConfig({
   // The cost is about nine seconds of wall clock on this machine: three runs at
   // the default took 25.7, 26.4 and 25.7 s, four at one worker took 30.7, 34.0,
   // 35.4 and 35.2 s.
+  //
+  // `workers: 1` is also what makes the tier-2 specs' shared browser profile
+  // work at all: Chromium takes an exclusive lock on a profile directory, so a
+  // second worker launching `launchPersistentContext` on the same directory
+  // fails inside the launcher. `test/tier2-profile.ts` refuses a non-zero
+  // worker index with a message saying so rather than letting that surface as a
+  // SingletonLock error.
   workers: 1,
   use: {
-    baseURL: "http://localhost:5178",
+    // Also imported by `test/tier2-profile.ts`, which needs it as a value: the
+    // tier-2 specs run in a context that module launches itself, and `baseURL`
+    // is one of the options a self-launched context does not receive. One
+    // definition, imported twice, rather than a copy free to drift.
+    baseURL: BASE_URL,
     // `retain-on-failure`, NOT `on-first-retry`. There is no `retries` key
     // here, so the default of 0 applies and a first retry never happens: run
     // against the same induced failure, on-first-retry writes screenshot and
@@ -40,6 +52,13 @@ export default defineConfig({
     // the wrong reflex for a harness whose output is numbers -- so the trace
     // has to be earned on the first failure instead. `openHarness` in
     // smoke.spec.ts promises the screenshot, so that half must land too.
+    // Both reach the tier-2 specs too, which is worth stating because those run
+    // in a browser context `test/tier2-profile.ts` launches itself rather than
+    // in the built-in `page` fixture's. MEASURED there: Playwright's artifacts
+    // recorder attaches to that context as well, and a failing tier-2 test
+    // wrote a screenshot and a trace.zip with nothing in that module asking for
+    // them. `baseURL` is the option that does NOT arrive that way, and that
+    // module passes it explicitly.
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },

@@ -1,0 +1,30 @@
+{
+  "irVersion": "1",
+  "policyHash": "test-hash",
+  "entityTypes": [
+    {
+      "id": "pred:unannounced-deal",
+      "tier": 2,
+      "nlDefinition": "Shadow entityType for the unannounced-deal semantic predicate",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "high"
+    }
+  ],
+  "rules": [],
+  "semanticPredicates": [
+    {
+      "id": "unannounced-deal",
+      "nlPredicate": "The passage discusses a customer contract, renewal, or negotiation that has not been publicly announced.",
+      "scope": "segment"
+    }
+  ],
+  "actions": {
+    "default": {
+      "pred:unannounced-deal": "redact"
+    }
+  },
+  "failMode": "closed",
+  "latencyBudgetMs": 120000,
+  "provenance": {}
+}

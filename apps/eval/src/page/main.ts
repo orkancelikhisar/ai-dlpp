@@ -2,6 +2,7 @@ import {
   detect,
   loadPolicyIr,
   type DetectionResult,
+  type DetectorEngines,
   type PolicyIr,
   type TierConfig,
 } from "@sih/core";
@@ -17,6 +18,15 @@ import {
   type Tier1Config,
   type Tier1TaggerStats,
 } from "@sih/tier1";
+import {
+  WebLlmJudge,
+  createWebLlmEngine,
+  resolveTier2Config,
+  type JudgeCallRecord,
+  type JudgeStats,
+  type Tier2Config,
+  type WebLlmEngine,
+} from "@sih/tier2";
 // Copied from packages/core/test/fixtures/minimal-ir.ts and owned by this app:
 // core's test fixture is a TypeScript module, and importing it would both make
 // a test-only artifact a runtime dependency of the harness and bypass the thing
@@ -34,6 +44,23 @@ import minimalIrJson from "../../fixtures/minimal-ir.json?raw";
 // packages/tier1/test/e2e.test.ts runs under onnxruntime-NODE. This file
 // declares three, in a fixed order, so the stride is exercised in Chrome.
 import multiclassIrJson from "../../fixtures/multiclass-ir.json?raw";
+// The THIRD fixture, and the only one tier 2 can do anything with. Both of the
+// others declare `semanticPredicates: []`, and `WebLlmJudge.judge` returns
+// `{findings: [], scopesJudged: []}` on such an IR BEFORE it touches the engine
+// -- so a tier-2 spec run against them measures a function that returns in
+// microseconds, sets `timings.tier2Ms`, and never loads a prompt. This one
+// declares one predicate and the shadow entityType the compiler would mint for
+// it, which is what makes an engine call happen at all.
+//
+// `latencyBudgetMs` is 120,000 here against 5,000 in the other two, and that is
+// a deliberate difference rather than a copy that drifted. The orchestrator
+// arms the message deadline from that field, Plan 5 measured 4.6 s for one
+// tier-2 call on the CHEAPEST pinned arm, and at 5,000 the deadline would fire
+// during the first call of every tier-2 spec: every run would exercise the
+// abort path and nothing would exercise a completed judgement. It is a
+// lifecycle fixture and the number is sized for that; it is NOT a claim that
+// tier 2 fits a 5 s budget, and Task 9 measured that on this corpus it does not.
+import semanticIrJson from "../../fixtures/semantic-ir.json?raw";
 // Reached by PATH rather than by the package's own subpath export, because
 // onnxruntime-web's `exports` map publishes no `./dist/*` entry -- there is no
 // specifier that names this file. See `loadOrtRuntime` for why the page has to
@@ -111,6 +138,184 @@ export interface Tier1Status {
 }
 
 /**
+ * Which model to load and under what settings.
+ *
+ * Everything is optional because `resolveTier2Config` is both the filler and
+ * the VALIDATOR: it refuses a modelId outside `TIER2_MODELS`, a non-zero
+ * temperature, and a non-integer or non-positive `maxTokens` or
+ * `contextWindowSize`, naming what was available. Passing the whole
+ * `Partial<Tier2Config>` through rather than a hand-picked subset is what keeps
+ * "the settings a caller can vary" and "the settings the report states" the
+ * same set -- the tier-1 options above take the same shape for the same reason.
+ */
+export type Tier2LoadOptions = Partial<Tier2Config> & {
+  /**
+   * The judge's per ENGINE CALL budget, in ms. One segment's budget is not
+   * spent by the segment before it; `ir.latencyBudgetMs` is the per-MESSAGE
+   * bound and the orchestrator holds that one.
+   *
+   * Defaulted here rather than in @sih/tier2 because there is no defensible
+   * package-level value: it has to be larger than the slowest legitimate call
+   * on the slowest pinned arm or every arm degrades, and that number is what
+   * the bake-off is FOR. `DEFAULT_TIER2_CALL_BUDGET_MS` is a ceiling for
+   * lifecycle work, not a latency target -- see it.
+   */
+  readonly callBudgetMs?: number;
+};
+
+/**
+ * What a tier-2 load actually did.
+ *
+ * The asymmetry with `Tier1LoadReport` is deliberate and is the whole design
+ * question this type had to answer. There, `observedBackend` is a MEASUREMENT
+ * (GPU submits counted around a real inference) standing beside the requested
+ * `config.backend`. Tier 2 has no equivalent for the context window: 0.2.84
+ * exposes NO accessor for the chat config an engine loaded -- `MLCEngineInterface`
+ * declares none and `MLCEngine.loadedModelIdToPipeline` is private (READ from the
+ * installed bundle) -- so `config.contextWindowSize` here is what was ASKED for
+ * and nothing in this report upgrades it to what ran. `tier2.spec.ts` measures
+ * the effective window per arm through the only channel the library has, which
+ * is its own refusal of an over-long prompt; see `probeContextWindow`.
+ *
+ * What IS observed is `servedModelId`, and `loadTier2` refuses to return a
+ * report without it.
+ */
+export interface Tier2LoadReport {
+  /**
+   * The FULLY RESOLVED config this engine is running under -- every field, not
+   * just the ones the caller named. What was REQUESTED, in every field: see the
+   * type's own note above for why no field here is an observation.
+   */
+  readonly config: Tier2Config;
+  /**
+   * The judge's per-call budget, as resolved. Not part of `Tier2Config` because
+   * it is not a property of the loaded model; recorded here because an arm's
+   * `deadlineExpiries` count means nothing without it.
+   */
+  readonly callBudgetMs: number;
+  /**
+   * `ChatCompletion.model` from the warm-up call: which loaded pipeline the
+   * engine says served it.
+   *
+   * NARROWER than "which weights ran", and the honest reading is the one
+   * `engine.ts` traced through the bundle: `chatCompletion` assigns
+   * `model: selectedModelId`, `getModelIdToUse` picks it from the keys of
+   * `loadedModelIdToPipeline`, and those keys are the strings handed to
+   * `CreateMLCEngine`. It is the requested id laundered through a Map key.
+   *
+   * It is still the strongest thing available, and it is not the requested id
+   * copied into a new field: it comes back only if the engine ANSWERED, it
+   * follows a `reload()` behind our back, and `getModelIdToUse` throws rather
+   * than guessing when several models are loaded. Reporting
+   * `config.modelId` here instead would be the intent-recorded-as-fact defect
+   * this project has shipped twice -- and it would still read "Qwen3.5-2B" for
+   * a browser whose GPU process had died.
+   */
+  readonly servedModelId: string;
+  /** Wall clock for `CreateMLCEngine` alone: fetch or cache read, then compile. */
+  readonly loadMs: number;
+  /** Wall clock for the warm-up completion alone. */
+  readonly warmupMs: number;
+  /**
+   * `choices[0].finish_reason` for the warm-up. `undefined` is reachable: the
+   * declared type is narrower than the bundle's own `getFinishReason()`.
+   */
+  readonly warmupFinishReason: string | undefined;
+  /** `usage.completion_tokens` for the warm-up; `undefined` when the engine reported no usage. */
+  readonly warmupCompletionTokens: number | undefined;
+  /**
+   * `navigator.storage.estimate()` AFTER the load, in bytes.
+   *
+   * Here because the failure this whole task is shaped around is a storage one:
+   * MEASURED on this machine, an ephemeral Playwright context
+   * (`browser.newContext()`) reports a 3,221 MB quota where a persistent
+   * profile reports 10,737 MB empty and 18,230 MB holding the four pinned arms
+   * -- which are 7.49 GB of weights at this one origin. A `QuotaExceededError`
+   * mid-download looks exactly like a model defect, so the number that explains
+   * it travels with the load.
+   *
+   * `?? 0` on both: `StorageEstimate` declares them optional. MEASURED, Chrome
+   * has populated both on every load this suite has run, and the default fails
+   * in the safe direction -- a 0 quota fails `tier2.spec.ts`'s check rather
+   * than reading as a large one.
+   */
+  readonly storageUsageBytes: number;
+  readonly storageQuotaBytes: number;
+}
+
+/** What one `detect` call cost tier 2, as deltas over the judge's running counters. */
+export interface Tier2DetectStats extends Omit<JudgeStats, "calls"> {
+  /** The call rows THIS detect appended, not the judge's whole history. */
+  readonly calls: readonly JudgeCallRecord[];
+}
+
+export interface Tier2Status {
+  readonly load: Tier2LoadReport;
+  /** The judge's counters since it was constructed, plus every call row. */
+  readonly totals: JudgeStats;
+  /**
+   * The most recent `detect` that ran tier 2, as deltas. `undefined` until one
+   * has. Same job as `Tier1Status.lastDetect`: findings alone cannot separate
+   * "the model ran and found nothing" from "the model never ran", and for tier
+   * 2 neither can a timing -- `WebLlmJudge.judge` returns before it touches the
+   * engine when the IR declares no `semanticPredicates`, which takes
+   * microseconds and still sets `timings.tier2Ms`.
+   */
+  readonly lastDetect: Tier2DetectStats | undefined;
+}
+
+/** A `detect` run under a per-call budget this page chooses, with that run's judge stats. */
+export interface BudgetedDetectRequest extends DetectRequest {
+  /**
+   * The per ENGINE CALL budget for this run only, in ms. Not
+   * `ir.latencyBudgetMs`: that one is the message's and belongs to the IR, and
+   * conflating the two is what `call-budget-exhausted` and `budget-exhausted`
+   * exist as separate reason words to prevent.
+   */
+  readonly callBudgetMs: number;
+}
+
+export interface BudgetedDetectResult {
+  readonly result: DetectionResult;
+  /**
+   * The stats of the judge that ran THIS call, which is a fresh one -- so these
+   * are already this call's numbers and not a delta. The arm's judge is left
+   * untouched, deliberately: a deliberately-blown budget is not part of an
+   * arm's totals.
+   */
+  readonly stats: JudgeStats;
+}
+
+/**
+ * What the engine did with a prompt too long for a 4096-token window.
+ *
+ * The one channel 0.2.84 has for reporting the context window it is actually
+ * enforcing. READ from the installed bundle: `LLMChatPipeline.getInputTokens`
+ * throws `ContextWindowSizeExceededError` when
+ * `numPromptTokens + filledKVCacheLength > contextWindowSize`, and the message
+ * names both numbers.
+ */
+export interface Tier2WindowProbe {
+  /** What the loaded engine was asked for, so a reader can see both halves. */
+  readonly requestedContextWindowSize: number;
+  readonly promptWords: number;
+  /** True when the engine prefilled the prompt and answered. */
+  readonly accepted: boolean;
+  /**
+   * `usage.prompt_tokens` -- the ENGINE's count of the prompt it accepted, not
+   * a count taken here. `undefined` when the call was refused, since there is
+   * then no response to read one from.
+   */
+  readonly promptTokens: number | undefined;
+  readonly finishReason: string | undefined;
+  readonly servedModelId: string | undefined;
+  /** `ContextWindowSizeExceededError` when the window refused the prompt. */
+  readonly errorName: string | undefined;
+  readonly errorMessage: string | undefined;
+  readonly ms: number;
+}
+
+/**
  * The page's whole API surface: every spec reaches detection through this, and
  * everything below `detect` is core, imported unmodified from the package root
  * exactly as the extension will import it.
@@ -178,6 +383,43 @@ export interface SihPageApi {
   loadTier1(options: Tier1LoadOptions): Promise<Tier1LoadReport>;
   /** `undefined` until `loadTier1` has succeeded. */
   tier1Status(): Tier1Status | undefined;
+  /**
+   * Whether a tier-2 engine can START here, asked of the adapter's LIMITS and
+   * not merely of `navigator.gpu`. Separate from `backendAvailable("webgpu")`
+   * because web-llm refuses adapters onnxruntime-web quietly falls back from --
+   * see the implementation for the four limits and which have no fallback.
+   *
+   * A false here means tier 2 is ABSENT on this machine, which is the
+   * orchestrator's own word for a tier that did not run. It is not a
+   * degradation and a spec's skip should say so.
+   */
+  webgpuAvailable(): Promise<boolean>;
+  /**
+   * Load one tier-2 model into this page and make `detect` use it.
+   *
+   * Returns a report for the reason `loadTier1` does -- everything worth
+   * asserting about a load is measured inside the page -- and runs one
+   * throwaway completion before returning, which is what makes `servedModelId`
+   * a fact rather than an echo of the request.
+   */
+  loadTier2(options: Tier2LoadOptions): Promise<Tier2LoadReport>;
+  /** `undefined` until `loadTier2` has succeeded. */
+  tier2Status(): Tier2Status | undefined;
+  /**
+   * One `detect` under a per-CALL budget of this caller's choosing, plus the
+   * judge stats that run produced. The loaded engine is reused, so what a tiny
+   * budget tests is whether that engine survives being interrupted.
+   */
+  detectWithBudget(request: BudgetedDetectRequest): Promise<BudgetedDetectResult>;
+  /**
+   * Prefill a prompt of `words` filler words on the loaded engine and report
+   * what the engine did with it.
+   *
+   * The only channel 0.2.84 has for reporting the context window it is
+   * enforcing: there is no accessor for an engine's effective chat config, so
+   * an over-long prompt and the library's own refusal are the measurement.
+   */
+  probeContextWindow(options: { words: number; budgetMs: number }): Promise<Tier2WindowProbe>;
 }
 
 declare global {
@@ -204,6 +446,7 @@ declare global {
 const IR_FIXTURES: Readonly<Record<string, string>> = {
   minimal: minimalIrJson,
   multiclass: multiclassIrJson,
+  semantic: semanticIrJson,
 };
 
 export type IrName = keyof typeof IR_FIXTURES & string;
@@ -369,8 +612,15 @@ let gpuSubmits = 0;
   }
 }
 
-/** WebGPU has no lib.dom typings here; naming the one method used is cheaper than the dependency. */
-type MaybeWebGpu = { gpu?: { requestAdapter(): Promise<unknown> } };
+/**
+ * WebGPU has no lib.dom typings here; naming the members used is cheaper than
+ * the dependency. `limits` is indexed by name rather than declared field by
+ * field because `webgpuAvailable` walks a table of them, and every value is
+ * optional so a browser missing one reads as "does not clear the floor" rather
+ * than as `undefined >= n`, which is false but for the wrong reason.
+ */
+type WebGpuAdapterLike = { readonly limits: Readonly<Partial<Record<string, number>>> };
+type MaybeWebGpu = { gpu?: { requestAdapter(): Promise<WebGpuAdapterLike | null> } };
 
 async function backendAvailable(backend: Tier1Backend): Promise<boolean> {
   if (!TIER1_BACKENDS.includes(backend)) return false;
@@ -516,22 +766,44 @@ const statsDelta = (
 async function measuredDetect(
   request: DetectRequest,
   tagger: GlinerSpanTagger | undefined,
-): Promise<{ result: DetectionResult; tier1: Tier1DetectStats | undefined }> {
+  // The concrete judge, not the `SemanticJudge` seam core takes: the deltas
+  // below read `stats`, which is this class's and is not on that interface.
+  judge: WebLlmJudge | undefined,
+): Promise<{
+  result: DetectionResult;
+  tier1: Tier1DetectStats | undefined;
+  tier2: Tier2DetectStats | undefined;
+}> {
   // Forwarded field by field rather than spread, so the set of things a spec can
-  // influence is exactly the three fields of DetectRequest. `engines` stays
-  // absent when no tagger is loaded, so core throws its own "tier1 enabled but
-  // no tier-1 engine provided" rather than this page inventing a message for
-  // the same mistake.
+  // influence is exactly the three fields of DetectRequest. An engine a tier
+  // needs but this page has not loaded stays ABSENT from `engines`, so core
+  // throws its own "tierN enabled but no tier-N engine provided" rather than
+  // this page inventing a message for the same mistake -- an empty object still
+  // takes that path, since the guard tests the field and not the object.
   const { provider, text, config } = request;
-  if (tagger === undefined) {
-    return { result: await detect({ ir, provider, text, config }), tier1: undefined };
-  }
-  const before = { ...tagger.stats };
+  const engines: DetectorEngines = {};
+  if (tagger !== undefined) engines.tier1 = tagger;
+  if (judge !== undefined) engines.tier2 = judge;
+
+  const tier1Before = tagger === undefined ? undefined : { ...tagger.stats };
   const gpuBefore = gpuSubmits;
-  const result = await detect({ ir, provider, text, config, engines: { tier1: tagger } });
+  // A snapshot, and `WebLlmJudge.stats` already returns one: it copies the
+  // counters and rebuilds the call array on every read, so this cannot be a
+  // live view of the numbers the delta is taken against.
+  const tier2Before = judge === undefined ? undefined : judge.stats;
+
+  const result = await detect({ ir, provider, text, config, engines });
+
   return {
     result,
-    tier1: config.tier1 ? statsDelta(before, tagger.stats, gpuSubmits - gpuBefore) : undefined,
+    tier1:
+      config.tier1 && tagger !== undefined && tier1Before !== undefined
+        ? statsDelta(tier1Before, tagger.stats, gpuSubmits - gpuBefore)
+        : undefined,
+    tier2:
+      config.tier2 && judge !== undefined && tier2Before !== undefined
+        ? judgeDelta(tier2Before, judge.stats)
+        : undefined,
   };
 }
 
@@ -615,6 +887,9 @@ async function loadTier1(options: Tier1LoadOptions): Promise<Tier1LoadReport> {
     const warmup = await measuredDetect(
       { text: WARMUP_TEXT, provider: "claude", config: { tier0: false, tier1: true, tier2: false } },
       tagger,
+      // No judge: this warm-up exists to observe which execution provider ran
+      // tier 1, and handing it a tier-2 engine would spend a model call on it.
+      undefined,
     );
     const warmupInferences = warmup.tier1?.inferences ?? 0;
     const warmupGpuSubmits = warmup.tier1?.gpuSubmits ?? 0;
@@ -664,6 +939,350 @@ async function loadTier1(options: Tier1LoadOptions): Promise<Tier1LoadReport> {
   return report;
 }
 
+// -- tier 2 ------------------------------------------------------------------
+
+/**
+ * The per-call budget a load takes when the caller names none.
+ *
+ * A CEILING for lifecycle work, not a latency target, and deliberately far
+ * above any latency this project wants: `runWithDeadline` interrupts the engine
+ * when it expires, so a budget below a legitimate call turns every segment into
+ * a `call-budget-exhausted` notice and an arm measures its own timeout instead
+ * of its model. The bake-off's real number is Task 12's to choose and to
+ * record, which is why this one is only a default and is reported on every load.
+ */
+const DEFAULT_TIER2_CALL_BUDGET_MS = 60_000;
+
+/**
+ * The adapter limits web-llm refuses to start below.
+ *
+ * READ HERE from the installed 0.2.84 bundle's `detectGPUDevice`, which is the
+ * only place that decides: the first two are demanded outright with NO fallback
+ * (the source itself notes the WebGPU default for the buffer COUNT is 8, i.e.
+ * the library asks for more than the spec guarantees), while `maxBufferSize`
+ * and `maxStorageBufferBindingSize` are each requested at 1<<30, fall back once
+ * to the values below, and are refused under those.
+ *
+ * MEASURED on this machine through the same Chrome-for-Testing build the specs
+ * use: maxComputeWorkgroupStorageSize 32768 and maxStorageBuffersPerShaderStage
+ * 10 -- EXACTLY the minimums, with no headroom -- against maxBufferSize and
+ * maxStorageBufferBindingSize of 4,294,967,292 each. So on this machine the two
+ * that can fail are the two with no fallback.
+ */
+const WEBLLM_ADAPTER_FLOOR: Readonly<Record<string, number>> = Object.freeze({
+  maxComputeWorkgroupStorageSize: 32 << 10,
+  maxStorageBuffersPerShaderStage: 10,
+  maxBufferSize: 1 << 28,
+  maxStorageBufferBindingSize: 1 << 27,
+});
+
+/**
+ * Whether a tier-2 engine can start here, asked of the adapter's LIMITS.
+ *
+ * Not the same question as `backendAvailable("webgpu")`, and the difference is
+ * why this is a second function rather than a call to that one. Both libraries
+ * are handed the same adapter and treat a weak one oppositely: onnxruntime-web
+ * falls back to wasm SILENTLY (Task 1 measured that), while web-llm THROWS at
+ * init -- so where tier 1 degrades, tier 2 is ABSENT, which is the
+ * orchestrator's own word for a tier that did not run.
+ *
+ * The consequence for a spec is the whole point: `test.skip(!webgpuAvailable())`
+ * must skip on exactly the machines where a load would throw. Using the tier-1
+ * check instead would let a machine that clears `requestAdapter()` but sits
+ * below web-llm's floor RUN the tier-2 specs, which would then fail on a load
+ * throw -- reporting a missing GPU capability as a broken harness.
+ */
+async function webgpuAvailable(): Promise<boolean> {
+  const { gpu } = navigator as Navigator & MaybeWebGpu;
+  if (gpu === undefined) return false;
+  const adapter = await gpu.requestAdapter();
+  if (adapter === null) return false;
+  return Object.entries(WEBLLM_ADAPTER_FLOOR).every(([limit, floor]) => {
+    const value = adapter.limits[limit];
+    return value !== undefined && value >= floor;
+  });
+}
+
+/**
+ * The warm-up's grammar: one boolean, and nothing else legal.
+ *
+ * NOT the judge's schema, which is the schema every real call uses. The warm-up
+ * exists to prove the engine answers, and under the judge's grammar a model is
+ * free to spend the whole `maxTokens` budget on a findings array: at the 24 to
+ * 40 tokens/sec `TIER2_MODELS` records for these arms, 512 tokens is 13 to 21
+ * seconds paid on every load for an answer nobody reads. One required boolean
+ * bounds the body instead -- MEASURED across the four arms, the warm-up
+ * completes in 0.4 to 2.3 s and Qwen3.5-2B spends 5 completion tokens on it.
+ * The judge's own grammar is compiled and exercised by the first real call, so
+ * nothing is skipped by not compiling it here.
+ */
+const TIER2_WARMUP_SCHEMA_JSON = JSON.stringify({
+  type: "object",
+  properties: { ready: { type: "boolean" } },
+  required: ["ready"],
+  additionalProperties: false,
+});
+
+/**
+ * The warm-up turn. Deliberately carries no policy-shaped content: nothing
+ * scores it, and the point is that it stays impossible to score when a compiled
+ * policy replaces these fixtures.
+ */
+const TIER2_WARMUP_MESSAGES = [
+  { role: "user", content: 'Reply with {"ready": true} and nothing else.' },
+] as const;
+
+interface Tier2State {
+  readonly engine: WebLlmEngine;
+  /** The ARM's judge: its counters accumulate across every `detect` on this load. */
+  readonly judge: WebLlmJudge;
+  readonly report: Tier2LoadReport;
+}
+
+let tier2: Tier2State | undefined;
+let lastTier2Detect: Tier2DetectStats | undefined;
+
+/**
+ * One `detect`'s worth of judge activity, as deltas.
+ *
+ * Every counter is listed rather than derived with a loop, for the same reason
+ * `statsDelta` lists tier 1's: a counter added to `JudgeStats` upstream then
+ * fails to compile here instead of silently going unreported.
+ *
+ * `calls` is a SUFFIX, not a difference: `WebLlmJudge` only ever appends rows,
+ * so everything past the old length is this call's.
+ */
+function judgeDelta(before: JudgeStats, after: JudgeStats): Tier2DetectStats {
+  return {
+    rung1: after.rung1 - before.rung1,
+    rung2: after.rung2 - before.rung2,
+    unresolvedQuotes: after.unresolvedQuotes - before.unresolvedQuotes,
+    unknownPredicates: after.unknownPredicates - before.unknownPredicates,
+    duplicatesDropped: after.duplicatesDropped - before.duplicatesDropped,
+    repairAttempts: after.repairAttempts - before.repairAttempts,
+    failedClosed: after.failedClosed - before.failedClosed,
+    truncatedResponses: after.truncatedResponses - before.truncatedResponses,
+    abortedResponses: after.abortedResponses - before.abortedResponses,
+    segmentsJudged: after.segmentsJudged - before.segmentsJudged,
+    segmentsSkipped: after.segmentsSkipped - before.segmentsSkipped,
+    deadlineExpiries: after.deadlineExpiries - before.deadlineExpiries,
+    callerAbortsMidGeneration: after.callerAbortsMidGeneration - before.callerAbortsMidGeneration,
+    callerAbortsWhileQueued: after.callerAbortsWhileQueued - before.callerAbortsWhileQueued,
+    calls: after.calls.slice(before.calls.length),
+  };
+}
+
+/**
+ * Load one tier-2 model into this page and make `detect` use it.
+ *
+ * The throwaway completion in the middle is the part worth defending. Without
+ * it this function can only report what it ASKED for: 0.2.84 has no accessor
+ * for what an engine loaded, so a report built from the config alone would be
+ * satisfied by an engine that compiled its shaders and can no longer answer --
+ * which is precisely the failure Plan 4 hit, where a DEAD browser produced a
+ * complete, schema-valid output file. `servedModelId` is a string this page
+ * cannot produce without a response, so a load cannot report success against an
+ * engine that did not answer.
+ *
+ * What that check is NOT: an attestation of which weights ran. `engine.ts`
+ * traced `ChatCompletion.model` through the bundle to the key of
+ * `loadedModelIdToPipeline`, i.e. the id we handed to `CreateMLCEngine`. It
+ * catches a `reload()` behind our back and it catches a dead engine; it cannot
+ * catch a mislabelled checkpoint on HuggingFace, and nothing available here can.
+ */
+async function loadTier2(options: Tier2LoadOptions): Promise<Tier2LoadReport> {
+  // The validator for every model field, not a convenience: an unknown modelId,
+  // a non-zero temperature, a non-integer window or token budget all throw here
+  // naming what was available, rather than reaching the library. `manifest.ts`
+  // records what each of those costs when it does.
+  const config = resolveTier2Config(options);
+  const callBudgetMs = options.callBudgetMs ?? DEFAULT_TIER2_CALL_BUDGET_MS;
+
+  // Replacing an already-loaded arm: unload FIRST. Two live engines hold two
+  // copies of the weights on one GPU, and the two largest pinned arms are 3,432
+  // and 3,438 MB -- `WebLlmEngine.unload` exists for exactly this and its
+  // docblock carries the arithmetic.
+  if (tier2 !== undefined) {
+    await tier2.engine.unload();
+    tier2 = undefined;
+    lastTier2Detect = undefined;
+  }
+
+  const started = performance.now();
+  const engine = await createWebLlmEngine(config.modelId, config);
+  const loadMs = performance.now() - started;
+
+  let report: Tier2LoadReport;
+  let judge: WebLlmJudge;
+  try {
+    // BEFORE the warm-up, so a budget `setTimeout` cannot hold fails with the
+    // judge's own message rather than as a 1 ms deadline on the warm-up. It
+    // still costs the load: nothing can validate a judge's budget without an
+    // engine to build the judge on, and duplicating the rule here would be a
+    // second copy free to drift from the one in @sih/tier2.
+    judge = new WebLlmJudge(engine, { budgetMs: callBudgetMs });
+
+    const warmupStarted = performance.now();
+    const warmup = await engine.complete(TIER2_WARMUP_MESSAGES, {
+      budgetMs: callBudgetMs,
+      responseSchemaJson: TIER2_WARMUP_SCHEMA_JSON,
+    });
+    const warmupMs = performance.now() - warmupStarted;
+    if (warmup.model !== config.modelId) {
+      // The tier-1 half of this page refuses an arm whose observed backend
+      // disagrees with the requested one; this is the same refusal. An engine
+      // answering under another id means something reloaded it, and every
+      // finding of this arm would be recorded against a model the arm was not
+      // named for.
+      throw new Error(
+        `tier-2 engine was loaded as "${config.modelId}" but answered as "${warmup.model}"; ` +
+          `refusing to report findings for one model under the other's name`,
+      );
+    }
+
+    const storage = await navigator.storage.estimate();
+    report = {
+      config,
+      callBudgetMs,
+      servedModelId: warmup.model,
+      loadMs,
+      warmupMs,
+      warmupFinishReason: warmup.finishReason,
+      warmupCompletionTokens: warmup.usage?.completion_tokens,
+      storageUsageBytes: storage.usage ?? 0,
+      storageQuotaBytes: storage.quota ?? 0,
+    };
+  } catch (cause) {
+    // Awaited, not fire-and-forget, and for the reason `loadTier1` gives: a
+    // rejected release would otherwise reach Playwright's `pageerror` listener
+    // and be reported instead of the real failure. A model this size abandoned
+    // on the GPU also shrinks what the next arm can load.
+    await engine.unload().catch((unloadFailure: unknown) => {
+      throw new Error(
+        `${config.modelId}: failed to load, and unloading the engine then failed too ` +
+          `(${String(unloadFailure)})`,
+        { cause },
+      );
+    });
+    throw cause;
+  }
+
+  tier2 = { engine, judge, report };
+  // Cleared for the same reason the tier-1 one is: the warm-up is this page's
+  // own call, and a spec asking "did tier 2 run during MY detect" must not be
+  // answered with it. The warm-up does not go through the judge at all, so this
+  // is belt and braces rather than a correction.
+  lastTier2Detect = undefined;
+  return report;
+}
+
+/**
+ * One `detect` under a per-call budget this caller chooses, on the loaded
+ * engine, with the stats that run produced.
+ *
+ * A FRESH judge over the SAME engine, which is what makes the returned stats
+ * this call's without a delta -- and what keeps a deliberately-blown budget out
+ * of the arm's totals. The engine is shared because the property under test is
+ * an engine property: `runWithDeadline` interrupts a real generation, drains
+ * it, and clears the interrupt flag the drain leaves set, and whether the
+ * ENGINE survives that is answerable only against the engine that was
+ * interrupted.
+ *
+ * Neither `lastDetect` moves. This call belongs to the caller that asked for the
+ * odd budget, not to the arm, so `tier1Status()` and `tier2Status()` keep
+ * reporting the last ordinary `detect` -- and the stats of the run that did
+ * happen are returned rather than dropped.
+ */
+async function detectWithBudget(request: BudgetedDetectRequest): Promise<BudgetedDetectResult> {
+  if (tier2 === undefined) {
+    throw new Error("detectWithBudget needs a loaded tier-2 engine; call loadTier2 first");
+  }
+  const judge = new WebLlmJudge(tier2.engine, { budgetMs: request.callBudgetMs });
+  const { result } = await measuredDetect(request, tier1?.tagger, judge);
+  return { result, stats: judge.stats };
+}
+
+/**
+ * A prompt of `words` meaningless words.
+ *
+ * Cycled rather than one word repeated, so the count grows with `words` under
+ * any tokenizer. What the probe reports is the ENGINE's own
+ * `usage.prompt_tokens` and never an estimate taken here -- the ratio is per
+ * model and it is not stable. MEASURED with this exact generator at 2,000
+ * words: 5,809 tokens on Qwen3.5-2B and on Qwen3-4B, 6,328 on Ministral-3-3B,
+ * and 4,023 on Phi-4-mini. That last one is the reason the probe reads the
+ * count back instead of trusting the word count: 4,023 is BELOW 4,096, so on
+ * Phi-4-mini a 2,000-word prompt would have been accepted by the very window
+ * size the probe exists to rule out.
+ */
+function fillerPrompt(words: number): string {
+  return Array.from({ length: words }, (_, index) => `token${String(index % 97)}`).join(" ");
+}
+
+/**
+ * Ask the loaded engine to prefill a prompt and report what it did with it.
+ *
+ * This is the ONLY way 0.2.84 will say which context window it is enforcing.
+ * There is no accessor for the effective chat config, so the alternative to
+ * measuring it is reporting the requested value under an observed-sounding
+ * name, which is the intent-as-fact defect. READ from the installed bundle:
+ * `getInputTokens` throws `ContextWindowSizeExceededError` when
+ * `numPromptTokens + filledKVCacheLength > contextWindowSize`, and the message
+ * names the window it enforced.
+ *
+ * Errors are RETURNED rather than thrown because a refusal is the probe's
+ * expected outcome half the time -- see the 4,096 control in `tier2.spec.ts`.
+ * A caller therefore has to assert on `errorName`, and any other failure
+ * (a blown `budgetMs`, a latched engine) arrives as a different name rather
+ * than as a pass.
+ */
+async function probeContextWindow(options: {
+  words: number;
+  budgetMs: number;
+}): Promise<Tier2WindowProbe> {
+  if (tier2 === undefined) {
+    throw new Error("probeContextWindow needs a loaded tier-2 engine; call loadTier2 first");
+  }
+  const { words, budgetMs } = options;
+  if (!(Number.isInteger(words) && words > 0)) {
+    throw new Error(`probeContextWindow needs a positive integer word count, got ${String(words)}`);
+  }
+  const requestedContextWindowSize = tier2.report.config.contextWindowSize;
+  const started = performance.now();
+  try {
+    const completion = await tier2.engine.complete([{ role: "user", content: fillerPrompt(words) }], {
+      budgetMs,
+      // The warm-up's one-boolean grammar again, for the same reason: the
+      // prefill is what is being measured and the answer is not read.
+      responseSchemaJson: TIER2_WARMUP_SCHEMA_JSON,
+    });
+    return {
+      requestedContextWindowSize,
+      promptWords: words,
+      accepted: true,
+      promptTokens: completion.usage?.prompt_tokens,
+      finishReason: completion.finishReason,
+      servedModelId: completion.model,
+      errorName: undefined,
+      errorMessage: undefined,
+      ms: performance.now() - started,
+    };
+  } catch (cause) {
+    const error = cause as { name?: unknown; message?: unknown };
+    return {
+      requestedContextWindowSize,
+      promptWords: words,
+      accepted: false,
+      promptTokens: undefined,
+      finishReason: undefined,
+      servedModelId: undefined,
+      errorName: typeof error.name === "string" ? error.name : String(cause),
+      errorMessage: typeof error.message === "string" ? error.message : String(cause),
+      ms: performance.now() - started,
+    };
+  }
+}
+
 const api: SihPageApi = {
   // The tier-1 engine is NOT something a spec can pass in: it is constructed by
   // `loadTier1` in the page, held module-level, and named in `tier1Status()`. An
@@ -685,8 +1304,13 @@ const api: SihPageApi = {
         );
       }
     }
-    const { result, tier1: stats } = await measuredDetect(request, tier1?.tagger);
-    if (stats !== undefined) lastDetect = stats;
+    const {
+      result,
+      tier1: tier1Stats,
+      tier2: tier2Stats,
+    } = await measuredDetect(request, tier1?.tagger, tier2?.judge);
+    if (tier1Stats !== undefined) lastDetect = tier1Stats;
+    if (tier2Stats !== undefined) lastTier2Detect = tier2Stats;
     return result;
   },
   irHash: () => irHash,
@@ -698,6 +1322,16 @@ const api: SihPageApi = {
     tier1 === undefined
       ? undefined
       : { load: tier1.report, totals: { ...tier1.tagger.stats }, lastDetect },
+  webgpuAvailable,
+  loadTier2,
+  // `WebLlmJudge.stats` copies on every read, so `totals` is a snapshot rather
+  // than a handle a spec could rewrite the arm's numbers through.
+  tier2Status: () =>
+    tier2 === undefined
+      ? undefined
+      : { load: tier2.report, totals: tier2.judge.stats, lastDetect: lastTier2Detect },
+  detectWithBudget,
+  probeContextWindow,
 };
 
 // Non-writable and non-configurable, not just assigned. Reassigning

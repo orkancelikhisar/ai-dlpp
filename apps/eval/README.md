@@ -49,6 +49,12 @@ instead. That asymmetry is intended: the vitest suites in `packages/*` must run
 on a checkout that has never downloaded a model, while this app is the harness
 whose entire job is running them.
 
+**The tier-2 weights are not fetched by that script and are not in the repo at
+all.** web-llm downloads them on first load into the browser profile — about
+7.5 GB for the four pinned arms, roughly three minutes at 40 MB/s — and every
+run after that reads them from the profile. See *Tier 2: the engine in the page*
+below for where the profile lives and why it has to be a persistent one.
+
 ## Running
 
 ```bash
@@ -649,6 +655,101 @@ from whatever IR the page loaded and a hand-written fixture legitimately carries
 a placeholder — `fixtures/minimal-ir.json` says `"test-hash"`. Tightening it
 would force that fixture to state the hash of a document that does not exist.
 
+## Tier 2: the engine in the page
+
+`window.__sih.loadTier2(options)` loads one pinned tier-2 model through
+`@sih/tier2`'s `createWebLlmEngine`, builds a `WebLlmJudge` over it, and makes
+`detect` use that judge. `test/tier2.spec.ts` covers the lifecycle and
+`test/tier2-arms.spec.ts` loads every pinned arm.
+
+### Prerequisite: a browser profile, and about 7.5 GB of downloads
+
+Unlike tier 1's, these weights are not fetched by a script into the repo. web-llm
+downloads them from HuggingFace on first load and caches them in the **browser
+profile**, keyed by the page's origin. Measured, loading all four pinned arms at
+`http://localhost:5178` leaves **7.49 GB** in that origin's storage: 1.08 GB for
+Qwen3.5-2B and roughly 2–2.3 GB for each of the other three.
+
+The profile lives at `~/.cache/sih-eval/chrome-profile`
+(`SIH_EVAL_PROFILE_DIR` overrides it) — deliberately **outside the repository**,
+because a `git add -A` near a multi-gigabyte directory has burned this project
+before. Cost, measured on this machine at ~40 MB/s: cold, the four arm loads took
+2.1 s, 53.7 s, 56.7 s and 63.4 s; warm, the whole `tier2-arms.spec.ts` file runs
+in about 17–20 s and the two tier-2 spec files add roughly 45 s to a suite run.
+
+### `launchPersistentContext` is correctness, not convenience
+
+`test/tier2-profile.ts` launches the tier-2 specs' browser itself, because
+Playwright has no config option for a persistent profile. The reason is quota.
+Measured against this same dev server: an ordinary Playwright context
+(`browser.newContext()`, which the built-in `page` fixture builds on) reports a
+`navigator.storage.estimate().quota` of **3,221 MB** standalone and 4,295 MB
+from inside this suite, while the persistent profile reports **10,737 MB** empty
+and 18,230 MB once it holds the arms. Four arms do not fit the first;
+`QuotaExceededError` mid-download then looks exactly like a model that cannot
+load. `test/tier2.spec.ts` asserts a quota above 8 GB, which is the line between
+the two.
+
+Two consequences of launching the context ourselves, both measured rather than
+assumed: `screenshot` and `trace` from `use` **do** still apply (Playwright's
+artifacts recorder attaches to any context the client creates), while `baseURL`
+does not and is passed explicitly.
+
+### What a load report claims, and what it does not
+
+`Tier2LoadReport.config` is what was **requested**, in every field. 0.2.84
+exposes no accessor for what an engine loaded — `MLCEngineInterface` declares
+none and `MLCEngine.loadedModelIdToPipeline` is private — so there is no tier-2
+equivalent of tier 1's `observedBackend` for the context window.
+
+The one observed field is `servedModelId`, and `loadTier2` gets it by running one
+throwaway completion before it returns. That is narrower than "these weights
+ran": traced through the bundle, `ChatCompletion.model` is the id handed to
+`CreateMLCEngine` laundered through a Map key. What it does buy is that **a load
+cannot report success against an engine that did not answer** — the shape of the
+Plan 4 failure where a dead browser produced a complete, schema-valid output
+file — and that a `reload()` behind our back is followed rather than remembered.
+
+The effective context window is measured separately, because the only channel
+0.2.84 has for reporting it is its own refusal of an over-long prompt:
+`window.__sih.probeContextWindow({words, budgetMs})` prefills filler text and
+returns either the engine's `usage.prompt_tokens` or the
+`ContextWindowSizeExceededError` whose message names the window it enforced.
+
+### The 8192-token context window, measured on all four arms
+
+`context_window_size: 8192` had been measured on Qwen3.5-2B only; the other three
+arms each ship `overrides.context_window_size: 4096` in the installed
+`prebuiltAppConfig` (all four do) and had never been loaded at 8192. All four
+load and answer at 8192, and all four enforce it:
+
+| arm | loads at 8192 | prompt accepted at 8192 | same prompt at 4096 |
+|---|---|---|---|
+| Qwen3.5-2B | yes | 5,809 tokens | refused, "context window size: 4096" |
+| Ministral-3-3B | yes | 6,328 tokens | — |
+| Qwen3-4B | yes | 5,809 tokens | — |
+| Phi-4-mini | yes | 6,023 tokens | refused, "context window size: 4096" |
+
+No arm has to run at 4096, so the bake-off does not have to report an asymmetry.
+
+`tier2-arms.spec.ts` re-runs the **load** half on every arm on every suite run,
+because the residual risk was KV-cache VRAM and the KV cache is allocated at load
+(`LLMChatPipeline` builds the paged cache with
+`max_total_sequence_length = contextWindowSize`). It does **not** re-run the
+prompt half per arm: that costs a 13–45 s prefill each, and the merge deciding
+the window (`{...mlc-chat-config.json, ...record.overrides, ...chatOpts}`) is
+library code that does not vary by model. `tier2.spec.ts` pays it once on the
+default arm, together with the 4096 control that shows the probe can fail.
+
+### What the tier-2 specs cannot catch
+
+When `webgpuAvailable()` is false every tier-2 test **skips**, which is a green
+suite. Verified by mutation: forcing that function to return false leaves the two
+spec files reporting 8 skipped and 1 passed. That is the intended behaviour on a
+machine without a GPU — WebGPU absent means tier 2 is *absent*, not degraded —
+but it means a bake-off driver must not read "the tier-2 specs passed" as "tier 2
+ran".
+
 ## Two config decisions worth knowing before you edit
 
 **COOP/COEP** (`vite.config.ts`). The `coop-coep` plugin sets
@@ -666,7 +767,7 @@ tree gets a 403. Model weights are fetched that way. Leave it unset.
 
 ## The IR fixtures
 
-The page carries **two**, and `window.__sih.useIr(name)` switches between them,
+The page carries **three**, and `window.__sih.useIr(name)` switches between them,
 returning the new `irHash` so a record's provenance moves with the artifact. A
 named registry of `?raw` imports rather than a `loadIr(json)` taking arbitrary
 text: `irHash` is reproducible with `shasum -a 256` on a file in this repo, and
@@ -691,6 +792,23 @@ ran under `onnxruntime-node`, which §2.2 says is not the measured runtime. The
 order is the teeth of the assertion — a decoder ignoring the class axis would
 label everything `client-name`, and the spans `test/tier1.spec.ts` demands are
 classIndex 1 and 2.
+
+`fixtures/semantic-ir.json` (`"semantic"`) is the only one tier 2 can do
+anything with. The other two declare `semanticPredicates: []`, and
+`WebLlmJudge.judge` returns an empty verdict on such an IR *before it touches the
+engine* — with tier 0 and tier 1 off nothing is uncertain either, so escalation
+selects no segment, `timings.tier2Ms` is never set, and no model call happens. It
+declares one predicate (`unannounced-deal`, scope `segment`) and the shadow
+entityType `pred:unannounced-deal` a compiler would mint for it, which is what
+makes tier 2 reachable at all.
+
+Its `latencyBudgetMs` is **120,000** where the other two carry 5,000, and that
+difference is deliberate. The orchestrator arms the message deadline from that
+field; Plan 5 measured 4.6 s for one tier-2 call on the cheapest pinned arm, so
+at 5,000 the deadline would fire during the first call of every tier-2 spec and
+the suite would only ever exercise the abort path. It is a lifecycle fixture
+sized for that job, **not** a claim that tier 2 fits a 5 s budget — Task 9
+measured that on this corpus it does not.
 
 ## The smoke corpus says `minimal-fixture`, not `p-fin`
 
