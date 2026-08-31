@@ -43,10 +43,22 @@ export interface Rule {
   minLength?: number;
 }
 
+/**
+ * What a semantic predicate is asked about: one segment at a time, or the whole
+ * message at once.
+ *
+ * Named rather than written inline in both places that need it, because the two
+ * places are a QUESTION and an ANSWER -- the policy declares a scope here, and
+ * `JudgeVerdict.scopesJudged` reports which scopes a judge evaluated. Two
+ * independent spellings of the same union would let the answer stop covering
+ * the question without a compile error.
+ */
+export type PredicateScope = "segment" | "message";
+
 export interface SemanticPredicate {
   id: string;
   nlPredicate: string;
-  scope: "segment" | "message";
+  scope: PredicateScope;
 }
 
 export interface Actions {

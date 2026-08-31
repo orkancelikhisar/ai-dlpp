@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Finding, Segment } from "@sih/core";
+import type { Finding, JudgeRequest, PolicyIr, Segment } from "@sih/core";
 import { detect, loadPolicyIr } from "@sih/core";
 import { DeadlineExpired, MINIMUM_CANDIDATE_WORDS } from "../src/index.js";
 import { WebLlmJudge } from "../src/judge.js";
@@ -14,6 +14,42 @@ const whole = (text = MSG, start = 0): Segment[] => [
   { kind: "prose", start, end: start + text.length, text },
 ];
 
+/**
+ * A `JudgeRequest` for segments this file already builds by hand.
+ *
+ * `text` is REBUILT from the segments rather than defaulted to MSG, because the
+ * seam's contract is that every segment offset indexes into `text` -- several
+ * tests here place a segment at an offset inside a longer message, and a
+ * hardcoded MSG would hand the judge a request no orchestrator could produce.
+ * Gaps between segments are filled with spaces: invented, and invented on
+ * purpose, since no test asserts on what is between two segments.
+ */
+const req = (
+  segments: Segment[],
+  ir: PolicyIr,
+  priorFindings: Finding[] = [],
+  over: Partial<JudgeRequest> = {},
+): JudgeRequest => {
+  const end = segments.reduce((max, s) => Math.max(max, s.end), 0);
+  let text = " ".repeat(end);
+  for (const s of segments) text = text.slice(0, s.start) + s.text + text.slice(s.end);
+  return { text, segments, ir, priorFindings, budgetMs: 30_000, ...over };
+};
+
+/**
+ * One run's FINDINGS, for the many tests below that assert only on those.
+ *
+ * The seam returns a verdict now -- findings plus what the judge says about its
+ * own run -- and unwrapping it at every call site would bury the tests that do
+ * assert on the rest. Those call `judge()` directly.
+ */
+const judged = async (
+  instance: WebLlmJudge,
+  segments: Segment[],
+  ir: PolicyIr,
+  priorFindings: Finding[] = [],
+): Promise<Finding[]> => (await instance.judge(req(segments, ir, priorFindings))).findings;
+
 const hit = (quote = QUOTE, confidence = 0.9, predicateId = "client-relationship") => ({
   predicateId,
   quote,
@@ -25,7 +61,7 @@ describe("WebLlmJudge", () => {
     // The contract core has documented since Plan 3. A bare predicate id makes
     // normalizeFindings throw, killing the whole message.
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(found[0]!.entityType).toBe("pred:client-relationship");
   });
 
@@ -52,7 +88,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [hit(QUOTE, 0.9, "not-a-predicate"), hit()] }),
       BUDGET,
     );
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(found.map((f) => f.entityType)).toEqual(["pred:client-relationship"]);
     expect(judge.stats.unknownPredicates).toBe(1);
   });
@@ -65,7 +101,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [hit("text that is not in the message")] }),
       BUDGET,
     );
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(found).toEqual([]);
     expect(judge.stats.unresolvedQuotes).toBe(1);
   });
@@ -77,7 +113,7 @@ describe("WebLlmJudge", () => {
     // the assertion this replaces -- cannot tell the two apart either, which
     // is the entire thing the field exists to say.
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    await judge.judge(whole(), predicateIr(), []);
+    await judged(judge, whole(), predicateIr(), []);
     expect(judge.stats.rung1).toBe(1);
     expect(judge.stats.rung2).toBe(0);
   });
@@ -90,7 +126,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [hit("the Northwind Traders renewal package")] }),
       BUDGET,
     );
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(judge.stats.rung2).toBe(1);
     expect(judge.stats.rung1).toBe(0);
     expect(MSG.slice(found[0]!.start, found[0]!.end)).toBe("the Northwind Traders renewal");
@@ -127,7 +163,7 @@ describe("WebLlmJudge", () => {
     const prefix = "intro line\n";
     const wholeText = prefix + MSG;
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    const found = await judge.judge(whole(MSG, prefix.length), predicateIr(), []);
+    const found = await judged(judge, whole(MSG, prefix.length), predicateIr(), []);
     expect(wholeText.slice(found[0]!.start, found[0]!.end)).toBe(QUOTE);
     expect(found[0]!.text).toBe(QUOTE);
   });
@@ -137,7 +173,7 @@ describe("WebLlmJudge", () => {
     // to ask about nothing costs seconds per message.
     const engine = fakeEngine({ findings: [] });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr({ predicates: [] }), []);
+    const found = await judged(judge, whole(), predicateIr({ predicates: [] }), []);
     expect(found).toEqual([]);
     expect(engine.calls).toHaveLength(0);
     // And it counts NOTHING, rather than filing the segment as skipped. A
@@ -155,7 +191,7 @@ describe("WebLlmJudge", () => {
     // mean "it retried" rather than "it counted".
     const engine = fakeEngine({ raw: "not json at all" });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(engine.calls).toHaveLength(2);
     expect(judge.stats.repairAttempts).toBe(1);
     expect(judge.stats.failedClosed).toBe(1);
@@ -169,7 +205,7 @@ describe("WebLlmJudge", () => {
       script: [{ raw: "{ oh no" }, { findings: [hit()] }],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(engine.calls).toHaveLength(2);
     expect(judge.stats.repairAttempts).toBe(1);
     expect(judge.stats.failedClosed).toBe(0);
@@ -178,7 +214,7 @@ describe("WebLlmJudge", () => {
 
   it("tells the repair call what was wrong with the first answer", async () => {
     const engine = fakeEngine({ script: [{ raw: "{ oh no" }, { findings: [hit()] }] });
-    await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
+    await judged(new WebLlmJudge(engine, BUDGET), whole(), predicateIr(), []);
     const repair = engine.promptOf(1);
     expect(repair).not.toBe(engine.promptOf(0));
     expect(repair).toMatch(/could not be parsed/i);
@@ -194,7 +230,7 @@ describe("WebLlmJudge", () => {
       requestedModelId: "Qwen3.5-2B-q4f16_1-MLC",
       model: "Phi-4-mini-instruct-q4f16_1-MLC",
     });
-    const found = await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
+    const found = await judged(new WebLlmJudge(engine, BUDGET), whole(), predicateIr(), []);
     expect(found[0]!.source).toBe("Phi-4-mini-instruct-q4f16_1-MLC");
     expect(found[0]!.source).not.toBe(engine.requestedModelId);
   });
@@ -205,7 +241,7 @@ describe("WebLlmJudge", () => {
     // same span are one piece of evidence counted twice, and they would reach
     // core's merge as a self-overlapping cluster.
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit(), hit(), hit(QUOTE, 0.4)] }), BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(found).toHaveLength(1);
     expect(judge.stats.duplicatesDropped).toBe(2);
   });
@@ -216,8 +252,8 @@ describe("WebLlmJudge", () => {
     // second message's findings, while the counters keep accumulating as the
     // bake-off needs them to.
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    await judge.judge(whole(), predicateIr(), []);
-    const second = await judge.judge(whole(), predicateIr(), []);
+    await judged(judge, whole(), predicateIr(), []);
+    const second = await judged(judge, whole(), predicateIr(), []);
     expect(second).toHaveLength(1);
     expect(judge.stats.duplicatesDropped).toBe(0);
     expect(judge.stats.rung1).toBe(2);
@@ -237,7 +273,7 @@ describe("WebLlmJudge", () => {
     // instantly and emptily.
     const engine = fakeEngine({ raw: "", finishReason: "abort" });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(
+    const found = await judged(judge, 
       [...whole(), ...whole(MSG, 200), ...whole(MSG, 400)],
       predicateIr(),
       [],
@@ -262,7 +298,7 @@ describe("WebLlmJudge", () => {
       ],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(engine.calls).toHaveLength(2);
     expect(judge.stats.truncatedResponses).toBe(1);
     expect(judge.stats.abortedResponses).toBe(0);
@@ -279,7 +315,7 @@ describe("WebLlmJudge", () => {
       script: [{ findings: [hit()] }, { throws: new DeadlineExpired("budget", 30_000, true) }],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(
+    const found = await judged(judge, 
       [...whole(), ...whole(other, 100), ...whole(other, 300)],
       predicateIr(),
       [],
@@ -302,7 +338,7 @@ describe("WebLlmJudge", () => {
     });
     const judge = new WebLlmJudge(engine, BUDGET);
     const segments = [...whole(), ...whole(MSG, 200), ...whole(MSG, 400), ...whole(MSG, 600)];
-    await judge.judge(segments, predicateIr(), []);
+    await judged(judge, segments, predicateIr(), []);
     expect(judge.stats.segmentsJudged).toBe(1);
     // The segment whose own call blew the budget, plus the two never asked about.
     expect(judge.stats.segmentsSkipped).toBe(3);
@@ -322,7 +358,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, true) }),
       BUDGET,
     );
-    expect(await mid.judge(whole(), predicateIr(), [])).toEqual([]);
+    expect(await judged(mid, whole(), predicateIr(), [])).toEqual([]);
     expect(mid.stats.callerAbortsMidGeneration).toBe(1);
     expect(mid.stats.callerAbortsWhileQueued).toBe(0);
 
@@ -330,7 +366,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, false) }),
       BUDGET,
     );
-    expect(await queued.judge(whole(), predicateIr(), [])).toEqual([]);
+    expect(await judged(queued, whole(), predicateIr(), [])).toEqual([]);
     expect(queued.stats.callerAbortsWhileQueued).toBe(1);
     expect(queued.stats.callerAbortsMidGeneration).toBe(0);
 
@@ -351,7 +387,7 @@ describe("WebLlmJudge", () => {
         `empty answer would report it as a clean segment`,
     );
     const judge = new WebLlmJudge(fakeEngine({ throws: boom }), BUDGET);
-    await expect(judge.judge(whole(), predicateIr(), [])).rejects.toThrow(/no choices/);
+    await expect(judged(judge, whole(), predicateIr(), [])).rejects.toThrow(/no choices/);
     expect(judge.stats.callerAbortsWhileQueued).toBe(0);
     expect(judge.stats.callerAbortsMidGeneration).toBe(0);
     expect(judge.stats.deadlineExpiries).toBe(0);
@@ -368,7 +404,7 @@ describe("WebLlmJudge", () => {
     // The number is read back OUT of the prompt rather than interpolated into
     // the expectation, so a prompt spelling it "three" fails here too.
     const engine = fakeEngine({ findings: [] });
-    await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
+    await judged(new WebLlmJudge(engine, BUDGET), whole(), predicateIr(), []);
     const asked = /at least (\S+) words/.exec(engine.promptOf(0));
     expect(asked).not.toBeNull();
     expect(Number(asked![1])).toBe(MINIMUM_CANDIDATE_WORDS);
@@ -389,7 +425,7 @@ describe("WebLlmJudge", () => {
     try {
       const { WebLlmJudge: RebuiltJudge } = await import("../src/judge.js");
       const engine = fakeEngine({ findings: [] });
-      await new RebuiltJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
+      await judged(new RebuiltJudge(engine, BUDGET), whole(), predicateIr(), []);
       expect(engine.promptOf(0)).toContain("at least 7 words");
       // Positive control: 7 is the mocked floor and not the real one, so this
       // cannot be passing because the prompt happens to say 7 anyway.
@@ -416,7 +452,7 @@ describe("WebLlmJudge", () => {
         { id: "unreleased-financials", nlPredicate: "discusses unreleased financials" },
       ],
     });
-    await new WebLlmJudge(engine, BUDGET).judge(whole(), ir, []);
+    await judged(new WebLlmJudge(engine, BUDGET), whole(), ir, []);
     const prompt = engine.promptOf(0);
     expect(prompt).toContain("client-relationship");
     expect(prompt).toContain("discusses unreleased financials");
@@ -451,7 +487,7 @@ describe("WebLlmJudge", () => {
       },
     ];
     const engine = fakeEngine({ findings: [] });
-    await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), prior);
+    await judged(new WebLlmJudge(engine, BUDGET), whole(), predicateIr(), prior);
     const prompt = engine.promptOf(0);
     expect(prompt).not.toContain("SENTINEL-PRIOR-VALUE");
     // ... and the priors did reach the prompt, so the assertion above is not
@@ -473,7 +509,7 @@ describe("WebLlmJudge", () => {
       },
     ];
     const engine = fakeEngine({ findings: [] });
-    await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), prior);
+    await judged(new WebLlmJudge(engine, BUDGET), whole(), predicateIr(), prior);
     expect(engine.promptOf(0)).not.toContain("client-name");
   });
 
@@ -487,7 +523,7 @@ describe("WebLlmJudge", () => {
     const ir = predicateIr({
       predicates: [{ id: "client-relationship", nlPredicate: "names a client", shadow: false }],
     });
-    await expect(judge.judge(whole(), ir, [])).rejects.toThrow(/pred:client-relationship/);
+    await expect(judged(judge, whole(), ir, [])).rejects.toThrow(/pred:client-relationship/);
     expect(engine.calls).toHaveLength(0);
   });
 
@@ -518,10 +554,7 @@ describe("WebLlmJudge", () => {
     const engine = fakeEngine({ findings: [] });
     const controller = new AbortController();
     await new WebLlmJudge(engine, { budgetMs: 1234 }).judge(
-      whole(),
-      predicateIr(),
-      [],
-      controller.signal,
+      req(whole(), predicateIr(), [], { signal: controller.signal }),
     );
     expect(engine.calls[0]!.opts.budgetMs).toBe(1234);
     expect(engine.calls[0]!.opts.signal).toBe(controller.signal);
@@ -533,7 +566,7 @@ describe("WebLlmJudge", () => {
     // the finding's segment does not contain, which is the mis-location
     // `spans.ts` exists to make impossible.
     const engine = fakeEngine({ findings: [] });
-    await new WebLlmJudge(engine, BUDGET).judge(
+    await judged(new WebLlmJudge(engine, BUDGET), 
       [...whole(), ...whole("Renew the Contoso Industries agreement.", 100)],
       predicateIr(),
       [],
@@ -559,7 +592,7 @@ describe("WebLlmJudge", () => {
     const engine = fakeEngine({ findings: [hit()] });
     const judge = new WebLlmJudge(engine, BUDGET);
     const message = `${MSG}\n${second}`;
-    const found = await judge.judge(
+    const found = await judged(judge, 
       [...whole(), ...whole(second, MSG.length + 1)],
       predicateIr(),
       [],
@@ -592,7 +625,7 @@ describe("WebLlmJudge", () => {
     expect(Buffer.byteLength(prefix, "utf8")).toBe(45);
     const message = prefix + MSG;
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    const found = await judge.judge(whole(MSG, prefix.length), predicateIr(), []);
+    const found = await judged(judge, whole(MSG, prefix.length), predicateIr(), []);
     expect(found[0]!.start).toBe(53);
     // The code-point answer, spelled out so the assertion above cannot be read
     // as "whatever the implementation produced".
@@ -606,7 +639,7 @@ describe("WebLlmJudge", () => {
     // code points would report one short per astral character.
     const inner = `Update \u{1F680}: ${MSG}`;
     const innerJudge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    const innerFound = await innerJudge.judge(
+    const innerFound = await judged(innerJudge, 
       [{ kind: "prose", start: prefix.length, end: prefix.length + inner.length, text: inner }],
       predicateIr(),
       [],
@@ -635,7 +668,7 @@ describe("WebLlmJudge", () => {
       }),
       BUDGET,
     );
-    const found = await judge.judge(whole(), ir, []);
+    const found = await judged(judge, whole(), ir, []);
     expect(found.map((f) => f.entityType)).toEqual([
       "pred:client-relationship",
       "pred:renewal-terms",
@@ -654,7 +687,7 @@ describe("WebLlmJudge", () => {
     const ir = predicateIr({
       predicates: [{ id: "client-relationship", nlPredicate: "names a client", severity: "low" }],
     });
-    const found = await new WebLlmJudge(fakeEngine({ findings: [hit(QUOTE, 0.42)] }), BUDGET).judge(
+    const found = await judged(new WebLlmJudge(fakeEngine({ findings: [hit(QUOTE, 0.42)] }), BUDGET), 
       whole(),
       ir,
       [],
@@ -679,7 +712,7 @@ describe("WebLlmJudge", () => {
       ],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judged(judge, whole(), predicateIr(), []);
     expect(judge.stats.repairAttempts).toBe(1);
     // The in-range sibling from the first response is gone too, not kept.
     expect(found.map((f) => f.text)).toEqual([QUOTE]);
@@ -714,7 +747,7 @@ describe("WebLlmJudge", () => {
       ],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    await judge.judge([...whole(), ...whole(MSG, 200)], predicateIr(), []);
+    await judged(judge, [...whole(), ...whole(MSG, 200)], predicateIr(), []);
     expect(judge.stats.calls).toEqual([
       { finishReason: "stop", promptTokens: 411, completionTokens: 37, ttftMs: 420 },
       // The second call reported no usage at all. `undefined` and not 0: a 0
@@ -750,7 +783,7 @@ describe("WebLlmJudge", () => {
       },
     });
     const judge = new WebLlmJudge(engine, BUDGET);
-    await judge.judge(whole(), predicateIr(), []);
+    await judged(judge, whole(), predicateIr(), []);
     expect(judge.stats.calls[0]!.ttftMs).toBeNaN();
     expect(judge.stats.calls[0]!.completionTokens).toBe(0);
   });
@@ -789,7 +822,7 @@ describe("WebLlmJudge", () => {
     // The `calls` array needs the same treatment as the counters: spreading the
     // outer object alone would hand out the judge's own array.
     const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
-    await judge.judge(whole(), predicateIr(), []);
+    await judged(judge, whole(), predicateIr(), []);
 
     const taken = judge.stats as unknown as Record<string, unknown>;
     taken["rung1"] = 999;
@@ -800,5 +833,109 @@ describe("WebLlmJudge", () => {
     expect(judge.stats.calls).toHaveLength(1);
     expect(judge.stats.calls[0]!.finishReason).toBe("stop");
     expect(judge.stats.calls[0]!.promptTokens).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The verdict: what the judge says about its own run, beyond its findings.
+// ---------------------------------------------------------------------------
+
+describe("judge verdict", () => {
+  it("says it evaluated the segment scope, and only that", async () => {
+    // The honest answer, and the one the orchestrator turns into a
+    // `scope-unjudged` notice when the policy declares a message-scoped
+    // predicate. Claiming "message" here would make that notice disappear
+    // without a single message-scoped judgement being made.
+    const judge = new WebLlmJudge(fakeEngine({ findings: [] }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(verdict.scopesJudged).toEqual(["segment"]);
+  });
+
+  it("claims no scope at all when the policy has no semantic predicates", async () => {
+    // Nothing was evaluated, so naming a scope would be a claim about a run
+    // that never happened -- and the orchestrator ignores scopes the policy
+    // declares no predicate in, so nothing is lost by being accurate.
+    const judge = new WebLlmJudge(fakeEngine({ findings: [] }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr({ predicates: [] })));
+    expect(verdict.scopesJudged).toEqual([]);
+  });
+
+  it("reports nothing degraded when every segment was judged", async () => {
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(verdict.degraded ?? []).toEqual([]);
+  });
+
+  it("reports failing closed, not only counting it", async () => {
+    // Spec section 7: a body still invalid after one repair is flagged for user
+    // review, never a silent pass-through. Before the verdict, "flagged" meant
+    // a counter on this object that DetectionResult gave no caller a way to
+    // read -- so an unparseable model looked exactly like a clean message.
+    const judge = new WebLlmJudge(fakeEngine({ raw: "not json at all" }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(verdict.findings).toEqual([]);
+    expect(judge.stats.failedClosed).toBe(1);
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
+  });
+
+  it("reports a blown per-call budget as a budget notice", async () => {
+    const judge = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("budget", 30_000, true) }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(judge.stats.deadlineExpiries).toBe(1);
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["budget-exhausted"]);
+  });
+
+  it("says nothing about an abort its own caller raised", async () => {
+    // The caller performed the abort and already knows; the orchestrator files
+    // its own budget notice from the timer it armed. A second notice from here
+    // would double-count one event across two layers, and this judge cannot
+    // tell WHY a caller withdrew -- a budget is only one of the reasons.
+    const judge = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, true) }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(judge.stats.callerAbortsMidGeneration).toBe(1);
+    expect(verdict.degraded ?? []).toEqual([]);
+  });
+
+  it("reports a latched engine's aborted response as failing closed", async () => {
+    const judge = new WebLlmJudge(fakeEngine({ raw: "", finishReason: "abort" }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    expect(judge.stats.failedClosed).toBe(1);
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
+  });
+
+  it("never puts message text or model output in a notice", async () => {
+    // A notice is a diagnostic and diagnostics get logged. The message text is
+    // precisely what this system exists to keep out of logs, and a model's
+    // broken body is message text it has been rearranging.
+    const SECRET = "Northwind";
+    const MODEL_LEAK = "ZZQXLEAKZZ";
+    const judge = new WebLlmJudge(fakeEngine({ raw: `{"findings": ${MODEL_LEAK}` }), BUDGET);
+    const verdict = await judge.judge(req(whole(), predicateIr()));
+    const details = (verdict.degraded ?? []).map((n) => n.detail).join(" ");
+    expect(details.length).toBeGreaterThan(0);
+    expect(details).not.toContain(SECRET);
+    expect(details).not.toContain(MODEL_LEAK);
+  });
+
+  it("surfaces failing closed all the way onto DetectionResult", async () => {
+    // The whole chain, through the real orchestrator: an empty findings list
+    // that a caller can tell apart from a clean message without reaching into
+    // this judge's counters.
+    const result = await detect({
+      ir: loadPolicyIr(JSON.stringify(predicateIr())),
+      provider: "claude",
+      text: MSG,
+      config: { tier0: false, tier1: false, tier2: true },
+      engines: { tier2: new WebLlmJudge(fakeEngine({ raw: "not json at all" }), BUDGET) },
+    });
+    expect(result.findings).toEqual([]);
+    expect(result.degraded.filter((d) => d.reason === "failed-closed")).toHaveLength(1);
+    expect(result.degraded.every((d) => d.tier === 2 || d.reason === "absent")).toBe(true);
   });
 });

@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { detect } from "../../src/detect/orchestrator.js";
+import { detect, remainingBudgetMs } from "../../src/detect/orchestrator.js";
 import { loadPolicyIr } from "../../src/policy/load.js";
 import { resolveAction } from "../../src/policy/resolve.js";
 import { segmentText, type Segment } from "../../src/segment/segment.js";
-import type { Finding, SemanticJudge, SpanTagger } from "../../src/detect/types.js";
+import type {
+  DetectionResult,
+  EngineDegradedNotice,
+  Finding,
+  JudgeRequest,
+  JudgeVerdict,
+  SemanticJudge,
+  SpanTagger,
+} from "../../src/detect/types.js";
 import { minimalIr } from "../fixtures/minimal-ir.js";
 
 const ir = loadPolicyIr(JSON.stringify(minimalIr()));
@@ -56,7 +64,18 @@ describe("detect (tier-0 only)", () => {
 
 /** Stub engines: the tier 1/2 seams Plans 4-5 fill in with real models. */
 const tagger = (findings: Finding[]): SpanTagger => ({ tag: async () => findings });
-const judge = (findings: Finding[] = []): SemanticJudge => ({ judge: async () => findings });
+/**
+ * `scopesJudged: ["segment"]` is what `WebLlmJudge` really reports, so a stub
+ * claiming more would let a scope-coverage bug pass here and fail in tier 2.
+ */
+const judge = (findings: Finding[] = []): SemanticJudge => ({
+  judge: async () => ({ findings, scopesJudged: ["segment"] }),
+});
+
+/** A judge whose whole verdict the test dictates, including what it claims to have done. */
+const verdictJudge = (verdict: Partial<JudgeVerdict>): SemanticJudge => ({
+  judge: async () => ({ findings: [], scopesJudged: ["segment"], ...verdict }),
+});
 
 const finding = (over: Partial<Finding> & Pick<Finding, "start" | "end" | "entityType">): Finding => ({
   text: "", severity: "high", tier: 1, source: "stub-t1", confidence: 0.8, ...over,
@@ -381,7 +400,11 @@ describe("tier seams (Plans 4-5)", () => {
       start: 0, end: 3, text: MESSAGE.slice(0, 3), entityType: "client-name", tier: 2, source: "stub-t2",
     });
     const spy: SemanticJudge = {
-      judge: async (segments, _ir, priorFindings) => { seen = segments; priors = priorFindings; return [extra]; },
+      judge: async (request) => {
+        seen = request.segments;
+        priors = request.priorFindings;
+        return { findings: [extra], scopesJudged: ["segment"] };
+      },
     };
     const result = await detect({
       ir, provider: "chatgpt", text: MESSAGE,
@@ -394,5 +417,326 @@ describe("tier seams (Plans 4-5)", () => {
     expect(added.action).toBe("pseudonymize");
     expect(result.findings).toHaveLength(4);
     expect(result.timings.tier2Ms).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 5's three orchestrator gaps: the degraded channel, predicate scope, and
+// a latency budget that spans segments.
+// ---------------------------------------------------------------------------
+
+/**
+ * All three tiers on, so `degraded` holds exactly what the tier under test
+ * produced. Leaving tier 1 off would put an `absent` entry in every assertion
+ * below and hide the entry that is actually being checked.
+ */
+const T2 = { tier0: true, tier1: true, tier2: true };
+
+/** Tier 1 present and silent, so only tier 2 can add to `degraded`. */
+const withT2 = (tier2: SemanticJudge) => ({ tier1: tagger([]), tier2 });
+
+/** A loadable IR built from the fixture, so every field the schema polices is real. */
+const irWith = (over: Record<string, unknown>) =>
+  loadPolicyIr(JSON.stringify({ ...minimalIr(), ...over }));
+
+const predicate = (id: string, scope: "segment" | "message") => ({
+  id,
+  nlPredicate: `test predicate ${id}`,
+  scope,
+});
+
+/** Tier and reason only: the details are prose and are asserted where they are produced. */
+const kinds = (result: DetectionResult) =>
+  result.degraded.map(({ tier, reason }) => ({ tier, reason }));
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const slowTagger = (ms: number): SpanTagger => ({
+  tag: async () => { await sleep(ms); return []; },
+});
+
+const aborted = (signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => { resolve(); }, { once: true });
+  });
+
+describe("degraded channel", () => {
+  it("stays empty when every configured tier ran and answered", async () => {
+    const result = await detect({
+      ir, provider: "chatgpt", text: "what is a monad?",
+      config: { tier0: true, tier1: true, tier2: true },
+      engines: { tier1: tagger([]), tier2: judge() },
+    });
+    // Empty findings AND empty degraded is the only combination that entitles a
+    // caller to say the message is clean.
+    expect(result.findings).toEqual([]);
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("separates a clean message from one tier 2 refused to judge", async () => {
+    // The reason the field exists. Both runs return zero findings; before this
+    // channel the difference lived only on the judge's own counters, which
+    // DetectionResult gave a caller no way to reach -- so a model that will not
+    // emit valid JSON silently passed text through, which spec section 7 forbids.
+    const text = "what is a monad?";
+    const clean = await detect({ ir, provider: "chatgpt", text, config: T2, engines: withT2(judge()) });
+    const refused = await detect({
+      ir, provider: "chatgpt", text, config: T2,
+      engines: withT2(
+        verdictJudge({
+          degraded: [{ reason: "failed-closed", detail: "2 of 3 segments unparseable after one repair" }],
+        }),
+      ),
+    });
+    expect(refused.findings).toEqual(clean.findings);
+    expect(clean.degraded).toEqual([]);
+    expect(refused.degraded).toEqual([
+      { tier: 2, reason: "failed-closed", detail: "2 of 3 segments unparseable after one repair" },
+    ]);
+  });
+
+  it("stamps the tier it called, never a tier the engine names", async () => {
+    // Engines are not trusted to name a tier, for the same reason
+    // normalizeFindings does not trust one to name a severity: a result saying
+    // tier 0 failed closed when tier 2 did is a confident, wrong record. The
+    // notice type carries no `tier` at all, so this can only arrive from
+    // untyped JS -- which the eval harness's page boundary is.
+    const liar: SemanticJudge = {
+      judge: async () => ({
+        findings: [],
+        scopesJudged: ["segment"],
+        degraded: [{ tier: 0, reason: "failed-closed", detail: "d" } as unknown as EngineDegradedNotice],
+      }),
+    };
+    const result = await detect({
+      ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(liar),
+    });
+    expect(result.degraded).toEqual([{ tier: 2, reason: "failed-closed", detail: "d" }]);
+  });
+
+  it("names every tier that did not run", async () => {
+    const result = await detect({
+      ir, provider: "chatgpt", text: MESSAGE,
+      config: { tier0: false, tier1: false, tier2: false },
+    });
+    expect(kinds(result)).toEqual([
+      { tier: 0, reason: "absent" },
+      { tier: 1, reason: "absent" },
+      { tier: 2, reason: "absent" },
+    ]);
+    for (const notice of result.degraded) expect(notice.detail.length).toBeGreaterThan(0);
+  });
+
+  it("tells a tier 0 that did not run from a tier 0 that ran", async () => {
+    // timings.tier0Ms cannot: it reads 0 for both, as its own doc warns.
+    const off = await detect({
+      ir, provider: "chatgpt", text: MESSAGE, config: { tier0: false, tier1: false, tier2: false },
+    });
+    const on = await detect({ ir, provider: "chatgpt", text: MESSAGE, config });
+    expect(kinds(off)).toContainEqual({ tier: 0, reason: "absent" });
+    expect(kinds(on)).not.toContainEqual({ tier: 0, reason: "absent" });
+  });
+
+  it("does not file an engine crash as a degradation", async () => {
+    // Spec 5.3 maps a crash to ir.failMode, which is the CALLER's decision.
+    // A notice here would be detection deciding it for them, and quietly.
+    const boom: SemanticJudge = { judge: async () => { throw new Error("t2 engine exploded"); } };
+    await expect(
+      detect({ ir, provider: "chatgpt", text: MESSAGE, config: T2, engines: withT2(boom) }),
+    ).rejects.toThrow("t2 engine exploded");
+  });
+});
+
+describe("semantic predicate scope", () => {
+  it("hands the judge the whole message, with segment offsets that index into it", async () => {
+    // A judge cannot reconstruct the message from segments it may have been
+    // handed a filtered list of, so scope: "message" is unanswerable without this.
+    let seen: JudgeRequest | undefined;
+    const spy: SemanticJudge = {
+      judge: async (request) => { seen = request; return { findings: [], scopesJudged: ["segment"] }; },
+    };
+    await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "message")] }),
+      provider: "chatgpt", text: MESSAGE, config: T2, engines: withT2(spy),
+    });
+    expect(seen?.text).toBe(MESSAGE);
+    for (const segment of seen!.segments) {
+      expect(seen!.text.slice(segment.start, segment.end)).toBe(segment.text);
+    }
+  });
+
+  it("reports a scope the policy declares and the judge did not evaluate", async () => {
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "message")] }),
+      provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(judge()),
+    });
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+    expect(result.degraded[0]!.detail).toContain("message");
+  });
+
+  it("reports nothing when the judge evaluated every scope the policy declares", async () => {
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "message")] }),
+      provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(verdictJudge({ scopesJudged: ["segment", "message"] })),
+    });
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("reports nothing about a scope the policy declares no predicate in", async () => {
+    // The fixture IR has no semanticPredicates at all, and a judge that says it
+    // evaluated only segments must not be reported for the message scope it was
+    // never asked about.
+    const result = await detect({
+      ir, provider: "chatgpt", text: MESSAGE, config: T2, engines: withT2(judge()),
+    });
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("reports each unevaluated scope separately", async () => {
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "message"), predicate("p2", "segment")] }),
+      provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(verdictJudge({ scopesJudged: [] })),
+    });
+    expect(kinds(result)).toEqual([
+      { tier: 2, reason: "scope-unjudged" },
+      { tier: 2, reason: "scope-unjudged" },
+    ]);
+    expect(result.degraded.map((d) => d.detail).join(" ")).toContain("segment");
+    expect(result.degraded.map((d) => d.detail).join(" ")).toContain("message");
+  });
+});
+
+describe("remainingBudgetMs", () => {
+  // The boundary a wall clock cannot be steered onto. Every expectation here
+  // comes from what setTimeout does with the number, not from the arithmetic:
+  // MEASURED on Node v26.0.0 and on Chrome 148, setTimeout fires within ~1 ms
+  // for a delay of 0, -1, NaN, 2147483648 and Infinity, and does not fire
+  // within 400 ms for 2147483647. So a budget that is spent must not be handed
+  // on as a number at all, and one too large for the field must be clamped.
+  it("is spent at exactly the budget", () => {
+    expect(remainingBudgetMs(100, 100)).toBeUndefined();
+  });
+
+  it("is spent past the budget", () => {
+    expect(remainingBudgetMs(100, 100.5)).toBeUndefined();
+  });
+
+  it("is what is left just inside the budget", () => {
+    expect(remainingBudgetMs(100, 99)).toBe(1);
+  });
+
+  it("clamps to the largest delay a timer holds", () => {
+    expect(remainingBudgetMs(2 ** 31, 0)).toBe(2_147_483_647);
+  });
+
+  it("treats a budget that is not a number as spent", () => {
+    // Unreachable through loadPolicyIr, which is the validation boundary --
+    // but NaN reaching setTimeout is a 1 ms deadline, so the direction of the
+    // failure is chosen here rather than left to the timer.
+    expect(remainingBudgetMs(Number.NaN, 0)).toBeUndefined();
+  });
+});
+
+describe("message latency budget", () => {
+  it("hands tier 2 what is LEFT of the message budget, not the whole of it", async () => {
+    // A per-call budget that ignores the earlier tiers is how a 12-segment
+    // message spends 12x its budget with every individual call compliant.
+    let seen: number | undefined;
+    const spy: SemanticJudge = {
+      judge: async (request) => { seen = request.budgetMs; return { findings: [], scopesJudged: ["segment"] }; },
+    };
+    await detect({
+      ir: irWith({ latencyBudgetMs: 5000 }), provider: "chatgpt", text: MESSAGE,
+      config: { tier0: true, tier1: true, tier2: true },
+      engines: { tier1: slowTagger(60), tier2: spy },
+    });
+    expect(seen).toBeGreaterThan(0);
+    // Tier 1 slept 60 ms of the 5000, so anything at or above 4940 means the
+    // budget was passed through rather than spent down.
+    expect(seen).toBeLessThan(4940);
+  });
+
+  it("hands the judge a signal that has not already fired", async () => {
+    let signalled: boolean | undefined;
+    const spy: SemanticJudge = {
+      judge: async (request) => {
+        signalled = request.signal?.aborted;
+        return { findings: [], scopesJudged: ["segment"] };
+      },
+    };
+    await detect({ ir, provider: "chatgpt", text: MESSAGE, config: T2, engines: withT2(spy) });
+    expect(signalled).toBe(false);
+  });
+
+  it("does not call tier 2 at all when the earlier tiers spent the budget", async () => {
+    let called = false;
+    const never: SemanticJudge = {
+      judge: async () => { called = true; return { findings: [], scopesJudged: ["segment"] }; },
+    };
+    const result = await detect({
+      ir: irWith({ latencyBudgetMs: 10 }), provider: "chatgpt", text: MESSAGE,
+      config: { tier0: true, tier1: true, tier2: true },
+      engines: { tier1: slowTagger(60), tier2: never },
+    });
+    expect(called).toBe(false);
+    // No call means no timing: a 0 here would read as a tier that ran instantly.
+    expect(result.timings.tier2Ms).toBeUndefined();
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
+    // Spec 5.3: an over-budget tier 2 degrades TO the lower tiers' findings.
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it("cuts a tier-2 run short when the message budget expires, and keeps what it collected", async () => {
+    const collected = finding({
+      start: 0, end: 3, text: MESSAGE.slice(0, 3), entityType: "client-name", tier: 2, source: "stub-t2",
+    });
+    const slow: SemanticJudge = {
+      judge: async (request) => {
+        await aborted(request.signal!);
+        return { findings: [collected], scopesJudged: ["segment"] };
+      },
+    };
+    const result = await detect({
+      ir: irWith({ latencyBudgetMs: 30 }), provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(slow),
+    });
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
+    expect(result.findings.some((f) => f.entityType === "client-name")).toBe(true);
+  });
+
+  it("does not report a budget expiry when the judge answered inside it", async () => {
+    const result = await detect({
+      ir: irWith({ latencyBudgetMs: 5000 }), provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(judge()),
+    });
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("clears its budget timer when the judge throws", async () => {
+    // A timer left running outlives the message that armed it. Its abort then
+    // fires during whatever detect() call happens to be in flight next, which
+    // reads as a slow model on a message that was never slow.
+    const cleared: unknown[] = [];
+    const realClear = globalThis.clearTimeout;
+    globalThis.clearTimeout = ((handle: never) => {
+      cleared.push(handle);
+      realClear(handle);
+    }) as typeof clearTimeout;
+    const boom: SemanticJudge = { judge: async () => { throw new Error("t2 engine exploded"); } };
+    try {
+      await expect(
+        detect({
+          ir: irWith({ latencyBudgetMs: 5000 }), provider: "chatgpt", text: MESSAGE, config: T2,
+          engines: withT2(boom),
+        }),
+      ).rejects.toThrow("t2 engine exploded");
+    } finally {
+      globalThis.clearTimeout = realClear;
+    }
+    expect(cleared).toHaveLength(1);
   });
 });

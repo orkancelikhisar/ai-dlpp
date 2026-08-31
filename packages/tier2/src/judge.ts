@@ -1,6 +1,16 @@
 import type { ChatCompletionFinishReason, ChatCompletionMessageParam } from "@mlc-ai/web-llm";
 import { shadowIdFor } from "@sih/core";
-import type { Finding, PolicyIr, SemanticJudge, SemanticPredicate, Segment, Severity } from "@sih/core";
+import type {
+  EngineDegradedNotice,
+  Finding,
+  JudgeRequest,
+  JudgeVerdict,
+  PolicyIr,
+  SemanticJudge,
+  SemanticPredicate,
+  Segment,
+  Severity,
+} from "@sih/core";
 import { DeadlineExpired, MAX_BUDGET_MS } from "./cancel.js";
 import type { Tier2Completion, Tier2Engine } from "./engine.js";
 import { parseJudgeResponse, type JudgeResponse } from "./schema.js";
@@ -211,6 +221,20 @@ export interface WebLlmJudgeOptions {
 type Counters = Omit<JudgeStats, "calls">;
 type MutableCounters = { -readonly [K in keyof Counters]: Counters[K] };
 
+/**
+ * What this judge evaluates, as a FACT about the run and not a capability.
+ *
+ * Every predicate reaches the model once per segment, including one the policy
+ * declared `scope: "message"`. Naming "message" here would erase the
+ * orchestrator's `scope-unjudged` notice while changing nothing about what the
+ * model was asked, which is precisely the record-states-intent defect: the
+ * bake-off would count a predicate as judged in a scope no call ever used.
+ *
+ * Frozen because it is returned by reference on every verdict, and a caller
+ * that sorted it in place would rewrite what every later run claims.
+ */
+const SEGMENT_SCOPE_ONLY = Object.freeze(["segment"] as const);
+
 const ZERO_COUNTERS: Counters = {
   rung1: 0,
   rung2: 0,
@@ -346,11 +370,18 @@ export class WebLlmJudge implements SemanticJudge {
    * one in the message.
    *
    * Degrades rather than throwing on a slow or cancelled engine -- spec 5.3
-   * says an over-budget tier-2 run falls back to the lower tiers' findings --
-   * and the counters are where that shows up. An empty return is NOT the same
-   * claim as "this passage is clean", and a caller reading recall from these
-   * findings must read `failedClosed`, `segmentsSkipped`, `deadlineExpiries`
-   * and the two caller-abort counters alongside them.
+   * says an over-budget tier-2 run falls back to the lower tiers' findings.
+   * `verdict.degraded` is where that now shows up, and it travels: the
+   * orchestrator stamps each notice with the tier and puts it on
+   * `DetectionResult`, so a caller no longer has to hold this object to learn
+   * that an empty `findings` is not the claim "this passage is clean".
+   *
+   * The counters are still the finer record and are not replaced by it: a
+   * notice says a segment was not judged, while `failedClosed`,
+   * `segmentsSkipped`, `deadlineExpiries` and the two caller-abort counters
+   * accumulate across every message an arm ran, which is what a recall
+   * denominator needs. One caller abort is deliberately in the counters and NOT
+   * in the notices -- see the stop handling below.
    *
    * Anything OTHER than a `DeadlineExpired` from the engine propagates
    * untouched. `engine.ts` throws on a response with no choices and on one that
@@ -359,29 +390,39 @@ export class WebLlmJudge implements SemanticJudge {
    * undo the tripwire and, since such an error carries no `reason`, would file
    * the event as a caller abort as well.
    *
-   * `scope` on a `SemanticPredicate` is not honoured yet: every predicate is
-   * judged per segment, including one declared `scope: "message"`. The judge is
-   * handed segments, not the message, and the orchestrator is free to hand it a
-   * FILTERED list (tier 1 already drops code segments, and Task 7 owns the
-   * tier-2 filter), so the message cannot be reassembled here without
-   * inventing text. The cost is real and is worth stating: evidence for a
-   * message-scoped predicate that spans two segments is not seen by either
-   * call.
+   * `scope` on a `SemanticPredicate` is STILL not honoured here, and the
+   * verdict now says so instead of a comment: every predicate is judged per
+   * segment, including one declared `scope: "message"`, so `scopesJudged` is
+   * `["segment"]` and the orchestrator turns the difference into a
+   * `scope-unjudged` notice on the result. `request.text` carries the whole
+   * message, which is what makes the message scope answerable at all -- using
+   * it is the follow-on task, not this one.
+   *
+   * `request.budgetMs` is likewise READ BY NOTHING here. The per-call budget
+   * stays the one this judge was constructed with; what bounds the message is
+   * `request.signal`, which the orchestrator raises when `ir.latencyBudgetMs`
+   * expires and which the stop handling below already treats as a caller abort.
+   * Sizing per-call budgets from what is left of the message is a change to how
+   * this judge spends its time, and it belongs with the task that measures the
+   * result.
    */
-  async judge(
-    segments: Segment[],
-    ir: PolicyIr,
-    priorFindings: Finding[],
-    signal?: AbortSignal,
-  ): Promise<Finding[]> {
+  async judge(request: JudgeRequest): Promise<JudgeVerdict> {
+    const { segments, ir, priorFindings, signal } = request;
     const predicates = ir.semanticPredicates;
     // A policy with no semantic clauses is legitimate, and asking a 2 GB model
     // about nothing costs seconds per message. Checked before anything else so
-    // no call is spent.
-    if (predicates.length === 0) return [];
+    // no call is spent. `scopesJudged` is empty rather than `["segment"]`: no
+    // predicate was evaluated in any scope, and the orchestrator only asks
+    // about scopes the policy declares a predicate in, so accuracy costs
+    // nothing here.
+    if (predicates.length === 0) return { findings: [], scopesJudged: [] };
 
     const severityOf = shadowSeverities(ir, predicates);
     const findings: Finding[] = [];
+    // Per RUN, like `emitted` below and unlike the counters: a notice names the
+    // segment it is about, and an array that outlived the call would attach one
+    // message's failures to the next message's result.
+    const notices: EngineDegradedNotice[] = [];
     // Per CALL, never per instance. Offsets repeat across messages -- [18, 43)
     // is [18, 43) in every one of them -- so de-duplication state that outlived
     // a judge() call would silently delete the next message's findings.
@@ -421,10 +462,24 @@ export class WebLlmJudge implements SemanticJudge {
           // The segment this call was for is counted as skipped along with the
           // ones after it: it got no answer either.
           this.#counters.segmentsSkipped += segments.length - index;
-          if (cause.reason === "budget") this.#counters.deadlineExpiries += 1;
-          else if (cause.interrupted) this.#counters.callerAbortsMidGeneration += 1;
+          if (cause.reason === "budget") {
+            this.#counters.deadlineExpiries += 1;
+            notices.push({
+              reason: "budget-exhausted",
+              detail:
+                `the tier-2 call for segment ${index + 1} of ${segments.length} did not answer ` +
+                `within its ${this.#budgetMs}ms per-call budget; that segment and the ` +
+                `${segments.length - index - 1} after it were not judged`,
+            });
+          } else if (cause.interrupted) this.#counters.callerAbortsMidGeneration += 1;
           else this.#counters.callerAbortsWhileQueued += 1;
-          return findings;
+          // No notice on either caller abort, deliberately. The caller withdrew
+          // and already knows; the orchestrator files its own budget notice
+          // from the timer IT armed, and a second one from here would report
+          // one event twice. This judge also cannot say why a caller withdrew
+          // -- a latency budget is only one of the reasons -- so any reason it
+          // named would be a guess in a field that must state fact.
+          return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
         }
 
         // One row per answered call, repair retries included. Recorded before
@@ -471,13 +526,29 @@ export class WebLlmJudge implements SemanticJudge {
         if (parsed.reason === "aborted") {
           this.#counters.failedClosed += 1;
           this.#counters.segmentsSkipped += segments.length - index - 1;
-          return findings;
+          notices.push({
+            reason: "failed-closed",
+            detail:
+              `the engine reported the response for segment ${index + 1} of ${segments.length} ` +
+              `aborted by an interrupt this judge did not raise; the engine is latched, so that ` +
+              `segment and the ${segments.length - index - 1} after it were not judged`,
+          });
+          return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
         }
 
         if (repaired) {
           // One repair, then fail closed. A model that will not emit valid JSON
           // twice must never have its prose passed through as a judgement.
           this.#counters.failedClosed += 1;
+          // `parsed.reason` is one of `schema.ts`'s fixed words. `parsed.detail`
+          // is NOT included: it is built from the body the model produced, and
+          // a model that will not emit JSON is emitting rearranged message text.
+          notices.push({
+            reason: "failed-closed",
+            detail:
+              `segment ${index + 1} of ${segments.length} could not be parsed after one repair ` +
+              `retry (${parsed.reason}), so it was not judged`,
+          });
           break;
         }
         repaired = true;
@@ -486,7 +557,7 @@ export class WebLlmJudge implements SemanticJudge {
       }
     }
 
-    return findings;
+    return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
   }
 
   #collect(

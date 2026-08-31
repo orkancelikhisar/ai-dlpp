@@ -1,9 +1,17 @@
-import type { Action, PolicyIr } from "../policy/types.js";
+import type { Action, PolicyIr, PredicateScope, Tier } from "../policy/types.js";
 import { resolveAction } from "../policy/resolve.js";
 import { segmentText } from "../segment/segment.js";
 import { clusterOverlapping, mergeFindings } from "./merge.js";
 import { runTier0 } from "./tier0.js";
-import type { DetectionResult, DetectorEngines, Finding, ResolvedFinding, TierConfig } from "./types.js";
+import type {
+  DegradedNotice,
+  DetectionResult,
+  DetectorEngines,
+  Finding,
+  JudgeVerdict,
+  ResolvedFinding,
+  TierConfig,
+} from "./types.js";
 
 /**
  * Detection pipeline -- spec 4.3. Segment once, run the enabled tiers over that
@@ -191,6 +199,71 @@ function winnerAction(ir: PolicyIr, winner: Finding, clusterAction: Action): Act
   return entity?.neverPseudonymize === true ? "redact" : clusterAction;
 }
 
+/**
+ * The largest delay `setTimeout` holds without reinterpreting it.
+ *
+ * MEASURED HERE, on Node v26.0.0 and on Chrome 148, with the same probe in
+ * both: a delay of 2147483647 did not fire within 400 ms, while 2147483648,
+ * 4294967296, Infinity, 0, -1 and NaN each fired within about 1 ms. Node also
+ * prints a TimeoutOverflowWarning for the first three; Chrome prints nothing at
+ * all. So an over-large budget does not become a long deadline, it becomes an
+ * IMMEDIATE one -- tier 2 aborted before it starts, on every message, silently
+ * in the browser. `ir.latencyBudgetMs` is schema-checked as a positive integer
+ * and nothing bounds it above, so this is reachable from a legal policy.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * What is left of one MESSAGE's `ir.latencyBudgetMs`, or `undefined` when it is
+ * spent.
+ *
+ * Exported for its tests and deliberately not re-exported from the package
+ * index. The boundary that matters here -- elapsed exactly equal to the budget
+ * -- cannot be steered onto with a wall clock, and it is the one an off-by-one
+ * turns into a 1 ms deadline: `> 0` handed on as a number is the difference
+ * between a judge that gets its remaining budget and a judge that is
+ * interrupted before its first token. Nothing else in this module is exported
+ * this way, which is the cost of testing it honestly.
+ *
+ * `!(remaining > 0)` rather than `remaining <= 0` so a NaN budget lands in
+ * "spent" instead of passing through: `loadPolicyIr` is the boundary that keeps
+ * NaN out, but if one ever arrives the safe direction is not running tier 2,
+ * not running it against a 1 ms timer.
+ */
+export function remainingBudgetMs(latencyBudgetMs: number, elapsedMs: number): number | undefined {
+  const remaining = latencyBudgetMs - elapsedMs;
+  if (!(remaining > 0)) return undefined;
+  return Math.min(remaining, MAX_TIMER_DELAY_MS);
+}
+
+/**
+ * Every `PredicateScope`, as values to iterate.
+ *
+ * Built from a `satisfies Record<PredicateScope, true>` literal rather than
+ * written as an array, so adding a third scope to the union is a compile error
+ * here instead of a scope the result silently never reports on.
+ */
+const PREDICATE_SCOPES = Object.keys({
+  segment: true,
+  message: true,
+} satisfies Record<PredicateScope, true>) as PredicateScope[];
+
+/**
+ * A tier that did not run, recorded as the fact it is.
+ *
+ * The detail says the tier was not enabled and stops there. WHY a caller
+ * disabled it -- no WebGPU, an arm of an experiment, a model that failed to
+ * load an hour ago -- is knowledge this function does not have, and inventing
+ * the WebGPU reason here would be a record stating a cause nobody measured.
+ */
+function absentNotice(tier: Tier): DegradedNotice {
+  return {
+    tier,
+    reason: "absent",
+    detail: `tier ${tier} was not enabled in this TierConfig, so nothing it detects was looked for`,
+  };
+}
+
 export interface DetectInput {
   ir: PolicyIr;
   provider: string;
@@ -207,9 +280,15 @@ export interface DetectInput {
  * configuration-guard violations all surface as exceptions, and mapping them to
  * `ir.failMode` (spec 5.3: `open` forwards the message, `closed` blocks it) is
  * the CALLER's responsibility -- the caller is the only layer that knows whether
- * it is a browser extension with a user to warn or a batch harness. A partial
- * result with a `degraded`/`warnings` field on DetectionResult is expected in
- * Plan 5, when tier-2 latency-budget degradation gives it a second producer.
+ * it is a browser extension with a user to warn or a batch harness.
+ *
+ * What it DOES return short of a full run, it names: `result.degraded` carries
+ * one entry per tier that did not run, was cut short by the message's latency
+ * budget, or reported failing closed. That is the promise spec section 7 makes
+ * -- a tier-2 body still invalid after one repair is "flagged for user review",
+ * never a silent pass-through -- and it is a channel, not an exception, because
+ * the surviving findings are still good and the caller still has a message to
+ * decide about. An exception loses both.
  */
 export async function detect(input: DetectInput): Promise<DetectionResult> {
   const { ir, provider, text, config, engines } = input;
@@ -231,25 +310,38 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
   // already made a missing engine unreachable there. Deleting the guards because
   // those checks "look like they handle it" is exactly the silent skip.
 
+  // The message's own clock, started before segmentation because segmentation is
+  // work the user waits through. `ir.latencyBudgetMs` is a per-MESSAGE number
+  // (spec 5.3) and every per-call budget below is measured against what is left
+  // of it, not against the whole of it.
+  const messageStarted = performance.now();
+
   // Segmented once and shared by every tier: segmentation is deterministic, and
   // re-running it per tier would let two tiers disagree about where a code fence
   // ends while both report absolute offsets into the same message.
   const segments = segmentText(text);
   const raw: Finding[] = [];
   const timings: DetectionResult["timings"] = { tier0Ms: 0 };
+  // Appended to in tier order, so a caller can read the array top to bottom and
+  // find the earliest thing that weakened the result first.
+  const degraded: DegradedNotice[] = [];
 
   // Each tier is timed around the tier call ALONE -- normalization is
   // orchestrator overhead and charging it to a tier corrupts the comparison the
   // timings exist for. Normalizing per tier (rather than once at the end) also
   // fails fast: a tier-1 hallucination throws before tier 2 spends its budget.
-  if (config.tier0) {
+  if (!config.tier0) {
+    degraded.push(absentNotice(0));
+  } else {
     const started = performance.now();
     const found = runTier0(ir, text, segments);
     timings.tier0Ms = performance.now() - started;
     raw.push(...normalizeFindings(ir, text, found));
   }
 
-  if (config.tier1 && engines?.tier1 !== undefined) {
+  if (!config.tier1) {
+    degraded.push(absentNotice(1));
+  } else if (engines?.tier1 !== undefined) {
     // Prose and kv only: code segments are tier 0's ground (entropy scans them)
     // and are mostly identifiers and syntax, which a span tagger reads as a wall
     // of false positives while burning the latency budget. The FILTER LIVES
@@ -263,10 +355,11 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     raw.push(...normalizeFindings(ir, text, found));
   }
 
-  if (config.tier2 && engines?.tier2 !== undefined) {
+  if (!config.tier2) {
+    degraded.push(absentNotice(2));
+  } else if (engines?.tier2 !== undefined) {
     // Every segment, plus everything found so far. Escalation -- deciding which
-    // segments are worth a judge at all, and enforcing latencyBudgetMs with the
-    // AbortSignal that SemanticJudge already accepts -- is Plan 5's; running the
+    // segments are worth a judge at all -- is still Plan 5's Task 7; running the
     // judge over the whole message is the conservative placeholder.
     //
     // Priors are a snapshot, not the live accumulator: `raw` is pushed into
@@ -281,10 +374,101 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     // violates that convention and corrupts the merge. Deep-cloning every
     // finding on every tier-2 call would buy protection against a contract
     // breach at a per-message allocation cost, and is not worth it.
-    const started = performance.now();
-    const found = await engines.tier2.judge(segments, ir, [...raw]);
-    timings.tier2Ms = performance.now() - started;
-    raw.push(...normalizeFindings(ir, text, found));
+
+    // The per-MESSAGE budget, enforced here because nothing else can: a judge
+    // makes one engine call per segment, each one compliant with its own
+    // per-call budget, and twelve compliant calls are twelve times the number
+    // spec 5.3 wrote down. The orchestrator is the only layer that knows both
+    // `ir.latencyBudgetMs` and how much of it the earlier tiers already spent.
+    const remaining = remainingBudgetMs(ir.latencyBudgetMs, performance.now() - messageStarted);
+    if (remaining === undefined) {
+      // Not called at all, rather than called with a budget of zero: a judge
+      // handed 0 either refuses it (tier 2's own constructor does) or hands it
+      // to a timer that fires in about 1 ms -- see MAX_TIMER_DELAY_MS for that
+      // measurement -- and interrupts a generation that has produced nothing.
+      // `timings.tier2Ms` stays unset for the same reason it does for any tier
+      // that did not run: a 0 there would read as a tier that ran instantly.
+      degraded.push({
+        tier: 2,
+        reason: "budget-exhausted",
+        detail:
+          `the ${ir.latencyBudgetMs}ms message latency budget was already spent when tier 2's ` +
+          `turn came, so the judge was not called`,
+      });
+    } else {
+      // A DEADLINE, not a race. `SemanticJudge` takes a signal precisely so an
+      // over-budget run can be stopped rather than abandoned still running --
+      // Plan 5 measured that racing a timeout against a WebLLM call wedges the
+      // engine permanently, so the signal is the only stop that leaves the next
+      // message a working engine.
+      const controller = new AbortController();
+      let expired = false;
+      const deadline = setTimeout(() => {
+        expired = true;
+        controller.abort();
+      }, remaining);
+      const started = performance.now();
+      let verdict: JudgeVerdict;
+      try {
+        verdict = await engines.tier2.judge({
+          text,
+          segments,
+          ir,
+          priorFindings: [...raw],
+          budgetMs: remaining,
+          signal: controller.signal,
+        });
+      } finally {
+        // In `finally` because the throw path is the one that leaks: an
+        // uncleared timer outlives the message that armed it and aborts
+        // whichever detect() is in flight when it fires, which reads as a slow
+        // model on a message that was never slow.
+        clearTimeout(deadline);
+      }
+      timings.tier2Ms = performance.now() - started;
+
+      // Recorded from the TIMER, not from what the judge returned. A judge that
+      // ignores the signal and answers in full still ran past the budget, and
+      // that is a fact about this message's latency either way.
+      if (expired) {
+        degraded.push({
+          tier: 2,
+          reason: "budget-exhausted",
+          detail:
+            `the ${ir.latencyBudgetMs}ms message latency budget ran out during the tier-2 run: ` +
+            `the judge was given the ${remaining.toFixed(0)}ms that remained of it and was then ` +
+            `sent an abort`,
+        });
+      }
+
+      // Field by field, never a spread: the tier is the one this call was made
+      // as, and an engine does not get to name it. `EngineDegradedNotice` has no
+      // `tier` for that reason, so a spread would only ever import one from
+      // untyped JS -- which the eval harness's page boundary is.
+      for (const notice of verdict.degraded ?? []) {
+        degraded.push({ tier: 2, reason: notice.reason, detail: notice.detail });
+      }
+
+      // The scope the policy ASKED about against the scopes the judge says it
+      // evaluated. This is the whole of `SemanticPredicate.scope`'s enforcement
+      // today: core cannot make a judge read a message, but it can refuse to let
+      // a bake-off count an unevaluated predicate as a clean one.
+      for (const scope of PREDICATE_SCOPES) {
+        const declared = ir.semanticPredicates.filter((p) => p.scope === scope).length;
+        if (declared > 0 && !verdict.scopesJudged.includes(scope)) {
+          degraded.push({
+            tier: 2,
+            reason: "scope-unjudged",
+            detail:
+              `the policy declares ${declared} semantic predicate(s) with scope "${scope}" and the ` +
+              `tier-2 judge reported evaluating [${verdict.scopesJudged.join(", ")}], so those ` +
+              `predicates were not judged in the scope they were written for`,
+          });
+        }
+      }
+
+      raw.push(...normalizeFindings(ir, text, verdict.findings));
+    }
   }
 
   // The per-cluster composition recipe documented in merge.ts: cluster once,
@@ -304,7 +488,7 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
   // back in merge.ts's canonical order, so concatenation preserves both. A
   // re-sort here on `start` alone would be a weaker order than the one the
   // clusters already carry.
-  return { findings, timings };
+  return { findings, timings, degraded };
 }
 
 /**
