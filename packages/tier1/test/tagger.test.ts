@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detect, loadPolicyIr } from "@sih/core";
+import { detect, loadPolicyIr, UNCERTAIN_BELOW } from "@sih/core";
+import type { Segment, SemanticJudge } from "@sih/core";
 import { DEFAULT_TIER1_CONFIG, MODEL_MANIFEST, type Tier1Config } from "../src/config.js";
 import { GlinerSpanTagger } from "../src/tagger.js";
 import { FAKE_CLS_ID, FAKE_SEP_ID, fakeSession, fakeTokenizer, tier1Ir } from "./helpers.js";
@@ -356,6 +357,65 @@ describe("GlinerSpanTagger", () => {
     expect(findings).toEqual([]);
     expect(tagger.stats.nonFiniteScores).toBe(0);
     expect(tagger.stats.inferences).toBe(1);
+  });
+
+  it("emits a confidence core reads as UNCERTAIN, and that escalates the segment to tier 2", async () => {
+    // The tier-1 half of core's escalation seam, asserted from the only side
+    // that can run a tagger: `@sih/core` cannot import this package (the
+    // dependency runs the other way), so `UNCERTAIN_BELOW`'s docblock reads
+    // tier 1's live confidence range off THIS package's source and the coupling
+    // has to be pinned here or nowhere. Restricting core's uncertainty input to
+    // tier-0 findings survived all five packages before this test existed.
+    //
+    // 0.62 is not a number chosen to pass. `decode.ts` sigmoids the model's
+    // logit and drops a span scoring below `Tier1Config.threshold`, whose
+    // shipped default is 0.5; `tagger.ts` passes that score straight through as
+    // `Finding.confidence`. So [0.5, 0.8) is live range, and every value in it
+    // is uncertain to core.
+    const message = "call Acme Corp today";
+    const judged: Array<readonly Segment[]> = [];
+    const spy: SemanticJudge = {
+      judge: async (request) => {
+        judged.push(request.segments);
+        return { findings: [], scopesJudged: ["segment"] };
+      },
+    };
+    // `tier1Ir()` declares no semanticPredicates, so escalation's predicate
+    // branch selects nothing: the tier-1 finding's confidence is the only thing
+    // that can put this segment in front of a judge.
+    const run = (threshold: number) =>
+      detect({
+        ir: loadPolicyIr(JSON.stringify(tier1Ir())),
+        provider: "claude",
+        text: message,
+        config: { tier0: false, tier1: true, tier2: true },
+        engines: {
+          tier1: new GlinerSpanTagger(
+            fakeSession({ modelId: EDGE, hit: [1, 2], score: 0.62 }),
+            fakeTokenizer(),
+            cfg({ modelId: EDGE, threshold }),
+          ),
+          tier2: spy,
+        },
+      });
+
+    const result = await run(DEFAULT_TIER1_CONFIG.threshold);
+    expect(result.findings[0]!.confidence).toBeCloseTo(0.62, 6);
+    expect(result.findings[0]!.confidence).toBeLessThan(UNCERTAIN_BELOW);
+    expect(judged).toHaveLength(1);
+    expect(judged[0]!.map((seg) => seg.text)).toEqual([message]);
+
+    // The other direction, and the reason the default matters rather than just
+    // the score: a threshold at or above core's boundary drops this span at
+    // decode time, so tier 1 emits nothing, nothing is uncertain, and the judge
+    // is never called. A `Tier1Config.threshold` default raised past 0.8 would
+    // switch tier-1-driven escalation off for the whole pipeline, and this is
+    // the assertion that says so.
+    judged.length = 0;
+    const raised = await run(0.9);
+    expect(raised.findings).toEqual([]);
+    expect(judged).toEqual([]);
+    expect(DEFAULT_TIER1_CONFIG.threshold).toBeLessThan(UNCERTAIN_BELOW);
   });
 
   it("never lets a NaN score reach core's merge through detect()", async () => {

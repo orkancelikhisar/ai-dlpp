@@ -36,18 +36,43 @@ import type { CorpusItem } from "./corpus.js";
  *
  * ## What this module does not measure
  *
- * TOKENS. A size here is characters or whitespace-delimited words, both of them
- * counted directly off the segment. Converting either to tokens needs the
- * model's own tokenizer, none of the four pinned arms has one cached on this
- * machine, and inventing a chars-per-token ratio would put a fabricated number
- * where the budget reads a measured one. Characters do bound tokens from above
- * for any byte-level BPE vocabulary -- no such tokenizer can emit more tokens
- * than the string has characters -- so the maximum here is a real ceiling on
- * prompt length even without a ratio, and that is the only token claim this
- * module supports.
+ * TOKENS. A size here is UTF-16 code units, UTF-8 bytes, or whitespace-delimited
+ * words, all three counted directly off the segment. Converting any of them to
+ * tokens needs the model's own tokenizer, none of the four pinned tier-2 arms
+ * has one cached on this machine, and inventing a chars-per-token ratio would
+ * put a fabricated number where the budget reads a measured one.
+ *
+ * ## The one token claim this module supports, and the one it used to
+ *
+ * It used to say that characters bound tokens from above for any byte-level BPE
+ * vocabulary. That is FALSE, and it is false in the unsafe direction. A
+ * byte-level BPE tokenizes UTF-8 BYTES, so its floor is one token per byte, and
+ * every non-ASCII character is 2-4 bytes while `String.length` counts UTF-16
+ * code units.
+ *
+ * MEASURED HERE, against a real byte-level BPE that is cached in this repo --
+ * `packages/tier1/models/gliner-pii-edge/tokenizer.json`, whose `model.type` is
+ * `BPE` and whose pre-tokenizer is `ByteLevel` -- encoded through this app's own
+ * `@huggingface/transformers`:
+ *
+ *     "x" repeated 20x          20 units   20 bytes    4 tokens
+ *     U+1F389 repeated 20x      40 units   80 bytes   60 tokens  <- over the units
+ *     U+65E5 repeated 20x       20 units   60 bytes   21 tokens  <- over the units
+ *     one Devanagari word        6 units   18 bytes    7 tokens  <- over the units
+ *
+ * So the ceiling is the UTF-8 BYTE count, and `bytes` exists for exactly that:
+ * it is the number to carry into a token budget, and `chars` is not.
+ *
+ * On `corpora/fixtures/smoke.jsonl` the two barely differ -- 1,081 units against
+ * 1,093 bytes over the selected segments, and the largest segment is ASCII in
+ * both units -- which is why the budget arithmetic Plan 5 quotes off this corpus
+ * is unaffected. It matters for the re-run the plan schedules against Plan 7's
+ * corpus: that is Indian-context scraped chat, `corpus.ts` already documents
+ * lone surrogates from truncated emoji in it, and at 3 bytes per Devanagari code
+ * unit a character count would understate the ceiling threefold.
  */
 
-/** Character (UTF-16 code unit) counts, word counts, and segments-per-message. */
+/** Character (UTF-16 code unit) counts, UTF-8 byte counts, word counts, and segments-per-message. */
 export interface SizeStats {
   readonly p50: number;
   readonly p95: number;
@@ -72,6 +97,16 @@ export interface SegmentSizeDistribution {
    * ever noticing there was nothing to size against.
    */
   readonly chars: SizeStats | undefined;
+  /**
+   * Segment size in UTF-8 BYTES. `undefined` when `count` is 0.
+   *
+   * The unit a token budget has to be read in, and the reason it is a separate
+   * field rather than a note on `chars`: a byte-level BPE bottoms out at one
+   * token per byte, so THIS is the ceiling on how many tokens a segment can
+   * become, while `chars` -- UTF-16 code units -- is smaller than the byte count
+   * for every non-ASCII character. See the module header for the measurement.
+   */
+  readonly bytes: SizeStats | undefined;
   /** Whitespace-delimited words per segment. `undefined` when `count` is 0. */
   readonly words: SizeStats | undefined;
   /**
@@ -89,6 +124,7 @@ export interface SegmentSizeDistribution {
   /** The raw samples, so a percentile quoted anywhere else can be re-derived. */
   readonly samples: {
     readonly chars: readonly number[];
+    readonly bytes: readonly number[];
     readonly words: readonly number[];
     readonly perItem: readonly number[];
   };
@@ -197,6 +233,7 @@ export function segmentSizeDistribution(
   const priorFindings = options.priorFindings ?? (() => []);
 
   const chars: number[] = [];
+  const bytes: number[] = [];
   const words: number[] = [];
   const perItem: number[] = [];
   let segmentsTotal = 0;
@@ -205,14 +242,19 @@ export function segmentSizeDistribution(
     const segments = segmentText(item.text);
     segmentsTotal += segments.length;
     // `uncertainSegmentStarts` is what turns findings into the segment starts
-    // `selectSegments` demands; handing it finding starts instead selects
-    // nothing and looks exactly like a message with nothing uncertain, which is
-    // why that conversion is never done by hand here.
+    // `selectSegments` demands, and the conversion is never done by hand here
+    // because the natural hand version -- passing finding starts -- is wrong.
+    // core REFUSES that rather than absorbing it: `selectSegments` throws
+    // ("escalation was given uncertain offset N, which starts no segment"), and
+    // its own guard comment says the throw exists precisely because the silent
+    // behaviour, selecting nothing, is indistinguishable from a message with
+    // nothing uncertain. VERIFIED by calling it with a finding start.
     const uncertain = uncertainSegmentStarts(segments, priorFindings(item), uncertainBelow);
     const selected = selectSegments(segments, { hasPredicates, uncertain });
     perItem.push(selected.length);
     for (const segment of selected) {
       chars.push(segment.text.length);
+      bytes.push(utf8Length(segment.text));
       words.push(countWords(segment.text));
     }
   }
@@ -222,21 +264,51 @@ export function segmentSizeDistribution(
     segmentsTotal,
     count: chars.length,
     chars: statsOf(chars),
+    bytes: statsOf(bytes),
     words: statsOf(words),
     perItem: statsOf(perItem),
-    samples: { chars, words, perItem },
+    samples: { chars, bytes, words, perItem },
     escalation: { hasPredicates, uncertainBelow },
   };
+}
+
+// One encoder, reused: `TextEncoder` and not `Buffer.byteLength` so this is the
+// same function in the browser half of this app as in the driver.
+const UTF8 = new TextEncoder();
+
+/**
+ * One segment's size in UTF-8 bytes.
+ *
+ * The unit is the point, not the spelling: see the module header for the
+ * measurement showing that a byte-level BPE can emit more tokens than the
+ * string has UTF-16 code units, so bytes and not `String.length` are what
+ * ceiling a token count.
+ */
+function utf8Length(text: string): number {
+  return UTF8.encode(text).length;
 }
 
 /**
  * Words as whitespace-delimited runs.
  *
  * A proxy for how much a model has to read, never a token count -- see the
- * module header. The `trim` is what keeps an all-whitespace segment (a blank
- * line between two prose runs is one) at 0 rather than 1: `"".split(/\s+/)`
- * returns `[""]`, one element, and counting it would report a word in a segment
- * that has none.
+ * module header.
+ *
+ * The `trim` and the empty guard keep an all-whitespace segment at 0. That
+ * segment is reachable, and by a route an earlier version of this comment named
+ * wrongly: a blank line between two PROSE runs is not its own segment at all --
+ * `segmentText` merges same-kind lines into one run, so "a\n\nb" is one prose
+ * segment. What does stand alone is a blank run between two runs of a DIFFERENT
+ * kind, MEASURED against core's segmenter: "a: 1\n\nb: 2\n" segments as
+ * kv / prose "\n" / kv, and a fenced block followed by a blank line and a kv
+ * run gives code / prose "\n\n" / kv. The escalation policy selects those prose
+ * runs like any other.
+ *
+ * On such a segment the un-guarded count is 2, not 1: MEASURED,
+ * `"\n".split(/\s+/)` is `["", ""]`. (`"".split(/\s+/)` is `[""]`, length 1 --
+ * that is the value the `trim` alone would produce, and it is why both halves
+ * are here.) Either way it would report words in a segment that has none, and
+ * `words.min` would come back as a number no segment's content justifies.
  */
 function countWords(text: string): number {
   const trimmed = text.trim();

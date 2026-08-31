@@ -263,12 +263,30 @@ const PREDICATE_SCOPES = Object.keys({
  * Scopes the policy declares a predicate in that nothing evaluated, with how
  * many predicates each one holds.
  *
- * Shared by the two paths that can leave a scope unevaluated -- a judge that
- * ran and reported evaluating fewer scopes than the policy declares, and an
- * escalation that selected no segment so the judge was never called -- because
- * the ENUMERATION must not differ between them. Each caller writes its own
+ * Shared by the two paths that file `scope-unjudged` -- a judge that ran and
+ * reported evaluating fewer scopes than the policy declares, and an escalation
+ * that selected no segment so the judge was never called -- because the
+ * ENUMERATION must not differ between them. Each caller writes its own
  * `detail`, since the two facts are different sentences and a shared one would
  * have to be vague enough to cover both.
+ *
+ * One notice PER SCOPE, never per predicate: the count of predicates in that
+ * scope rides in `declared` and both callers put it in their sentence. Two
+ * predicates in one scope are one unevaluated scope, and enumerating them
+ * separately would double-count the same skip in a bake-off's degradation
+ * column.
+ *
+ * A THIRD path leaves every declared scope unevaluated and deliberately does
+ * not come through here: the branch below where `remainingBudgetMs` returns
+ * `undefined` skips the judge with the message budget already spent, and files
+ * one `budget-exhausted` notice instead. That is the record naming the CAUSE,
+ * which `scope-unjudged` cannot: an operator who read "scope unjudged" there
+ * would look at the policy's scopes when the fix is the budget. The cost is
+ * that `scope-unjudged` is not by itself the count of messages whose predicates
+ * went unevaluated: anything summing that has to add the `budget-exhausted`
+ * rows too, and Plan 5's own arithmetic says those will not be rare -- at 4.6 s
+ * per call against the fixtures' 5000 ms `latencyBudgetMs`, most escalating
+ * messages run out of budget somewhere.
  */
 function unjudgedScopes(
   ir: PolicyIr,
@@ -462,7 +480,10 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     // other half is `escalate.ts`, and it is applied HERE for the same reason
     // tier 1's kind filter is: engines answer about the segments they are
     // handed, so which segments deserve a model has to be changeable for every
-    // engine at once -- including the Approach-B arm, which is not a judge.
+    // tier-2 JUDGE at once rather than once per judge. It does NOT reach the
+    // Approach-B arm, which is a `Detector` running its own message-level call
+    // and never passes through here at all -- see `escalate.ts` for why that is
+    // intrinsic to B rather than something this line could equalise.
     //
     // `raw` is the right input to the uncertainty half and the only moment it is
     // available: it holds exactly what tiers 0 and 1 found on this message, and

@@ -187,6 +187,31 @@ describe("uncertainSegmentStarts", () => {
     expect(uncertainSegmentStarts(segs, [straddles])).toEqual([segs[0]!.start, segs[1]!.start]);
   });
 
+  it("does not flag a segment a finding ends exactly at the START of", () => {
+    // The RIGHT edge of the half-open overlap test, which was the unasserted
+    // one: the mirror mutation on the left (`f.start < segment.end` relaxed to
+    // `<=`) was already killed, so this was an asymmetry rather than a
+    // deliberate omission. A finding covering [2, 10) of a segment running
+    // [0, 10) reaches the next segment's first offset without covering any of
+    // it, and `f.end > segment.start` relaxed to `>=` would escalate that
+    // segment too.
+    //
+    // Not a hypothetical shape: tier 0's regex rules scan the whole message
+    // rather than a segment and segment boundaries are newlines, so a finding
+    // that stops on a boundary is ordinary. At the 4.6 s per tier-2 call this
+    // plan measured, one unneeded segment spends 92% of the fixtures' 5000 ms
+    // `latencyBudgetMs`.
+    const ends_on_boundary = finding({ start: 2, end: segs[1]!.start, confidence: 0.5 });
+    expect(uncertainSegmentStarts(segs, [ends_on_boundary])).toEqual([segs[0]!.start]);
+  });
+
+  it("does not flag a segment a finding starts exactly at the END of", () => {
+    // The left edge, stated beside the right one so the two are read together
+    // rather than one of them being covered by accident.
+    const starts_on_boundary = finding({ start: segs[0]!.end, end: segs[1]!.end, confidence: 0.5 });
+    expect(uncertainSegmentStarts(segs, [starts_on_boundary])).toEqual([segs[1]!.start]);
+  });
+
   it("names each segment once however many uncertain findings it holds", () => {
     const priors = [
       finding({ start: 0, end: 2, confidence: 0.4 }),

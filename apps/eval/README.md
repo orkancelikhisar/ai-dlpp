@@ -711,7 +711,7 @@ sized from its answer rather than from a guess. `segmentSizeDistribution(items)`
 segments every corpus item with core's `segmentText`, keeps only the segments
 spec 4.1's escalation policy would select — `selectSegments` itself, imported
 from `@sih/core`, never a second copy of the rule — and reports characters,
-words and selected-segments-per-message.
+UTF-8 bytes, words and selected-segments-per-message.
 
 Measured over `corpora/fixtures/smoke.jsonl` with `hasPredicates: true` and no
 prior findings, which is the input a bake-off arm runs under:
@@ -719,7 +719,8 @@ prior findings, which is the input a bake-off arm runs under:
 | | value |
 |---|---|
 | items / segments produced / segments selected | 13 / 19 / 17 |
-| characters per segment | p50 **62**, p95 153, max 153, min 22 |
+| characters per segment (UTF-16 code units) | p50 **62**, p95 153, max 153, min 22 |
+| bytes per segment (UTF-8) | p50 **65**, p95 153, max 153, min 22 |
 | words per segment | p50 **9**, p95 25, max 25, min 3 |
 | selected segments per message | p50 **1**, p95 2, max 2 |
 
@@ -734,11 +735,26 @@ Three things to know before quoting any of these:
   Percentiles here are nearest-rank, so at n = 17 the 95th percentile is
   `ceil(0.95 × 17) = 17` — the last rank. Below n = 20 that is true of every
   sample. Read the p95 as "the largest of 17", never as a tail.
-- **Sizes are characters (UTF-16 code units) and whitespace-delimited words —
-  never tokens.** No model's tokenizer is cached here and a made-up
-  chars-per-token ratio would put a fabricated number under a budget. The one
-  token claim these support needs no ratio: characters bound tokens from above
-  for any byte-level BPE vocabulary.
+- **Sizes are never tokens.** None of the four pinned tier-2 models has a
+  tokenizer cached here, and a made-up chars-per-token ratio would put a
+  fabricated number under a budget.
+
+  The one token claim these support needs no ratio, but it is the BYTE column
+  and not the character one. This section used to say that characters bound
+  tokens from above for any byte-level BPE vocabulary; that is false. A
+  byte-level BPE tokenizes UTF-8 bytes, so its floor is one token per *byte*,
+  while `String.length` counts UTF-16 code units — fewer than the bytes for
+  every non-ASCII character. Measured against a real byte-level BPE cached in
+  this repo (`packages/tier1/models/gliner-pii-edge/tokenizer.json`: `model.type`
+  BPE, pre-tokenizer ByteLevel) through this app's own
+  `@huggingface/transformers`: 20 `x` → 4 tokens, but 20 × U+1F389 → 60 tokens
+  from 40 code units, and 20 CJK characters → 21 tokens from 20 code units. Two
+  segments of this very corpus are already non-ASCII, which is why the two rows
+  above differ at the median.
+
+  On this corpus the difference changes nothing downstream — the largest segment
+  is ASCII, so the ceiling is 153 either way — but carry the **byte** number
+  forward, not the character one.
 - **This is the same pipe-integrity fixture the section above warns about.** It
   sizes a budget for the bake-off that runs on *it*. It does not size one for
   real messages; re-run this against Plan 7's corpus before carrying a number

@@ -103,6 +103,16 @@ const verdictJudge = (verdict: Partial<JudgeVerdict>): SemanticJudge => ({
   judge: async () => ({ findings: [], scopesJudged: ["segment"], ...verdict }),
 });
 
+/**
+ * A stub finding. `confidence` defaults to 0.8, which is EXACTLY
+ * `UNCERTAIN_BELOW`, and escalation's comparison is a strict `<` -- so a
+ * finding built here without an explicit confidence sits on the exclusive
+ * boundary and can never make its segment uncertain. That is load-bearing for
+ * every test whose subject is something other than escalation, and it is a trap
+ * for any test whose subject IS escalation: the tier-1 half of the uncertainty
+ * seam went untested because every stub in this file sat on that boundary.
+ * Pass a confidence when the point is that a segment escalates.
+ */
 const finding = (over: Partial<Finding> & Pick<Finding, "start" | "end" | "entityType">): Finding => ({
   text: "", severity: "high", tier: 1, source: "stub-t1", confidence: 0.8, ...over,
 });
@@ -573,6 +583,85 @@ describe("tier-2 escalation", () => {
     expect(result.degraded).toEqual([]);
   });
 
+  it("escalates on TIER 1's uncertainty and not only tier 0's", async () => {
+    // The other half of what `raw` is for, and the half nothing exercised:
+    // restricting `uncertainSegmentStarts`' input to `raw.filter(f => f.tier === 0)`
+    // survived all five packages. It survived because every tier-1 stub in this
+    // file takes `finding()`'s 0.8 default, which is exactly the exclusive
+    // boundary -- see that helper.
+    //
+    // 0.6 is inside tier 1's REAL range, not a number picked to pass: the
+    // tagger passes the model's own sigmoid score through, filtered at
+    // `Tier1Config.threshold` (default 0.5), so [0.5, 0.8) is a large share of
+    // what tier 1 emits and is the branch's dominant production driver.
+    // `packages/tier1/test/tagger.test.ts` runs the real tagger through this
+    // same seam; here the point is that the ORCHESTRATOR feeds tier 1's output
+    // into the uncertainty input at all.
+    const quote = "Northwind Traders";
+    const at = MIXED.indexOf(quote);
+    const hedged = finding({
+      start: at, end: at + quote.length, text: quote,
+      entityType: "client-name", confidence: 0.6,
+    });
+    const { calls, engine } = spyJudge();
+    // `ir`, with no semanticPredicates: the predicate branch selects nothing,
+    // so tier 1's hedge is the only thing that can put a segment in front of
+    // the judge. Under `irPredicate` prose and kv would both be selected
+    // anyway and the test would pass with the seam severed.
+    const result = await detect({
+      ir, provider: "chatgpt", text: MIXED, config: T2,
+      engines: { tier1: tagger([hedged]), tier2: engine },
+    });
+    expect(calls).toHaveLength(1);
+    // The kv segment ALONE -- the one the tier-1 finding lands in.
+    expect(calls[0]!.segments.map((s) => s.kind)).toEqual(["kv"]);
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("files ONE scope-unjudged notice per scope, carrying the counts it names", async () => {
+    // TWO predicates in ONE scope, because one is the degenerate count: at a
+    // single predicate, per-scope and per-predicate enumeration produce
+    // identical output and the `declares 1` literal is indistinguishable from
+    // the interpolated number. Both mutations survived the whole workspace
+    // while every skip test used a one-predicate policy.
+    //
+    // The numbers are asserted, not just the prose: this detail is the only
+    // record of how many clauses went unevaluated, and a bake-off's per-arm
+    // coverage column is built from it.
+    const { calls, engine } = spyJudge();
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "segment"), predicate("p2", "segment")] }),
+      provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(calls).toEqual([]);
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+    expect(result.degraded[0]!.detail).toContain("declares 2 semantic predicate(s)");
+    // The segment count is this message's, read off the segmenter rather than
+    // typed twice: CODE_ONLY is one fenced block.
+    expect(segmentText(CODE_ONLY)).toHaveLength(1);
+    expect(result.degraded[0]!.detail).toContain("none of this message's 1 segment(s)");
+  });
+
+  it("names the budget and nothing else when the budget went before the judge's turn", async () => {
+    // The THIRD path that leaves every declared predicate unevaluated, and the
+    // one `unjudgedScopes` deliberately does not serve. MIXED escalates, so the
+    // skip here is the spent budget rather than the empty selection -- the
+    // mirror of the CODE_ONLY case above.
+    //
+    // Pinned because it is a decision, not an oversight: `budget-exhausted`
+    // names the CAUSE, and "scope unjudged" would send an operator to the
+    // policy's scopes when the fix is the budget. The consequence a bake-off
+    // has to know is that `scope-unjudged` alone under-counts unevaluated
+    // predicates by exactly this population.
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "segment")], latencyBudgetMs: 10 }),
+      provider: "chatgpt", text: MIXED, config: T2,
+      engines: { tier1: slowTagger(60), tier2: judge() },
+    });
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
+  });
+
   it("reads TierConfig.uncertainBelow instead of the built-in threshold", async () => {
     // THREE thresholds, because a test exercising only the default cannot tell
     // "reads the config" from "hardcodes 0.8" -- the failure this project has
@@ -872,6 +961,19 @@ describe("semantic predicate scope", () => {
     });
     expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
     expect(result.degraded[0]!.detail).toContain("message");
+  });
+
+  it("reports one notice for a scope holding two predicates, and says it is two", async () => {
+    // The post-verdict half of the same enumeration. Every other test on this
+    // path declares one predicate, which is the count at which one-per-scope
+    // and one-per-predicate cannot be told apart.
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "message"), predicate("p2", "message")] }),
+      provider: "chatgpt", text: MESSAGE, config: T2,
+      engines: withT2(judge()),
+    });
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+    expect(result.degraded[0]!.detail).toContain("declares 2 semantic predicate(s)");
   });
 
   it("reports nothing when the judge evaluated every scope the policy declares", async () => {

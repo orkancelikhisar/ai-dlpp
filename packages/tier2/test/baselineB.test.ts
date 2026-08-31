@@ -13,6 +13,7 @@ import {
   type Tier2Completion,
   type Tier2Engine,
 } from "../src/index.js";
+import { runTier0, segmentText } from "@sih/core";
 import type {
   Action,
   DegradedNotice,
@@ -139,6 +140,25 @@ function armEngine(options: Parameters<typeof fakeEngine>[0] = {}) {
 }
 
 /**
+ * The same engine, answering `ms` later.
+ *
+ * A wrapper rather than a `fakeEngine` option: what has to be slow is the awaited
+ * `complete`, and wrapping the shipped double keeps every other behaviour --
+ * the message-order preconditions, the script, the recorded calls -- exactly the
+ * one the rest of the file exercises.
+ */
+function slowEngine(base: Tier2Engine, ms: number): Tier2Engine {
+  return {
+    requestedModelId: base.requestedModelId,
+    complete: async (messages, opts) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return base.complete(messages, opts);
+    },
+    unload: () => base.unload(),
+  };
+}
+
+/**
  * A stock `usage` block, shaped as 0.2.84 declares it.
  *
  * The two numbers the assertions read are the plan's own measurements for an
@@ -228,16 +248,28 @@ describe("createBaselineB: the Detector contract", () => {
   });
 
   it("reports tier2Ms for the model call and leaves tier0Ms at zero when tier 0 did not run", async () => {
+    // `tier2Ms` is asserted against a call that really took time, because every
+    // earlier assertion on it (`>= 0`, `typeof === "number"`) is satisfied by a
+    // hardcoded 0 -- and that mutation survived the suite. apps/eval carries
+    // `timings` verbatim onto every record, and latency is the whole of B's
+    // structural disadvantage, so a confident zero in that column is the
+    // records-state-fact defect in the one place it costs most.
+    const SLOW_MS = 30;
     const detector = createBaselineB({
-      engine: armEngine({ raw: answer() }),
+      engine: slowEngine(armEngine({ raw: answer() }), SLOW_MS),
       config: CONFIG,
       policyText: POLICY,
       budgetMs: 60_000,
     });
+    const wallStarted = performance.now();
     const r = await detector(input());
+    const wall = performance.now() - wallStarted;
     expect(r.timings.tier0Ms).toBe(0);
-    expect(r.timings.tier2Ms).toBeGreaterThanOrEqual(0);
-    expect(typeof r.timings.tier2Ms).toBe("number");
+    // A timer fires late, never early. Half the delay is the floor a wrong
+    // clock cannot reach; the wall clock is the ceiling a window opened too
+    // early (at `messageStarted` rather than at the call) would exceed.
+    expect(r.timings.tier2Ms!).toBeGreaterThan(SLOW_MS / 2);
+    expect(r.timings.tier2Ms!).toBeLessThanOrEqual(wall);
   });
 });
 
@@ -462,6 +494,43 @@ describe("createBaselineB: what the prompt carries", () => {
     expect(prompt).toContain("key: value");
   });
 
+  it("asks for the wire field its grammar masks for, not the judge's", async () => {
+    // The one line of B's prompt that MUST differ from the judge's is excluded
+    // from the cross-arm comparison above by construction: that test filters to
+    // lines starting "- " or two spaces, and the JSON-shape line starts with
+    // "{". Renaming `entityType` to `predicateId` there survived the suite.
+    //
+    // Checked against the SCHEMA, because the schema is what the logit mask is
+    // compiled from. A prompt asking for one key under a grammar that forces
+    // another puts the instruction and the mask in disagreement on every call;
+    // constrained decoding still yields the right key, so it does not fail
+    // loudly -- it just degrades B's answers for a harness reason. That is the
+    // same defect class this task already found one layer down, where
+    // `complete` dropped `opts.responseSchemaJson`.
+    //
+    // The three names are written out HERE rather than read off the schema
+    // alone, so this file is the independent oracle: renaming the field in both
+    // the schema and the prompt at once has to fail here rather than agree with
+    // itself.
+    const engine = armEngine({ raw: answer() });
+    await createBaselineB({ engine, config: CONFIG, policyText: POLICY, budgetMs: 60_000 })(input());
+    const shape = systemTurn(engine.calls[0]!.messages)
+      .split("\n")
+      .find((line) => line.startsWith("{"));
+    expect(shape).toBeDefined();
+    expect(BASELINE_B_SCHEMA.properties.findings.items.required).toEqual([
+      "entityType",
+      "quote",
+      "confidence",
+    ]);
+    for (const field of ["entityType", "quote", "confidence"]) {
+      expect(shape).toContain(`"${field}"`);
+    }
+    // The judge's name for the same slot, which is what a copy-paste from
+    // `judge.ts` would leave here.
+    expect(shape).not.toContain("predicateId");
+  });
+
   it("uses the pinned call recipe, with the schema the only thing changed", async () => {
     const engine = armEngine({ raw: answer() });
     await createBaselineB({ engine, config: CONFIG, policyText: POLICY, budgetMs: 60_000 })(input());
@@ -683,6 +752,31 @@ describe("createBaselineB: parse failures", () => {
     expect(r.findings).toHaveLength(1);
     expect(detector.stats.repairAttempts).toBe(1);
     expect(detector.stats.failedClosed).toBe(0);
+  });
+
+  it("tells the repair call what was wrong with the first answer", async () => {
+    // The compiled arm has exactly this test (`judge.test.ts`); B did not, and
+    // deleting `repairMessage(...)` from the retry -- so the second call
+    // re-sends the byte-identical prompt -- left all 252 tier-2 tests green.
+    // The two tests that touch this path only count calls and stats, and
+    // `fakeEngine` answers from a script whatever the prompt says, so a repair
+    // turn that was never sent is invisible to them.
+    //
+    // Not cosmetic: `Tier2Config.temperature` is pinned to 0 and Plan 5
+    // measured 26/26 byte-identical completions at that setting, so re-sending
+    // an unchanged prompt returns the same unparseable body by construction.
+    // B's "one repair, then fail closed" would collapse to "fail closed", every
+    // malformed answer a repair would have fixed would become a failedClosed
+    // row, and B would lose the head-to-head for a harness reason.
+    const engine = armEngine({ script: [{ raw: "here are the findings:" }, { raw: answer() }] });
+    await createBaselineB({ engine, config: CONFIG, policyText: POLICY, budgetMs: 60_000 })(input());
+    expect(engine.calls).toHaveLength(2);
+    const repair = engine.promptOf(1);
+    expect(repair).not.toBe(engine.promptOf(0));
+    expect(repair).toMatch(/could not be parsed/i);
+    // The original turns are kept and the repair is APPENDED, which is what
+    // makes the second call a continuation rather than a fresh ask.
+    expect(repair.startsWith(engine.promptOf(0))).toBe(true);
   });
 
   it("fails closed after one repair, and says so on the result", async () => {
@@ -928,6 +1022,68 @@ describe("createBaselineBPlusTier0", () => {
     expect(r.findings.map((f) => f.entityType)).toEqual(["in-pan"]);
     expect(r.findings[0]!.tier).toBe(0);
     expect(r.timings.tier0Ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("runs tier 0 over CORE's segmentation, which is what its entropy rules need", async () => {
+    // Every other test in this block uses PAN_MSG, and `segmentText` returns
+    // that as ONE prose segment -- so replacing `segmentText(text)` with a
+    // hand-built whole-message prose segment produced a literally identical
+    // segment list on the only input the suite ever exercised, and survived.
+    //
+    // What that would cost is not cosmetic: `tier0.ts` skips prose in its
+    // entropy scanner (`if (seg.kind === "prose") continue;`), so an arm that
+    // lost core's segmentation would run with every entropy rule disabled. On
+    // this repo's own corpus that is exactly the AWS-key fence Task 9 measured
+    // -- the one segment the compiled pipeline escalates on an entropy finding
+    // at 0.7 -- so the arm would lose recall against the compiled pipeline for
+    // a reason nowhere visible in the numbers.
+    const FENCED = "Here is the deploy config.\n```\nAWS_ACCESS_KEY_ID=AKIAZZ7EXAMPLE4XQ2LN\n```\n";
+    const base = baselineIr();
+    const withEntropy: PolicyIr = {
+      ...base,
+      entityTypes: [
+        ...base.entityTypes,
+        {
+          id: "generic-secret",
+          tier: 0,
+          nlDefinition: "SENTINEL-SECRET-DEFINITION",
+          examples: [],
+          counterExamples: [],
+          severity: "critical",
+          neverPseudonymize: true,
+        },
+      ],
+      rules: [
+        ...base.rules,
+        { id: "entropy-rule", entityType: "generic-secret", entropyThreshold: 4.0, minLength: 20 },
+      ],
+      actions: {
+        ...base.actions,
+        default: { ...base.actions.default, "generic-secret": "redact" },
+      },
+    };
+
+    // The premise, asserted rather than assumed, and it is what makes the
+    // assertion below non-vacuous: this message is TWO segments, and the same
+    // tier 0 over one whole-message PROSE segment finds nothing at all.
+    expect(segmentText(FENCED).map((seg) => seg.kind)).toEqual(["prose", "code"]);
+    expect(
+      runTier0(withEntropy, FENCED, [{ start: 0, end: FENCED.length, kind: "prose", text: FENCED }]),
+    ).toEqual([]);
+
+    const detector = createBaselineBPlusTier0({
+      engine: armEngine({ raw: answer() }),
+      config: CONFIG,
+      policyText: POLICY,
+      budgetMs: 60_000,
+    });
+    const r = await detector(input({ ir: withEntropy, text: FENCED, config: B_PLUS_T0 }));
+    expect(r.findings.map((f) => [f.entityType, f.tier])).toEqual([["generic-secret", 0]]);
+    // And the tier-0 clock really ran. `tier0Ms` hardcoded to 0 survived the
+    // suite because every assertion on it was `>= 0` or `toBe(0)` on the arm
+    // that does not run tier 0. MEASURED over 400 runs of this arm, the
+    // smallest value this field ever took was 0.00125 ms; it was never 0.
+    expect(r.timings.tier0Ms).toBeGreaterThan(0);
   });
 
   it("tells the model WHAT tier 0 found as labels and counts, never as the text it found", async () => {

@@ -68,10 +68,18 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  * - **Scope.** `SemanticPredicate.scope` is where B is stronger, and it should
  *   be said plainly rather than discovered: the judge asks per segment and
  *   reports `scopesJudged: ["segment"]`, so `detect` files a `scope-unjudged`
- *   notice for every message-scoped predicate. B puts the whole message and the
- *   whole policy in one call, so nothing goes unasked and B files no such
- *   notice. A bake-off comparing degradation counts must read that as B having
- *   an easier scope problem, not as B degrading less.
+ *   notice for the message scope whenever the policy declares anything in it.
+ *   B puts the whole message and the whole policy in one call, so nothing goes
+ *   unasked and B files no such notice.
+ *
+ *   ONE notice per unjudged SCOPE, not one per predicate -- MEASURED against
+ *   `detect` with three message-scoped predicates, which produced a single
+ *   notice carrying "declares 3 semantic predicate(s)" in its detail. So a
+ *   bake-off sizing "how much more does the compiled arm degrade" off notice
+ *   CARDINALITY reads at most one row per scope however many clauses went
+ *   unevaluated; the count it wants is in the detail, and `unjudgedScopes` in
+ *   core's orchestrator is where that decision lives. Either way the difference
+ *   is B having an easier scope problem, not B degrading less.
  *
  * ## The concession, stated so it can be judged
  *
@@ -198,10 +206,23 @@ const BASELINE_B_SYSTEM_PROMPT = [
  * by a number B never used.
  *
  * Cumulative across calls to the detector, so one arm accumulates the arm's
- * totals. The invariant a scorer can rely on: `rung1 + rung2` is exactly the
- * number of findings B returned across every message -- rungs are counted where
- * a finding is EMITTED, so a dropped duplicate does not inflate the rung
+ * totals. Never a per-item number -- see `BaselineB.stats`.
+ *
+ * The invariant a scorer can rely on: `rung1 + rung2` is exactly the number of
+ * findings B's span LADDER emitted across every message. Rungs are counted
+ * where a finding is emitted, so a dropped duplicate does not inflate the rung
  * distribution the bake-off reads as evidence strength.
+ *
+ * That total is NOT `DetectionResult.findings.length`, and the gap is measured
+ * rather than argued. `findings` is what `resolveFindings` returned, and it
+ * clusters overlapping spans and keeps one winner per cluster: two overlapping
+ * model quotes are two rung-1 emissions and ONE returned finding (probed:
+ * rung1 2, findings 1). On the B+tier-0 arm `findings` additionally holds rows
+ * the ladder never produced, and the shipped merge test is a case where tier
+ * 0's tighter span wins the cluster outright -- rung1 1, and the single
+ * returned finding is tier 0's. So divide rung counts by `rung1 + rung2`, never
+ * by `findings.length`; used as a consistency check the other way round it
+ * fires on correct runs.
  */
 export interface BaselineStats {
   /** Findings whose quote occurred exactly once in the message, in folded space. */
@@ -348,9 +369,22 @@ export interface BaselineBOptions {
  *
  * The counters are NOT on `DetectionResult`: that is core's type, B must
  * satisfy `Detector` exactly, and an arm that widened the shared result type
- * would be an arm the harness reads through a second code path. Task 11 copies
- * `detector.stats` into the record's `tier2Stats`, which is where a per-item
- * number belongs.
+ * would be an arm the harness reads through a second code path.
+ *
+ * `stats` is CUMULATIVE, and Task 11's `tier2Stats` is a per-ITEM field, so the
+ * two do not connect by assignment. MEASURED by reading `stats.rung1` after
+ * each of four identical items through one detector: 1, 2, 3, 4 -- every
+ * counter is the arm's running total, which is what `BaselineStats` says and
+ * what `accumulates across messages` pins. A per-item row therefore has to be a
+ * DELTA: snapshot before the call, subtract after, the way `tier1Stats` is
+ * built. Stamping the snapshot straight onto the row puts running totals on
+ * every item, which inflates a counter summed over an n-item corpus by about
+ * (n+1)/2 -- and the counters the amended kill rules read (`failedClosed`,
+ * `truncatedResponses`, `deadlineExpiries`) are exactly the ones that would
+ * then report an arm failing on more messages than the corpus contains.
+ * `WebLlmJudge.stats` accumulates identically, so whatever Task 11 does it must
+ * do to both arms; one arm on a delta and the other on a total is a
+ * head-to-head that means nothing.
  */
 export interface BaselineB {
   (input: DetectInput): Promise<DetectionResult>;

@@ -56,7 +56,7 @@ await engine.chat.completions.create({
 - **One engine per arm.** Swapping models in one page leaks VRAM.
 - **`context_window_size: 8192` loads fine** on the shipped lib (1.7 s warm) and prefills a 4,360-token prompt at 452 tok/s. The 4096 default is a WebLLM override and is liftable — raise it for **both** tier 2 and Approach B so B does not fail on long messages for a reason unrelated to its design.
 
-  **Task 9 measured what actually needs the window, and it is not tier 2.** A tier-2 prompt is the fixed 776-character system turn plus the predicates plus one SEGMENT, and over `corpora/fixtures/smoke.jsonl` the largest selected segment is 153 characters — a whole prompt of **1,196 characters**, 1,105 at the median. Even at the pathological ceiling of one token per character that is under 1,200 tokens, so tier 2 fits the unlifted 4096 with 3.4x headroom and never comes near 8192. The window lift is therefore justified by **Approach B alone**, whose prompt carries the whole policy (`policies/p-fin.md` is 5,320 characters) plus the whole message rather than one segment. Keep the lift — the two arms must share a window or the head-to-head measures context rather than method, which is this bullet's original argument and is unaffected — but stop attributing the requirement to tier 2, and note that the load-only 8192 probe this plan still owes is a probe for B's benefit.
+  **Task 9 measured what actually needs the window, and it is not tier 2.** A tier-2 prompt is the fixed 776-character system turn plus the predicates plus one SEGMENT, and over `corpora/fixtures/smoke.jsonl` the largest selected segment is 153 characters — a whole prompt of **1,196 characters**, 1,105 at the median. The ceiling on tokens is the UTF-8 BYTE count, not the character count — a byte-level BPE tokenizes bytes, and measured against a real one, 20 U+1F389 are 40 UTF-16 code units and 60 tokens. Here the two barely differ: that prompt's segment and the fixed system turn are both ASCII (measured: the largest selected segment is 153 code units and 153 bytes; `judge.ts` contains no non-ASCII character), and only the interpolated predicate text could add any, at most a byte or two per em dash. So the byte ceiling is ~1,196 and tier 2 fits the unlifted 4096 with 3.4x headroom, nowhere near 8192. Re-derive it in BYTES on any other corpus. The window lift is therefore justified by **Approach B alone**, whose prompt carries the whole policy (`policies/p-fin.md` is 5,320 characters) plus the whole message rather than one segment. Keep the lift — the two arms must share a window or the head-to-head measures context rather than method, which is this bullet's original argument and is unaffected — but stop attributing the requirement to tier 2, and note that the load-only 8192 probe this plan still owes is a probe for B's benefit.
 
   **But that was measured on `Qwen3.5-2B` ONLY.** The other three arms each ship their own `overrides.context_window_size: 4096` and are **unmeasured at 8192**. Before Task 12 commits four arms to it, probe each remaining model at 8192 and record what happens — a model that refuses the larger window, or that loads but thrashes, is a finding, and discovering it as three failed arms mid-bake-off would waste a full run. If a model cannot take 8192, the honest options are to run that arm at 4096 and **report the asymmetry**, or to drop the arm; silently mixing window sizes across arms would make the comparison measure context rather than method.
 
@@ -104,7 +104,7 @@ The spec's original rules were replaced (see the amended spec §4.2) because bot
 
   Two consequences. First, this validates Task 2's decision to distinguish `truncated` from `malformed` as separate parse outcomes — it is not a hypothetical distinction. Second, **those calls ran at `maxTokens: 600`, and this plan pins the default at 512** — tighter than a budget already observed truncating. So an arm can be killed by the token budget rather than by capability, which is precisely the failure the amended kill rules exist to prevent. Before the bake-off, either raise the default with a measurement behind the new number, or **count truncations per arm and report them beside the gate verdict** so a budget-killed arm is distinguishable from an incapable one. Do not leave it implicit.
 
-  **Task 9 settled which of those two to take: take the second, and leave 512 alone.** A judge's answer is bounded by the passage it is judging, because every `quote` must be copied from it. Measured over `corpora/fixtures/smoke.jsonl`, the largest segment the escalation policy selects is **153 characters**. A maximal honest answer for that segment — one finding quoting the entire passage — is `{"findings":[{"predicateId":"client-relationship-disclosure","quote":<153 chars>,"confidence":0.85}]}`, about **243 characters**. That is ~61 tokens at a conventional English ratio and **243 tokens even at the absolute ceiling of one token per character**, which is the most any byte-level BPE vocabulary can emit. So 512 has 2x headroom over this corpus's worst case under an assumption nobody has to accept, and 8x under the ordinary one: on the corpus that exists, **512 cannot be what kills an arm.**
+  **Task 9 settled which of those two to take: take the second, and leave 512 alone.** A judge's answer is bounded by the passage it is judging, because every `quote` must be copied from it. Measured over `corpora/fixtures/smoke.jsonl`, the largest segment the escalation policy selects is **153 characters**. A maximal honest answer for that segment — one finding quoting the entire passage — is `{"findings":[{"predicateId":"client-relationship-disclosure","quote":<153 chars>,"confidence":0.85}]}`, about **243 characters**. That is ~61 tokens at a conventional English ratio and **243 tokens at the absolute ceiling of one token per UTF-8 BYTE**, which is the most a byte-level BPE vocabulary can emit — 243 bytes here because that segment is ASCII. (One token per CHARACTER is not a ceiling: measured against a real byte-level BPE, 20 U+1F389 are 40 UTF-16 code units and 60 tokens. On a corpus with non-ASCII in its longest segments, redo this in bytes: `segmentSizeDistribution` reports a `bytes` row for that.) So 512 has 2x headroom over this corpus's worst case under an assumption nobody has to accept, and 8x under the ordinary one: on the corpus that exists, **512 cannot be what kills an arm.**
 
   Two things that does NOT say. It does not vindicate 512 for Plan 7's corpus, whose segments are not yet measured — re-run Task 9's `segmentSizeDistribution` against it and redo this arithmetic, which is one line. And it does not make the observed truncations harmless: they were a duplicate loop (`"quote": "Halcyon"` about nineteen times) that satisfied the grammar the whole way, and **raising the cap does not fix a loop, it buys a longer one** while spending more wall clock per call against gates that are about wall clock. Report `truncatedResponses` per arm.
 - **No model achieves p95 ≤ 3 s.** A tier-2-shaped call is 4.6 s on the cheapest model; an Approach-B call is 7.5 s, whose TTFT alone (2.8-3.9 s) exceeds the budget before one token is emitted.
@@ -1413,7 +1413,7 @@ export interface BaselineB {
 }
 ```
 
-The test's `r.baselineStats` therefore becomes `detector.stats` — read it off the detector, not off the result. The harness copies it into the record's `tier2Stats` in Task 11, which is where a per-item number belongs.
+The test's `r.baselineStats` therefore becomes `detector.stats` — read it off the detector, not off the result. **`stats` is CUMULATIVE across every message the arm has processed** (measured: `rung1` after each of four identical items is 1, 2, 3, 4), while the record's `tier2Stats` is a per-ITEM field. So Task 11 must record a DELTA — snapshot before the call, subtract after — exactly as `tier1Stats` is built. Copying the snapshot straight onto the row puts running totals on every item, inflating any counter summed over an n-item corpus by about (n+1)/2, and the counters the amended kill rules read (`failedClosed`, `truncatedResponses`, `deadlineExpiries`) are precisely the ones that would then report an arm failing on more messages than the corpus contains. `WebLlmJudge.stats` accumulates the same way, so both arms must be handled identically or the head-to-head compares a delta against a total.
 
 - [ ] **Step 4: Also build the mandatory B + tier 0 arm**
 
@@ -1645,19 +1645,27 @@ nor the maximum size.
 
 4. **`maxTokens: 512` is not what will kill an arm on this corpus, and raising it is the wrong
    response to the observed truncations.** See the amended kill-rules section: the largest honest
-   answer a 153-character passage can require is ~243 characters, under 512 tokens even at one token
-   per character.
+   answer a 153-character passage can require is ~243 characters — and, since that passage is ASCII,
+   243 UTF-8 bytes, which is under 512 tokens at the true one-token-per-byte ceiling.
 
 5. **The 8192 context window is not required by tier 2.** The largest tier-2 prompt this corpus can
-   produce is 1,196 characters. See the pinned-recipe section: the lift is Approach B's requirement,
-   and should be attributed to it.
+   produce is 1,196 characters, and about as many UTF-8 bytes: its segment is ASCII (measured, 153
+   code units and 153 bytes) and so is the fixed system turn, leaving only the predicate text able
+   to add any. Bytes, not characters, are the unit that ceilings a token count — see the last bullet
+   below. The lift is Approach B's requirement, and should be attributed to it.
 
 *Established, and it is the uncomfortable one:*
 
 6. **Tier 2 does not fit `ir.latencyBudgetMs` on this corpus, and no arm choice changes that.**
-   Every IR fixture here carries `latencyBudgetMs: 5000`. At p95 2 segments per message (max 3) and
-   this plan's own 4.6 s per call on the CHEAPEST pinned arm, an escalating message costs 9.2 s at
-   p95 and 13.8 s at the maximum. `detect` will file `budget-exhausted` or leave scopes unjudged on
+   Every IR fixture here carries `latencyBudgetMs: 5000`. The segments-per-message figure depends on
+   whether tier 0's own findings supply the uncertainty, and the two conditions must not be mixed —
+   an earlier version of this bullet paired a p95 from one with a maximum from the other, which no
+   single distribution can produce, since at n = 13 the nearest-rank p95 IS the maximum
+   (`ceil(0.95 × 13) = 13`). RE-MEASURED, both conditions: with tier-0 priors, the realistic one
+   because tier 0 runs first, **p50 1, p95 3, max 3**; with no priors at all, **p50 1, p95 2,
+   max 2**. At this plan's own 4.6 s per call on the CHEAPEST pinned arm, an escalating message
+   therefore costs **13.8 s at p95 under priors** (2.8x the budget) and 9.2 s at p95 without them
+   (1.8x). `detect` will file `budget-exhausted` or leave scopes unjudged on
    most such messages. Task 12 must count those notices per arm and report them beside the gate
    verdict; it must not turn them into a kill rule, which would kill all four arms for a reason that
    is not about capability — the exact failure the amended rules were written to avoid.
@@ -1671,10 +1679,18 @@ nor the maximum size.
   budget for the bake-off that runs on it; **it does not size a budget for real messages**, and
   Plan 7's corpus must be re-measured with the same function before any of these numbers is carried
   forward.
-- **Sizes are characters and words, never tokens.** No pinned arm's tokenizer is cached on this
-  machine and inventing a chars-per-token ratio would put a fabricated number under the budget. The
-  one token claim these numbers do support needs no ratio: characters bound tokens from above for
-  any byte-level BPE vocabulary, so 1,196 characters is a real ceiling of 1,196 tokens.
+- **Sizes are characters, UTF-8 bytes and words, never tokens.** No pinned arm's tokenizer is cached
+  on this machine and inventing a chars-per-token ratio would put a fabricated number under the
+  budget. The one token claim these numbers do support needs no ratio, and it is the BYTE column:
+  a byte-level BPE tokenizes UTF-8 bytes, so its floor is one token per byte. CHARACTERS are not a
+  ceiling — an earlier version of this bullet said they were. MEASURED against a real byte-level
+  BPE cached in this repo (`packages/tier1/models/gliner-pii-edge/tokenizer.json`, `model.type` BPE,
+  pre-tokenizer ByteLevel) through `@huggingface/transformers`: 20 `x` give 4 tokens, but 20 U+1F389
+  give 60 tokens from 40 UTF-16 code units, and 20 CJK characters give 21 tokens from 20 code units.
+  Two selected segments of this very corpus are non-ASCII, so its byte median is 65 against a
+  character median of 62. Nothing downstream moves here, because the LARGEST segment is ASCII — but
+  on Plan 7's corpus redo the arithmetic in bytes, which `segmentSizeDistribution` now reports
+  directly.
 
 ---
 
@@ -1956,15 +1972,19 @@ x ~10 s per call        -- Plan 5 measured 4.6 s on Qwen3.5-2B (33-46 tok/s deco
 The 120,000 in the Step-1 snippet is therefore right, and now has a derivation behind it. Two
 honesty notes on the inputs: the 4.6 s was measured at a prompt size nobody recorded, while these
 prompts are ~1.2 kB, so the per-call term is if anything generous — which is the safe direction for
-a wedge catcher; and 3 segments is the maximum over 13 items, not a tail.
+a wedge catcher; and 3 segments is both the maximum and the nearest-rank p95 over 13 items under
+tier-0 priors, not a tail — at n = 13 those are the same rank.
 
 **What this ceiling does NOT do is make tier 2 fit `ir.latencyBudgetMs`, and the bake-off must
 record that rather than gate on it.** The orchestrator arms ONE deadline over the whole `judge()`
 call from what is left of the message budget, and a judge spends one engine call per selected
-segment. Every IR fixture in this repo carries `latencyBudgetMs: 5000`. At Task 9's measured p95 of
-2 segments per message (max 3) and the plan's own 4.6 s per call on the CHEAPEST arm, one message
-costs 9.2 s at p95 and 13.8 s at the maximum — 1.8x to 2.8x the entire budget. So on this corpus
-tier 2 expires mid-run on most messages that escalate more than one segment, whatever arm wins.
+segment. Every IR fixture in this repo carries `latencyBudgetMs: 5000`. Task 9's
+segments-per-message figure has two conditions and they must not be mixed: with tier-0 priors (the
+realistic one, since tier 0 runs before tier 2) p50 1, p95 3, max 3; with no priors p50 1, p95 2,
+max 2. At n = 13 the nearest-rank p95 is the maximum, so no single distribution has p95 2 and max 3.
+At the plan's own 4.6 s per call on the CHEAPEST arm, one message costs **13.8 s at p95 under
+priors — 2.8x the entire budget** — and 9.2 s at p95 without them. So on this corpus tier 2 expires
+mid-run on most messages that escalate more than one segment, whatever arm wins.
 Derive no kill rule from that: it would kill all four arms for a reason that is not about capability,
 which is exactly why the spec's original rules were replaced. Count the `budget-exhausted` and
 `scope-unjudged` notices per arm and report them beside the gate verdict, the same way the token

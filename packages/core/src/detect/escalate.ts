@@ -25,10 +25,25 @@ import type { Finding } from "./types.js";
  * The alternative was leaving the filter inside `WebLlmJudge`. It is the wrong
  * place for the reason the orchestrator already gives for tier 1's identical
  * filter: engines receive segments and answer about them, so which segments
- * deserve a model is a policy-shaped decision that has to be changeable for
- * every engine at once -- including the Approach-B arm, which is not a judge at
- * all. A judge that filtered its own input would also make the bake-off measure
- * a different escalation policy per arm.
+ * deserve a model is a policy-shaped decision, and holding it here is what lets
+ * it change for every tier-2 JUDGE at once rather than once per judge. Two
+ * judge arms that each filtered their own input would make the bake-off measure
+ * a different escalation policy per arm while attributing the difference to
+ * their models.
+ *
+ * ## What this module does NOT govern
+ *
+ * The Approach-B arm, stated because an earlier version of the paragraph above
+ * claimed it did and that is false: `createBaselineB` returns a `Detector`, not
+ * a `SemanticJudge`. It never reaches `detect`'s `engines.tier2`, is never
+ * handed an escalated segment list, and imports nothing from this file --
+ * VERIFIED by grep over `packages/tier2/src/baselineB.ts`, which names neither
+ * `selectSegments` nor `uncertainSegmentStarts`. B makes one call per MESSAGE
+ * by design, which its own docblock lists as intrinsic to "simply prompting",
+ * so B is shown the whole message where the compiled arm is shown a selection
+ * of it. That difference belongs to the method under test; it is not something
+ * this module can equalise, and a write-up comparing the two arms has to say so
+ * rather than treating both as governed by one escalation policy.
  *
  * ## What escalation costs and what it buys
  *
@@ -45,9 +60,13 @@ import type { Finding } from "./types.js";
  * A prior finding at or above this confidence is treated as settled; below it,
  * its segment is escalated.
  *
- * 0.8 is chosen against the values this pipeline actually emits, all of which
- * are read off a real `runTier0` run in `test/detect/escalate.test.ts` rather
- * than quoted here:
+ * 0.8 is chosen against the values this pipeline actually emits. The two TIER-0
+ * clusters below are read off a real `runTier0` run in
+ * `test/detect/escalate.test.ts` rather than quoted here. The tier-1 bullet is
+ * NOT, and cannot be: `runTier0` cannot emit a tier-1 confidence, no tier-1
+ * model runs in core's suite, and core cannot import `@sih/tier1` at all
+ * (tier1 depends on core, so the edge only goes one way). Its provenance is
+ * given on its own bullet.
  *
  * - tier 0 regex rules sit at 0.9, rising to 0.95 with a context boost and
  *   capped at 0.99 (`tier0.ts`). They have cleared a structural validator where
@@ -56,8 +75,17 @@ import type { Finding } from "./types.js";
  *   words: entropy knows a string looks random, never that it is a secret, and
  *   "raising the confidence is tier 1-2's job (or the user's)". That is exactly
  *   this branch's population.
- * - tier 1 passes the model's own sigmoid score through, filtered at
- *   `Tier1Config.threshold` (default 0.5), so its live range is [0.5, 1).
+ * - tier 1 passes the model's own sigmoid score through (`tier1/src/tagger.ts`
+ *   sets `confidence: span.score`; `decode.ts` sigmoids the logit and skips a
+ *   span scoring below the threshold), filtered at `Tier1Config.threshold`,
+ *   whose shipped default is 0.5 -- so its live range is [0.5, 1) and much of
+ *   it falls on the uncertain side of this constant. READ OFF TIER 1'S SOURCE,
+ *   not off any run this package can perform. The coupling is asserted from the
+ *   side that CAN run it: `packages/tier1/test/tagger.test.ts` drives a real
+ *   `GlinerSpanTagger` at the default threshold, emits a sub-0.8 finding, and
+ *   escalates a segment through this function -- so a default raised above 0.8,
+ *   which would put tier 1's whole live range on the certain side and switch
+ *   tier-1-driven escalation off, fails there rather than nowhere.
  *
  * 0.8 is the midpoint of tier 0's two clusters, which is the point: neither of
  * them is near the boundary, so a later tweak to `CONTEXT_BONUS` or

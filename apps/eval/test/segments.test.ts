@@ -82,6 +82,20 @@ describe("percentile", () => {
     expect(percentile(seventeen, 50)).toBe(9);
   });
 
+  it("leaves the caller's array in the order it was given", () => {
+    // The docstring promises it ("the array is not mutated") and the inline
+    // comment gives the mechanism ("`[...]` because sorting the caller's array
+    // in place would reorder `samples.chars` under whoever holds it"), and
+    // nothing tested either: dropping the copy survived the suite, because
+    // every test that read a sample either sorted a copy first or compared an
+    // already-sorted array. This is exported API Task 12 will call on its own
+    // arrays, and an in-place sort there is a silent side effect on data the
+    // caller still holds.
+    const caller = [30, 10, 20];
+    expect(percentile(caller, 50)).toBe(20);
+    expect(caller).toEqual([30, 10, 20]);
+  });
+
   it("refuses a sample or a percent it cannot answer for", () => {
     expect(() => percentile([], 50)).toThrow(/empty/);
     // Rank 0 does not exist under nearest-rank, and `min` is its own field.
@@ -135,6 +149,19 @@ describe("segmentSizeDistribution", () => {
     // reported in any other could not be compared against them.
     const d = segmentSizeDistribution([item("astral", "ab\u{1F680}")]);
     expect(d.chars).toEqual({ p50: 4, p95: 4, max: 4, min: 4 });
+  });
+
+  it("counts UTF-8 bytes too, because bytes and not code units ceiling a token count", () => {
+    // The same string in the other unit: "a" and "b" are one byte each and the
+    // rocket is FOUR, so 4 code units are 6 bytes. That gap is the whole reason
+    // this field exists -- a byte-level BPE bottoms out at one token per byte,
+    // so this string can become up to 6 tokens, more than the "character" count
+    // an earlier version of the module header called a ceiling. Asserted on a
+    // non-ASCII string on purpose: on ASCII the two fields are equal and a
+    // `bytes` that just copied `chars` would pass.
+    const d = segmentSizeDistribution([item("astral", "ab\u{1F680}")]);
+    expect(d.bytes).toEqual({ p50: 6, p95: 6, max: 6, min: 6 });
+    expect(d.samples.bytes).toEqual([6]);
   });
 
   it("excludes code, which the escalation policy never selects on predicates alone", () => {
@@ -208,6 +235,75 @@ describe("segmentSizeDistribution", () => {
     });
   });
 
+  it("reads a real p95 once the sample is big enough for one, not the maximum", () => {
+    // Every other sample in this file, and in the corpus block below, has
+    // n <= 18 -- and under nearest-rank every n <= 20 puts rank(95) at the LAST
+    // rank, so p95 and max are the same number. `percentile(values, 95)`
+    // replaced by `percentile(values, 100)` or by 96 survived the whole suite
+    // for exactly that reason, and so did p50 moved to 49.
+    //
+    // n = 100 rather than the first size at which p95 clears the maximum, and
+    // that is the whole subtlety: `ceil(percent * n / 100)` collapses NEIGHBOURING
+    // percents onto one rank for most n. At n = 25, p95 and p96 are both rank 24
+    // and p49 and p50 are both rank 13 -- measured, both of those mutants
+    // survived a 25-item version of this test. Only at n = 100 does every
+    // percent get its own rank.
+    //
+    // 100 items, one prose segment each, k = 1..100 single-character words, so a
+    // segment of k words is 2k - 1 characters. Hand-computed at n = 100:
+    //   p50 -> ceil(50 * 100 / 100) = rank 50  -> k 50  ->  99 chars /  50 words
+    //   p95 -> ceil(95 * 100 / 100) = rank 95  -> k 95  -> 189 chars /  95 words
+    //   max ->                        rank 100 -> k 100 -> 199 chars / 100 words
+    // p95 is neither the maximum (199) nor p96's answer (191), and p50 is
+    // neither p49's (97) nor p51's (101).
+    const d = segmentSizeDistribution(
+      Array.from({ length: 100 }, (_, i) => item(`k${i + 1}`, words(i + 1))),
+    );
+    expect(d.count).toBe(100);
+    expect(d.chars).toEqual({ p50: 99, p95: 189, max: 199, min: 1 });
+    expect(d.words).toEqual({ p50: 50, p95: 95, max: 100, min: 1 });
+  });
+
+  it("hands back the samples in encounter order rather than sorted", () => {
+    // `samples` exists so a percentile quoted somewhere else can be re-derived,
+    // which needs the raw values. Pre-sorting them survived the suite from one
+    // side and sorting the caller's array inside `percentile` survived from the
+    // other -- both are the same defect, and both are visible only if some test
+    // reads a sample without sorting it first. This is that test.
+    const d = segmentSizeDistribution([
+      item("a", words(15)),
+      item("b", words(5)),
+      item("c", words(20)),
+    ]);
+    expect(d.samples.chars).toEqual([29, 9, 39]);
+    expect(d.samples.words).toEqual([15, 5, 20]);
+    expect(d.samples.bytes).toEqual([29, 9, 39]);
+  });
+
+  it("reports 0 words for an all-whitespace segment core's segmenter really produces", () => {
+    // The guard `countWords` documents, exercised. Deleting `trimmed === \"\" ? 0 :`
+    // survived the whole suite because no test ever fed it such a segment.
+    //
+    // Reachable, but not by the route the guard's comment used to name: a blank
+    // line between two PROSE runs is merged into the surrounding run, so
+    // \"a\\n\\nb\" is one segment. What stands alone is a blank run between two
+    // runs of DIFFERENT kinds. MEASURED against core's segmenter, the text below
+    // is code / prose \"\\n\\n\" / kv.
+    const d = segmentSizeDistribution([
+      item("blank-run", "```\nlet x = 1\n```\n\n\nclient: Northwind Traders"),
+    ]);
+    expect(d.segmentsTotal).toBe(3);
+    // The fence is dropped by the predicate branch; the blank prose run and the
+    // kv run are both selected.
+    expect(d.count).toBe(2);
+    expect(d.samples.chars).toEqual([2, 25]);
+    // 0, not 1 and not 2: `\"\\n\\n\".split(/\\s+/)` is `[\"\", \"\"]`, so without the
+    // guard this segment reports two words it does not have and drags
+    // `words.min` off the floor.
+    expect(d.samples.words).toEqual([0, 3]);
+    expect(d.words).toEqual({ p50: 0, p95: 3, max: 3, min: 0 });
+  });
+
   it("is empty-safe rather than dividing by zero", () => {
     const d = segmentSizeDistribution([]);
     expect(d.count).toBe(0);
@@ -250,6 +346,25 @@ describe("the measured distribution over corpora/fixtures/smoke.jsonl", () => {
     // "the largest thing in a 17-segment sample", never as a tail.
     expect(d.chars).toEqual({ p50: 62, p95: 153, max: 153, min: 22 });
     expect(d.words).toEqual({ p50: 9, p95: 25, max: 25, min: 3 });
+  });
+
+  it("is longer in BYTES than in code units on two of its segments, and pins both", () => {
+    // This corpus already violates the rule the module header used to state.
+    // Two selected segments carry non-ASCII -- `pos-emoji-before-pan` has
+    // U+1F389 U+1F389 U+2714 and `neg-emoji-clean` has U+1F680 U+1F680 U+2014 --
+    // so the byte sample is the character sample above with 62 -> 68 and
+    // 72 -> 78 and nothing else moved. Derived by hand from those two segments
+    // rather than read off the module.
+    const d = segmentSizeDistribution(items);
+    expect([...d.samples.bytes].sort((a, b) => a - b)).toEqual([
+      22, 28, 36, 39, 39, 45, 48, 49, 65, 68, 70, 71, 74, 78, 78, 130, 153,
+    ]);
+    // The median moves 62 -> 65 and the maximum does not move at all, because
+    // the largest segment here happens to be ASCII. That is why the budget
+    // arithmetic Plan 5 quotes off THIS corpus survives the correction -- and
+    // why the same arithmetic on a corpus whose longest segments are not ASCII
+    // would not.
+    expect(d.bytes).toEqual({ p50: 65, p95: 153, max: 153, min: 22 });
   });
 
   it("puts at most two judged segments in one message", () => {
