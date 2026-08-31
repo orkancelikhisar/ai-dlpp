@@ -1224,6 +1224,68 @@ git add -A && git commit -m "feat(tier2): escalation policy so a judge is spent 
 
 ---
 
+**Four things Task 7 established, two of them corrections to this plan.**
+
+*Corrections:*
+
+1. **`packages/tier2/src/escalate.ts` cannot hold the policy.** `detect` is the
+   caller; `packages/core/package.json` declares no dependency on `@sih/tier2`
+   while `@sih/tier2` depends on core, so importing the escalation policy from
+   the tier it gates is a cycle. It lives in
+   `packages/core/src/detect/escalate.ts`; `packages/tier2/src/escalate.ts` is a
+   re-export, the way `@sih/compiler` re-exports `shadowIdFor`, and
+   `packages/tier2/test/escalate.test.ts` asserts the two are the same function
+   objects so a second copy cannot be introduced quietly.
+
+2. **The Step-1 snippet's code test cannot fail for the right reason.** Its
+   fixture holds only prose and code, and over that fixture
+   `kind === "prose"` and `kind !== "code"` select exactly the same segments —
+   so it does not pin which rule is implemented. A kv segment is what makes the
+   two distinguishable, and kv is IN: spec 4.1 writes "prose segments", but tier
+   1 is already handed prose and kv by the same orchestrator, and excluding kv
+   would leave a message that is entirely a config paste (`client: Northwind
+   Traders`) with no tier-2 coverage while tier 1 read every line of it.
+
+*Established:*
+
+3. **`uncertain` has a definition and a producer.**
+   `uncertainSegmentStarts(segments, priorFindings, below)` reads
+   `Finding.confidence` off what tiers 0 and 1 found — the two tiers spec 4.1
+   names — and a finding marks every segment it OVERLAPS, since tier 0's regex
+   rules scan the whole message and a match can straddle a boundary. The
+   threshold is `TierConfig.uncertainBelow`, default `UNCERTAIN_BELOW` = 0.8:
+   the midpoint of tier 0's two clusters (entropy fixed at 0.7, regex 0.9 rising
+   to 0.95 boosted and capped at 0.99), so neither sits on the boundary. It is
+   an experiment variable, not policy, which is why it is on `TierConfig` beside
+   `t2Model` rather than in the IR.
+
+   What the branch does NOT buy, so Task 12 does not measure it expecting more:
+   tier 2 cannot resolve a tier-0/1 finding's uncertainty. `WebLlmJudge` emits
+   only `pred:` shadow entityTypes and no channel exists for one tier to revise
+   another's confidence, so escalating a segment because tier 0 hedged gets that
+   segment's PREDICATES judged, not that secret re-scored. With no predicates
+   declared the judge returns an empty verdict before touching the engine, so an
+   uncertainty-only escalation currently costs nothing and yields nothing.
+
+4. **A fully-skipped message is a degradation only when the policy asked for
+   something, and needs no new reason word.** With no predicates and nothing
+   uncertain, nothing is filed: `WebLlmJudge.judge` returns
+   `{findings: [], scopesJudged: []}` on an IR with no `semanticPredicates`
+   before it touches the engine, so calling it would have produced the same
+   `findings` and the same `degraded`, and filing a notice would report a
+   degradation the pipeline does not report when the judge really runs.
+   `timings.tier2Ms` — set on the call path, unset on this one — is what
+   answers "did tier 2 run?". With predicates declared and no segment selected
+   (a message that is entirely a code fence) the run IS weaker and files
+   `scope-unjudged`, which already means "the policy declares predicates in a
+   scope nothing evaluated". The escalation branch is tested BEFORE the budget
+   branch, because `budget-exhausted`'s detail asserts a cause ("already spent …
+   so the judge was not called") that would be wrong here: no budget produces a
+   call on a message with no escalatable segment, and an operator who raised
+   `ir.latencyBudgetMs` in response would see no change.
+
+---
+
 ### Task 8: Approach B — the baseline that makes the thesis falsifiable
 
 **Files:**
