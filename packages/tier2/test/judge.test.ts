@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Finding, Segment } from "@sih/core";
 import { detect, loadPolicyIr } from "@sih/core";
 import { DeadlineExpired, MINIMUM_CANDIDATE_WORDS } from "../src/index.js";
@@ -57,7 +57,10 @@ describe("WebLlmJudge", () => {
     expect(judge.stats.unknownPredicates).toBe(1);
   });
 
-  it("drops a finding whose quote does not resolve, and counts it", async () => {
+  it("drops a quote that is nowhere in the segment, rather than placing it somewhere", async () => {
+    // A model that paraphrases instead of quoting. The alternative to dropping
+    // it is a span chosen by something other than the model's own evidence,
+    // which slices cleanly and so passes every check core makes.
     const judge = new WebLlmJudge(
       fakeEngine({ findings: [hit("text that is not in the message")] }),
       BUDGET,
@@ -137,6 +140,12 @@ describe("WebLlmJudge", () => {
     const found = await judge.judge(whole(), predicateIr({ predicates: [] }), []);
     expect(found).toEqual([]);
     expect(engine.calls).toHaveLength(0);
+    // And it counts NOTHING, rather than filing the segment as skipped. A
+    // policy with no semantic clauses is not a run a stop cut short, and the
+    // stats header's segment invariant is scoped to calls that reached the
+    // loop precisely so this stays distinguishable.
+    expect(judge.stats.segmentsSkipped).toBe(0);
+    expect(judge.stats.segmentsJudged).toBe(0);
   });
 
   it("fails closed on an unparseable response after exactly one repair", async () => {
@@ -214,20 +223,32 @@ describe("WebLlmJudge", () => {
     expect(judge.stats.rung1).toBe(2);
   });
 
-  it("does not repair an ABORTED call, and does not file it as truncation", async () => {
+  it("stops the whole run on a latched engine, and does not file it as truncation", async () => {
     // Task 3 measured the state that produces this: after an interrupt the
     // engine's flag stays set and every later call returns instantly with an
     // empty body and finish_reason "abort". A repair retry spends a second call
     // on an engine that cannot answer, and counting it as truncation tells the
     // bake-off this model is too verbose for its token budget.
+    //
+    // THREE segments, not one, and that is the assertion. With one segment
+    // `return findings` and `break` are observationally identical, so nothing
+    // pinned that the run stops rather than spending two more calls
+    // manufacturing clean segments out of an engine that answers everything
+    // instantly and emptily.
     const engine = fakeEngine({ raw: "", finishReason: "abort" });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
+    const found = await judge.judge(
+      [...whole(), ...whole(MSG, 200), ...whole(MSG, 400)],
+      predicateIr(),
+      [],
+    );
     expect(engine.calls).toHaveLength(1);
     expect(judge.stats.repairAttempts).toBe(0);
     expect(judge.stats.abortedResponses).toBe(1);
     expect(judge.stats.truncatedResponses).toBe(0);
     expect(judge.stats.failedClosed).toBe(1);
+    expect(judge.stats.segmentsSkipped).toBe(2);
+    expect(judge.stats.segmentsJudged).toBe(0);
     expect(found).toEqual([]);
   });
 
@@ -266,29 +287,86 @@ describe("WebLlmJudge", () => {
     expect(found.map((f) => f.text)).toEqual([QUOTE]);
     expect(engine.calls).toHaveLength(2);
     expect(judge.stats.deadlineExpiries).toBe(1);
-    expect(judge.stats.callerAborts).toBe(0);
+    expect(judge.stats.callerAbortsMidGeneration).toBe(0);
+    expect(judge.stats.callerAbortsWhileQueued).toBe(0);
   });
 
-  it("counts a caller abort separately from a budget expiry", async () => {
-    // Different events with different fixes: a blown budget says the model is
-    // too slow for this arm, a caller abort says nobody waited for the answer.
-    // One counter serving both puts a fabricated timeout in every cancelled row.
-    const engine = fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, false) });
+  it("counts every segment an early stop abandoned, not just the stop", async () => {
+    // `deadlineExpiries` is 1 whether the budget blew on segment 2 of 3 or on
+    // segment 39 of 40 -- it is bounded at 1 per call by construction. Without
+    // segmentsSkipped a scorer computing findings-per-segment from an
+    // early-stopped run divides by a denominator that never happened, and
+    // nothing in the record says so.
+    const engine = fakeEngine({
+      script: [{ findings: [hit()] }, { throws: new DeadlineExpired("budget", 30_000, true) }],
+    });
     const judge = new WebLlmJudge(engine, BUDGET);
-    const found = await judge.judge(whole(), predicateIr(), []);
-    expect(found).toEqual([]);
-    expect(judge.stats.callerAborts).toBe(1);
+    const segments = [...whole(), ...whole(MSG, 200), ...whole(MSG, 400), ...whole(MSG, 600)];
+    await judge.judge(segments, predicateIr(), []);
+    expect(judge.stats.segmentsJudged).toBe(1);
+    // The segment whose own call blew the budget, plus the two never asked about.
+    expect(judge.stats.segmentsSkipped).toBe(3);
+    expect(judge.stats.deadlineExpiries).toBe(1);
+    // The invariant the header promises: nothing falls between the counters.
+    const s = judge.stats;
+    expect(s.segmentsJudged + s.failedClosed + s.segmentsSkipped).toBe(segments.length);
+  });
+
+  it("counts a mid-generation caller abort apart from a queued one", async () => {
+    // `cancel.ts` carries `interrupted` precisely because these are different
+    // events: one interrupted a running generation, the other withdrew a call
+    // that never started and therefore spent no model time at all. A latency
+    // row that attributes a queued abort to the model is reporting a number the
+    // model never produced.
+    const mid = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, true) }),
+      BUDGET,
+    );
+    expect(await mid.judge(whole(), predicateIr(), [])).toEqual([]);
+    expect(mid.stats.callerAbortsMidGeneration).toBe(1);
+    expect(mid.stats.callerAbortsWhileQueued).toBe(0);
+
+    const queued = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("aborted", 30_000, false) }),
+      BUDGET,
+    );
+    expect(await queued.judge(whole(), predicateIr(), [])).toEqual([]);
+    expect(queued.stats.callerAbortsWhileQueued).toBe(1);
+    expect(queued.stats.callerAbortsMidGeneration).toBe(0);
+
+    // And neither is a budget expiry, which is the conflation that would put a
+    // fabricated timeout in every cancelled row.
+    expect(mid.stats.deadlineExpiries).toBe(0);
+    expect(queued.stats.deadlineExpiries).toBe(0);
+  });
+
+  it("propagates an engine error that is NOT a stop, rather than degrading it", async () => {
+    // `engine.ts` throws on a response with no choices instead of folding it
+    // into "" -- the comment there says treating it as an empty answer "would
+    // report it as a clean segment". Catching it here would restore exactly
+    // that false negative, AND file it as a caller abort, because a plain Error
+    // has no `reason` and the else-branch owns everything that is not "budget".
+    const boom = new Error(
+      `tier-2 engine "x" returned a response with no choices; treating that as an ` +
+        `empty answer would report it as a clean segment`,
+    );
+    const judge = new WebLlmJudge(fakeEngine({ throws: boom }), BUDGET);
+    await expect(judge.judge(whole(), predicateIr(), [])).rejects.toThrow(/no choices/);
+    expect(judge.stats.callerAbortsWhileQueued).toBe(0);
+    expect(judge.stats.callerAbortsMidGeneration).toBe(0);
     expect(judge.stats.deadlineExpiries).toBe(0);
   });
 
-  it("asks for a quote of at least as many words as the ladder will accept", async () => {
-    // Task 4's review flagged the drift this prevents: the span ladder refuses
-    // a candidate shorter than MINIMUM_CANDIDATE_WORDS, so a prompt asking for
-    // fewer produces quotes the ladder throws away and blames on the model.
-    // The number is read back OUT of the prompt and compared to the constant,
-    // rather than the constant being interpolated into the expectation -- a
-    // prompt saying "three" fails here, and so does one hardcoding 3 after the
-    // ladder's floor moves.
+  it("asks for the word count the ladder's PEEL rung enforces, as a number", async () => {
+    // What the floor actually gates, since the prompt used to tell the model
+    // otherwise: MINIMUM_CANDIDATE_WORDS bounds rung 2 only. Rung 1 has no word
+    // check -- measured, the one-word quote "Northwind" resolves at rung 1 --
+    // so a short quote is not refused for being short. Asking for the whole
+    // clause is still right, because a longer quote is likelier to occur
+    // exactly once and leaves the peel somewhere to descend to.
+    //
+    // The number is read back OUT of the prompt rather than interpolated into
+    // the expectation, so a prompt spelling it "three" fails here too.
     const engine = fakeEngine({ findings: [] });
     await new WebLlmJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
     const asked = /at least (\S+) words/.exec(engine.promptOf(0));
@@ -296,7 +374,40 @@ describe("WebLlmJudge", () => {
     expect(Number(asked![1])).toBe(MINIMUM_CANDIDATE_WORDS);
   });
 
+  it("follows the ladder's floor when it MOVES, rather than restating today's value", async () => {
+    // The standing rule this project has broken twice: a test that only ever
+    // exercises the DEFAULT cannot tell "reads the constant" from "hardcodes
+    // the literal". Against the shipped floor of 3, a prompt writing out
+    // `at least 3 words` passes the test above -- and so does moving the floor
+    // to 4 while the prompt keeps interpolating, since the two sides of that
+    // assertion would move together. Only a second value separates them.
+    vi.resetModules();
+    vi.doMock("../src/spans.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/spans.js")>("../src/spans.js");
+      return { ...actual, MINIMUM_CANDIDATE_WORDS: 7 };
+    });
+    try {
+      const { WebLlmJudge: RebuiltJudge } = await import("../src/judge.js");
+      const engine = fakeEngine({ findings: [] });
+      await new RebuiltJudge(engine, BUDGET).judge(whole(), predicateIr(), []);
+      expect(engine.promptOf(0)).toContain("at least 7 words");
+      // Positive control: 7 is the mocked floor and not the real one, so this
+      // cannot be passing because the prompt happens to say 7 anyway.
+      expect(MINIMUM_CANDIDATE_WORDS).not.toBe(7);
+    } finally {
+      vi.doUnmock("../src/spans.js");
+      vi.resetModules();
+    }
+  });
+
   it("puts every predicate's id and text in the prompt, and no entityType examples", async () => {
+    // The prompt's own doc says examples and counterExamples are deliberately
+    // absent: they are authored strings, and in one corpus the only tier-1 gold
+    // value was also the IR's `examples` entry -- a model handed the answer
+    // scores without doing the work. `predicateIr` gives every entityType,
+    // shadow and authored alike, a sentinel example list so this has something
+    // to catch; with the empty lists it used to carry, an implementation that
+    // interpolated `entity.examples` straight into the prompt would pass.
     const engine = fakeEngine({ findings: [] });
     const ir = predicateIr({
       predicates: [
@@ -308,6 +419,14 @@ describe("WebLlmJudge", () => {
     const prompt = engine.promptOf(0);
     expect(prompt).toContain("client-relationship");
     expect(prompt).toContain("discusses unreleased financials");
+    for (const sentinel of ir.entityTypes.flatMap((e) => [...e.examples, ...e.counterExamples])) {
+      expect(prompt).not.toContain(sentinel);
+    }
+    // ... and the IR really did carry some, so the loop above is not vacuous.
+    expect(ir.entityTypes.flatMap((e) => e.examples)).toContain("SENTINEL-SHADOW-EXAMPLE");
+    expect(ir.entityTypes.flatMap((e) => e.counterExamples)).toContain(
+      "SENTINEL-AUTHORED-COUNTEREXAMPLE",
+    );
   });
 
   it("never restates a prior finding's TEXT in the prompt", async () => {
@@ -407,7 +526,11 @@ describe("WebLlmJudge", () => {
     expect(engine.calls[0]!.opts.signal).toBe(controller.signal);
   });
 
-  it("asks once per segment", async () => {
+  it("shows each segment only its own text, so one cannot answer for another", async () => {
+    // One call per segment, and each prompt carries exactly one passage. A
+    // single call over the concatenation would let a quote resolve against text
+    // the finding's segment does not contain, which is the mis-location
+    // `spans.ts` exists to make impossible.
     const engine = fakeEngine({ findings: [] });
     await new WebLlmJudge(engine, BUDGET).judge(
       [...whole(), ...whole("Renew the Contoso Industries agreement.", 100)],
@@ -416,7 +539,111 @@ describe("WebLlmJudge", () => {
     );
     expect(engine.calls).toHaveLength(2);
     expect(engine.promptOf(0)).toContain(MSG);
+    expect(engine.promptOf(0)).not.toContain("Contoso Industries");
     expect(engine.promptOf(1)).toContain("Contoso Industries");
+    expect(engine.promptOf(1)).not.toContain(MSG);
+  });
+
+  it("emits findings from TWO segments in one call, each offset into the message", async () => {
+    // Nothing else covers two segments both producing findings: the other
+    // multi-segment tests either return nothing or stop on segment 2. So an
+    // implementation that keyed dedup on segment-RELATIVE offsets, or that
+    // forgot `segment.start` on any but the first, went unnoticed.
+    //
+    // The two quotes sit at the SAME offset within their own segments and are
+    // the same length, which is what makes a relative key collide: keyed
+    // relatively, the second finding is dropped as a duplicate of the first.
+    const second = "Please review the Northwind Traders renewal again.";
+    expect(second.indexOf(QUOTE)).toBe(MSG.indexOf(QUOTE));
+    const engine = fakeEngine({ findings: [hit()] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const message = `${MSG}\n${second}`;
+    const found = await judge.judge(
+      [...whole(), ...whole(second, MSG.length + 1)],
+      predicateIr(),
+      [],
+    );
+    expect(found.map((f) => [f.start, f.end])).toEqual([
+      [18, 43],
+      [77, 102],
+    ]);
+    for (const f of found) expect(message.slice(f.start, f.end)).toBe(f.text);
+    expect(judge.stats.duplicatesDropped).toBe(0);
+    expect(judge.stats.segmentsJudged).toBe(2);
+    expect(judge.stats.segmentsSkipped).toBe(0);
+  });
+
+  it("emits offsets in UTF-16 code units when the prefix is astral, not code points", async () => {
+    // Plan 4 put an emoji fixture in the tier-1 corpus so any UTF-16 offset bug
+    // would surface there rather than here; this reciprocates. The prefix is
+    // built so all three plausible answers differ -- 35 UTF-16 code units, 33
+    // code points, 46 UTF-8 bytes -- because a prefix of pure ASCII (which is
+    // what the other late-segment test uses) makes every convention agree and
+    // pins nothing. Core slices with `String.prototype.slice`, which is UTF-16.
+    //
+    // Spelled with escapes rather than literal characters on purpose: an editor
+    // that NFC-normalised the combining diaeresis into a precomposed letter would
+    // quietly change all three counts and take the test's whole point with it.
+    const prefix =
+      "Kickoff \u{1F680}\u{1F3FD} caf\u{E9} nai\u{308}ve \u{4E2D}\u{6587} notes\n\n";
+    expect(prefix.length).toBe(35);
+    expect([...prefix].length).toBe(33);
+    expect(Buffer.byteLength(prefix, "utf8")).toBe(45);
+    const message = prefix + MSG;
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
+    const found = await judge.judge(whole(MSG, prefix.length), predicateIr(), []);
+    expect(found[0]!.start).toBe(53);
+    // The code-point answer, spelled out so the assertion above cannot be read
+    // as "whatever the implementation produced".
+    expect(found[0]!.start).not.toBe(51);
+    expect(message.slice(found[0]!.start, found[0]!.end)).toBe(QUOTE);
+    expect(found[0]!.text).toBe(QUOTE);
+
+    // The other half: astral characters INSIDE the segment, before the quote.
+    // The prefix above only pins that `segment.start` is added unchanged; this
+    // pins the offset the ladder returned, which an implementation counting
+    // code points would report one short per astral character.
+    const inner = `Update \u{1F680}: ${MSG}`;
+    const innerJudge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
+    const innerFound = await innerJudge.judge(
+      [{ kind: "prose", start: prefix.length, end: prefix.length + inner.length, text: inner }],
+      predicateIr(),
+      [],
+    );
+    // 35 units of prefix + 11 units of "Update <rocket>: " + 18 into MSG.
+    expect(innerFound[0]!.start).toBe(64);
+    expect(innerFound[0]!.start).not.toBe(63);
+    expect((prefix + inner).slice(innerFound[0]!.start, innerFound[0]!.end)).toBe(QUOTE);
+  });
+
+  it("keeps two predicates' findings over the SAME span, one per entityType", async () => {
+    // The dedup key is `start:end:entityType`, and the entityType component is
+    // the load-bearing part: two predicates can be satisfied by one clause, and
+    // core resolves an ACTION per entityType. Dropping the component silently
+    // loses one predicate's finding and with it whatever action that predicate
+    // carried, while the counters report a duplicate the model never sent.
+    const ir = predicateIr({
+      predicates: [
+        { id: "client-relationship", nlPredicate: "names a client", severity: "high" },
+        { id: "renewal-terms", nlPredicate: "discusses renewal terms", severity: "low" },
+      ],
+    });
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        findings: [hit(QUOTE, 0.9, "client-relationship"), hit(QUOTE, 0.8, "renewal-terms")],
+      }),
+      BUDGET,
+    );
+    const found = await judge.judge(whole(), ir, []);
+    expect(found.map((f) => f.entityType)).toEqual([
+      "pred:client-relationship",
+      "pred:renewal-terms",
+    ]);
+    expect(found.map((f) => [f.start, f.end])).toEqual([
+      [18, 43],
+      [18, 43],
+    ]);
+    expect(judge.stats.duplicatesDropped).toBe(0);
   });
 
   it("takes severity from the IR and confidence from the model", async () => {
@@ -436,21 +663,141 @@ describe("WebLlmJudge", () => {
     expect(found[0]!.tier).toBe(2);
   });
 
-  it("drops a finding whose confidence the schema refuses, without losing the good one", async () => {
+  it("rejects the WHOLE response over one out-of-range confidence, and repairs it", async () => {
     // A model answering on a percentage scale. Clamping 95 to 1.0 would turn a
-    // misunderstanding into a maximally confident finding; the schema rejects
-    // the whole response, so the repair retry is what recovers the segment.
+    // misunderstanding into a maximally confident finding, so the schema
+    // refuses instead -- and it refuses the response, not the finding, because
+    // `JudgeResponseSchema` validates the parsed body as one object. There is
+    // deliberately no per-finding salvage: the repair retry is the whole
+    // recovery, and this name used to promise a granularity that does not
+    // exist.
     const engine = fakeEngine({
-      script: [{ findings: [hit(QUOTE, 95)] }, { findings: [hit(QUOTE, 0.5)] }],
+      script: [
+        { findings: [hit(QUOTE, 95), hit("before Friday", 0.5)] },
+        { findings: [hit(QUOTE, 0.5)] },
+      ],
     });
     const judge = new WebLlmJudge(engine, BUDGET);
     const found = await judge.judge(whole(), predicateIr(), []);
     expect(judge.stats.repairAttempts).toBe(1);
+    // The in-range sibling from the first response is gone too, not kept.
+    expect(found.map((f) => f.text)).toEqual([QUOTE]);
     expect(found.map((f) => f.confidence)).toEqual([0.5]);
   });
 
-  it("starts every counter at zero", async () => {
+  it("records what each ANSWERED call cost, per call rather than per message", async () => {
+    // `WebLlmJudge` is the only holder of a `Tier2Completion` inside a detect()
+    // run, so a field it does not copy is unobtainable by the bake-off row that
+    // needs it -- and `engine.ts` passes `usage` through verbatim precisely so
+    // it can be. Per call and not aggregated: a message makes one call per
+    // segment, so one finishReason for the message would be a fact about one
+    // call reported as a fact about the message.
+    const engine = fakeEngine({
+      script: [
+        {
+          findings: [hit()],
+          usage: {
+            prompt_tokens: 411,
+            completion_tokens: 37,
+            total_tokens: 448,
+            extra: {
+              e2e_latency_s: 1.5,
+              prefill_tokens_per_s: 900,
+              decode_tokens_per_s: 30,
+              time_to_first_token_s: 0.42,
+              time_per_output_token_s: 0.03,
+            },
+          },
+        },
+        { findings: [], finishReason: "length" },
+      ],
+    });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    await judge.judge([...whole(), ...whole(MSG, 200)], predicateIr(), []);
+    expect(judge.stats.calls).toEqual([
+      { finishReason: "stop", promptTokens: 411, completionTokens: 37, ttftMs: 420 },
+      // The second call reported no usage at all. `undefined` and not 0: a 0
+      // would claim the model answered instantly on no prompt tokens.
+      {
+        finishReason: "length",
+        promptTokens: undefined,
+        completionTokens: undefined,
+        ttftMs: undefined,
+      },
+    ]);
+  });
+
+  it("passes a poisoned usage number through instead of zeroing it", async () => {
+    // `engine.ts` records that an interrupted call leaves NaN or Infinity in
+    // `usage.extra`, because every rate there is a division with no zero guard.
+    // A `?? 0` or a finite-check that substitutes 0 would report an interrupted
+    // call as an instantaneous one, which is the silently-zeroed-NaN defect a
+    // sibling task's review already caught once.
+    const engine = fakeEngine({
+      findings: [],
+      usage: {
+        prompt_tokens: 400,
+        completion_tokens: 0,
+        total_tokens: 400,
+        extra: {
+          e2e_latency_s: 0.1,
+          prefill_tokens_per_s: Number.NaN,
+          decode_tokens_per_s: Number.NaN,
+          time_to_first_token_s: Number.NaN,
+          time_per_output_token_s: Number.NaN,
+        },
+      },
+    });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    await judge.judge(whole(), predicateIr(), []);
+    expect(judge.stats.calls[0]!.ttftMs).toBeNaN();
+    expect(judge.stats.calls[0]!.completionTokens).toBe(0);
+  });
+
+  it("exposes every documented counter, all of them at zero, before any call", async () => {
+    // `Object.values(stats).every(v => v === 0)` was the assertion here, and it
+    // is vacuously true for `{}` -- a stats getter returning an empty object
+    // passed it. The key list is what makes the zeroes mean something.
     const judge = new WebLlmJudge(fakeEngine(), BUDGET);
-    expect(Object.values(judge.stats).every((v) => v === 0)).toBe(true);
+    expect(Object.keys(judge.stats).sort()).toEqual([
+      "abortedResponses",
+      "callerAbortsMidGeneration",
+      "callerAbortsWhileQueued",
+      "calls",
+      "deadlineExpiries",
+      "duplicatesDropped",
+      "failedClosed",
+      "repairAttempts",
+      "rung1",
+      "rung2",
+      "segmentsJudged",
+      "segmentsSkipped",
+      "truncatedResponses",
+      "unknownPredicates",
+      "unresolvedQuotes",
+    ]);
+    const { calls, ...counters } = judge.stats;
+    expect(calls).toEqual([]);
+    expect(Object.values(counters)).toEqual(Object.values(counters).map(() => 0));
+  });
+
+  it("hands out a SNAPSHOT of stats, not the counters a bake-off row is built from", async () => {
+    // The getter's own docblock promises this. A live reference lets a consumer
+    // -- or a harness copying `stats` into a record and then tidying it --
+    // rewrite numbers that are supposed to be facts about calls that happened.
+    // The `calls` array needs the same treatment as the counters: spreading the
+    // outer object alone would hand out the judge's own array.
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
+    await judge.judge(whole(), predicateIr(), []);
+
+    const taken = judge.stats as unknown as Record<string, unknown>;
+    taken["rung1"] = 999;
+    (taken["calls"] as unknown[]).push({ finishReason: "invented" });
+    (judge.stats.calls[0] as unknown as Record<string, unknown>)["promptTokens"] = 999;
+
+    expect(judge.stats.rung1).toBe(1);
+    expect(judge.stats.calls).toHaveLength(1);
+    expect(judge.stats.calls[0]!.finishReason).toBe("stop");
+    expect(judge.stats.calls[0]!.promptTokens).toBeUndefined();
   });
 });

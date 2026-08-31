@@ -170,7 +170,7 @@ export async function runWithDeadline<T>(
   budgetMs: number,
   outer?: AbortSignal,
 ): Promise<T> {
-  // `setTimeout` does not reject a nonsense delay, it REINTERPRETS one, and
+  // `setTimeout` does not reject a nonsense NUMBER, it REINTERPRETS one, and
   // every reinterpretation lands on the same value: 1 ms. MEASURED HERE on
   // Node 26 -- Infinity, NaN, 0, -1 and 2147483648 each fired in 1-4 ms, while
   // 2147483647 and 1e9 did not fire at all within 120 ms. So the natural
@@ -178,6 +178,15 @@ export async function runWithDeadline<T>(
   // opposite: it trips instantly, interrupts an engine that has not answered
   // yet, and produces a DeadlineExpired reading "exceeded its Infinityms
   // budget".
+  //
+  // `Number.isFinite` is not part of that argument, and the guard's message
+  // used to imply it was. The range clause alone rejects every bad NUMBER;
+  // what `isFinite` uniquely adds is a numeric STRING, which compares fine
+  // against both bounds. MEASURED on the same Node 26 run, `setTimeout(fn,
+  // "300")` fired at 302 ms -- coerced and honoured, not collapsed -- so a
+  // quoted number would time correctly here and be recorded as a string in a
+  // field typed `number`. That is the record-states-something-other-than-fact
+  // defect rather than a timing one, and it is why the clause is here.
   //
   // REJECTED rather than reinterpreted as "no deadline", and that is the
   // deliberate half of this decision. `budgetMs` is a required parameter
@@ -193,7 +202,9 @@ export async function runWithDeadline<T>(
   if (!(Number.isFinite(budgetMs) && budgetMs > 0 && budgetMs <= MAX_BUDGET_MS)) {
     throw new Error(
       `tier-2 budgetMs must be a finite number of milliseconds in (0, ${MAX_BUDGET_MS}], ` +
-        `got ${budgetMs}; setTimeout silently turns anything else into a 1ms deadline`,
+        `got ${budgetMs} (${typeof budgetMs}); setTimeout rejects no alternative -- it ` +
+        `reinterprets a nonsense number as a 1ms deadline and coerces a numeric string -- ` +
+        `so a bad budget is never reported as one`,
     );
   }
 

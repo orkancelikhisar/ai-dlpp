@@ -51,6 +51,17 @@ const DEFAULT_PREDICATES: readonly PredicateSpec[] = [
  * schema requires at least one entityType, and `predicateIr({ predicates: [] })`
  * would otherwise be unloadable. It doubles as a prior-findings label that is
  * not a shadow.
+ *
+ * EVERY entityType here carries a non-empty `examples` and `counterExamples`
+ * list, and the values are sentinels that appear nowhere else. That is what
+ * makes "the prompt carries no examples" a real assertion instead of a vacuous
+ * one -- with empty lists, a judge that interpolated `entity.examples`
+ * straight into its prompt would pass. Stated honestly: the compiler mints
+ * SHADOW entityTypes with `examples: []` by construction
+ * (`mintShadowEntityTypes`), so a shadow's list being non-empty here is
+ * adversarial rather than representative. The authored `client-name` one is
+ * representative -- authored entityTypes really do carry examples -- and either
+ * kind reaching the prompt is the leak the assertion is for.
  */
 export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
   const predicates = options.predicates ?? DEFAULT_PREDICATES;
@@ -59,8 +70,8 @@ export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
       id: "client-name",
       tier: 1,
       nlDefinition: "the name of a client organisation or contact",
-      examples: [],
-      counterExamples: [],
+      examples: ["SENTINEL-AUTHORED-EXAMPLE"],
+      counterExamples: ["SENTINEL-AUTHORED-COUNTEREXAMPLE"],
       severity: "medium",
     },
   ];
@@ -73,8 +84,8 @@ export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
       id: shadowId,
       tier: 2,
       nlDefinition: predicate.nlPredicate,
-      examples: [],
-      counterExamples: [],
+      examples: ["SENTINEL-SHADOW-EXAMPLE"],
+      counterExamples: ["SENTINEL-SHADOW-COUNTEREXAMPLE"],
       severity: predicate.severity ?? "high",
       neverPseudonymize: true,
     });

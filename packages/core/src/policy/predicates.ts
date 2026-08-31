@@ -32,6 +32,22 @@
  */
 export const SHADOW_PREFIX = "pred:";
 
+/**
+ * The shadow entityType id for a predicate id. One line, and the one line both
+ * ends of the contract must agree on.
+ *
+ * Total by construction: it does not validate `predicateId`, because the two
+ * callers validate different things and neither could be satisfied here. The
+ * compiler checks the id it is about to MINT against every id already in the IR
+ * and throws on a collision; the judge checks the id a MODEL returned against
+ * the shadows the IR actually declares and drops an unknown one. A shared
+ * validation would be a third rule that agrees with neither.
+ *
+ * Applying it twice does not round-trip -- `shadowIdFor(shadowIdFor("x"))` is
+ * `"pred:pred:x"` -- and nothing rejects that, because no caller has a reason
+ * to. `SHADOW_PREFIX` is the only thing to strip a shadow back with; the
+ * compiler's `report.ts` and `validate.ts` do exactly that.
+ */
 export function shadowIdFor(predicateId: string): string {
   return `${SHADOW_PREFIX}${predicateId}`;
 }

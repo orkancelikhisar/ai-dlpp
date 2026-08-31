@@ -762,6 +762,13 @@ describe("createWebLlmEngine", () => {
     // is covered by the same rule in index.ts.
     const surface = await import("../src/index.js");
     expect(Object.keys(surface)).not.toContain("buildCallParams");
+    // `MAX_BUDGET_MS` is held to the same rule by `cancel.ts`, and until now
+    // only by a comment there. It is exported from that MODULE so `judge.ts`
+    // can refuse a bad budget at construction rather than many segments later,
+    // and kept off the index so a consumer cannot hold the bound without
+    // holding the guard that enforces it -- a second copy of the literal in a
+    // caller would be free to drift from the one `runWithDeadline` checks.
+    expect(Object.keys(surface)).not.toContain("MAX_BUDGET_MS");
     // Positive control: this walk is worthless if the module failed to load or
     // the key list came back empty.
     expect(Object.keys(surface)).toContain("createWebLlmEngine");

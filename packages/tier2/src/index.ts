@@ -23,6 +23,7 @@ export {
 } from "./engine.js";
 export {
   WebLlmJudge,
+  type JudgeCallRecord,
   type JudgeStats,
   type WebLlmJudgeOptions,
 } from "./judge.js";

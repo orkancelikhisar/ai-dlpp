@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageParam } from "@mlc-ai/web-llm";
+import type { ChatCompletionFinishReason, ChatCompletionMessageParam } from "@mlc-ai/web-llm";
 import { shadowIdFor } from "@sih/core";
 import type { Finding, PolicyIr, SemanticJudge, SemanticPredicate, Segment, Severity } from "@sih/core";
 import { DeadlineExpired, MAX_BUDGET_MS } from "./cancel.js";
@@ -26,24 +26,88 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  */
 
 /**
+ * What one ANSWERED engine call cost, kept per call rather than aggregated.
+ *
+ * Task 11's bake-off row wants `finishReason`, `promptTokens`,
+ * `completionTokens` and `ttftMs`, and a message makes one engine call per
+ * segment. A single `finishReason` for the message would therefore be a fact
+ * about one call presented as a fact about the message, and a summed `ttftMs`
+ * would be a latency nothing ever experienced. So the rows are kept whole and
+ * the harness decides how to reduce them; this module does not decide for it.
+ *
+ * Every field is copied from the response and none from the request, and
+ * nothing is defaulted to 0. `undefined` means the engine reported no `usage`
+ * at all: READ from the shipped 0.2.84 bundle, `MLCEngine.chatCompletion`
+ * builds `usage` unconditionally on the non-streaming path, so on that path
+ * `undefined` means something other than a stock `MLCEngine` answered. A
+ * NON-FINITE value is passed through unchanged for the same reason -- `engine.ts`
+ * records that an interrupted call leaves NaN and Infinity in `usage.extra`,
+ * and zeroing one would report an interrupted call as an instantaneous one.
+ */
+export interface JudgeCallRecord {
+  /** `choices[0].finish_reason` for THIS call, never the message's. */
+  readonly finishReason: ChatCompletionFinishReason | undefined;
+  /** `usage.prompt_tokens`, verbatim. */
+  readonly promptTokens: number | undefined;
+  /** `usage.completion_tokens`, verbatim. */
+  readonly completionTokens: number | undefined;
+  /**
+   * `usage.extra.time_to_first_token_s`, converted to milliseconds and
+   * otherwise untouched. READ from the bundle: it is assigned from an
+   * accumulated `prefill_time` rather than from a division, so it does not
+   * carry the zero-denominator NaN its sibling rate fields do -- but the
+   * conversion below still does not guard it, because a NaN that reached here
+   * is a fact about the call and not a number to invent a replacement for.
+   */
+  readonly ttftMs: number | undefined;
+}
+
+/**
  * Per-run counters, all of them facts about calls that actually happened.
  *
  * The bake-off reads these to tell an arm that judged well from one that failed
- * closed on every segment, so each counter names one event and no counter is
- * shared by two. The three stop-related counters in particular are separate on
- * purpose: a blown budget says this model is too slow for this arm, a caller
- * abort says nobody waited for the answer, and an aborted RESPONSE says the
- * engine was interrupted by something we did not do. Folding them together
- * would put a fabricated timeout in every cancelled row.
+ * closed on every segment. Most name exactly one event; the two that AGGREGATE
+ * -- `unresolvedQuotes` and `failedClosed` -- say what they aggregate on their
+ * own field, because a header claiming a one-to-one mapping was false three
+ * fields below itself.
+ *
+ * The four stop-related counters are separate on purpose, and they are the
+ * three events `cancel.ts` refuses to merge plus the latched engine: a blown
+ * budget says this model is too slow for this arm; a caller abort
+ * mid-generation says a generation was interrupted; a caller abort while queued
+ * says nothing ran at all; and an aborted RESPONSE says the engine was
+ * interrupted by something we did not do. Folding them together would put a
+ * fabricated timeout in every cancelled row.
  *
  * Cumulative across `judge()` calls, so one judge per arm accumulates the arm's
- * totals. `rung1 + rung2` is exactly the number of findings returned across
- * every call: rungs are counted where a finding is EMITTED, not where a quote
- * happens to resolve, so a dropped duplicate does not inflate the distribution
- * the bake-off reads as evidence strength.
+ * totals. Two invariants a scorer can rely on:
+ *
+ * - `rung1 + rung2` is exactly the number of findings returned across every
+ *   call. Rungs are counted where a finding is EMITTED, not where a quote
+ *   happens to resolve, so a dropped duplicate does not inflate the
+ *   distribution the bake-off reads as evidence strength.
+ * - `segmentsJudged + failedClosed + segmentsSkipped` is exactly the number of
+ *   segments handed to every `judge()` call THAT REACHED ITS SEGMENT LOOP. That
+ *   is the denominator a findings-per-segment or recall number needs, and
+ *   without `segmentsSkipped` it could not be computed at all -- see that
+ *   field. A call that returned before the loop counts nothing, and
+ *   deliberately: an IR with no `semanticPredicates` spends no engine call and
+ *   judges nothing, so filing its segments as skipped would conflate a policy
+ *   with no semantic clauses with a run a stop cut short. A malformed IR does
+ *   not reach the loop either -- it throws.
  */
 export interface JudgeStats {
-  /** Findings whose quote was in the segment verbatim. The strong case. */
+  /**
+   * Findings whose quote occurred exactly once in the segment, at the ladder's
+   * first rung. The strong case -- but "verbatim" would overstate it, and used
+   * to: rung 1 matches in FOLDED space, so a quote differing from the passage
+   * only in capitalisation, in the length of its whitespace runs, or in smart
+   * versus ASCII punctuation lands here too. MEASURED against this ladder:
+   * "NORTHWIND TRADERS RENEWAL" and "Northwind   Traders\n renewal" both
+   * resolve at rung 1 against a passage reading "Northwind Traders renewal". So
+   * an arm whose model rewrites case scores identically here to one that copies
+   * exactly, and this counter cannot tell them apart. `spans.ts` owns the fold.
+   */
   readonly rung1: number;
   /**
    * Findings whose quote only matched after the ladder peeled its tail.
@@ -51,7 +115,21 @@ export interface JudgeStats {
    * one code point at a time, so a rung-2 span can end inside a word.
    */
   readonly rung2: number;
-  /** Quotes the ladder refused: absent, ambiguous, or below its word floor. */
+  /**
+   * Quotes the ladder refused, for ANY of its reasons. Four of them share this
+   * counter: the quote is absent from the segment; it occurs more than once, at
+   * either rung, and ambiguity is refused rather than guessed; the peel reached
+   * the word floor with no unique candidate; or every candidate's boundary
+   * would have split a surrogate pair. They share it because `resolveQuote`
+   * returns a bare `undefined` for all four and reports no reason -- telling
+   * them apart means widening its return type, which nothing downstream has yet
+   * asked for.
+   *
+   * `resolveQuote`'s fifth refusal, a quote that folds to nothing, cannot reach
+   * this counter: `JudgeResponseSchema` requires a non-whitespace character in
+   * `quote` and folding never empties such a string, so an empty quote is
+   * refused a stage earlier and lands in `failedClosed` or `repairAttempts`.
+   */
   readonly unresolvedQuotes: number;
   /** Findings naming a predicate the IR does not declare. Models invent ids. */
   readonly unknownPredicates: number;
@@ -60,22 +138,64 @@ export interface JudgeStats {
   /** Segments that got a second call because the first answer would not parse. */
   readonly repairAttempts: number;
   /**
-   * Segments the engine answered but that yielded no judgement: an unparseable
-   * body still unparseable after the repair retry, or an aborted one. Segments
-   * never REACHED, because a stop ended the run early, are deliberately not
-   * counted here -- `deadlineExpiries` and `callerAborts` are where those show
-   * up, and folding them together would report a model failure for a call that
-   * never exercised the model.
+   * Segments the engine ANSWERED that still yielded no judgement. Two causes
+   * share this counter, and they share it because both leave a segment unjudged
+   * with the model in the loop: a body still unparseable after the one repair
+   * retry, and a body the engine marked `"abort"` -- the latched engine, which
+   * also ends the run. Segments never REACHED are `segmentsSkipped` and not
+   * this: folding those in would report a model failure for a call that never
+   * exercised the model.
    */
   readonly failedClosed: number;
   /** Completions the engine reported as cut off at `max_tokens`. */
   readonly truncatedResponses: number;
   /** Completions the engine reported as interrupted. */
   readonly abortedResponses: number;
-  /** Calls that exceeded `budgetMs`. */
+  /**
+   * Segments whose answer parsed and was collected. This is the denominator for
+   * findings-per-segment and for recall, and `segments.length` is not, because
+   * a run can stop before it reaches the end of its list.
+   */
+  readonly segmentsJudged: number;
+  /**
+   * Segments this run never asked about because a stop ended it early, plus the
+   * one whose own call raised that stop -- it produced no answer either.
+   *
+   * Nothing else records this. `deadlineExpiries` is 1 whether the budget blew
+   * on segment 1 of 40 or on segment 39, so a scorer computing recall from an
+   * early-stopped run had a wrong denominator and no way to notice.
+   */
+  readonly segmentsSkipped: number;
+  /**
+   * Runs stopped by a budget expiry. NOT a per-call rate: `judge()` returns on
+   * the first `DeadlineExpired`, so this is at most 1 per call by construction
+   * and `deadlineExpiries / segments` is not a number that means anything. What
+   * it does decide is whether an arm is too slow to finish its corpus.
+   */
   readonly deadlineExpiries: number;
-  /** Calls the caller's `AbortSignal` stopped. */
-  readonly callerAborts: number;
+  /**
+   * Runs the caller's `AbortSignal` stopped after generation had started: a
+   * generation really was interrupted, and `runWithDeadline` cleared the flag
+   * it set.
+   */
+  readonly callerAbortsMidGeneration: number;
+  /**
+   * Runs the caller's `AbortSignal` stopped while the call was still QUEUED
+   * behind another on the same engine. Nothing ran and nothing was interrupted.
+   *
+   * Split from the counter above because `cancel.ts` carries `interrupted`
+   * precisely to separate them -- one message for both "would state a falsehood
+   * in two of them" -- and because a queued abort spent no model time at all,
+   * which a latency row must not attribute to the model.
+   */
+  readonly callerAbortsWhileQueued: number;
+  /**
+   * One row per engine call that ANSWERED, in the order they were made, repair
+   * retries included. A call stopped by a budget or an abort produces no row,
+   * because it produced no response to copy one from; those are the four stop
+   * counters above.
+   */
+  readonly calls: readonly JudgeCallRecord[];
 }
 
 export interface WebLlmJudgeOptions {
@@ -87,9 +207,11 @@ export interface WebLlmJudgeOptions {
   readonly budgetMs: number;
 }
 
-type MutableStats = { -readonly [K in keyof JudgeStats]: JudgeStats[K] };
+/** Every field of `JudgeStats` except the per-call rows, which are their own array. */
+type Counters = Omit<JudgeStats, "calls">;
+type MutableCounters = { -readonly [K in keyof Counters]: Counters[K] };
 
-const ZERO_STATS: JudgeStats = {
+const ZERO_COUNTERS: Counters = {
   rung1: 0,
   rung2: 0,
   unresolvedQuotes: 0,
@@ -99,19 +221,37 @@ const ZERO_STATS: JudgeStats = {
   failedClosed: 0,
   truncatedResponses: 0,
   abortedResponses: 0,
+  segmentsJudged: 0,
+  segmentsSkipped: 0,
   deadlineExpiries: 0,
-  callerAborts: 0,
+  callerAbortsMidGeneration: 0,
+  callerAbortsWhileQueued: 0,
 };
 
 /**
  * The instructions, fixed for every call so two arms differ only by their model.
  *
  * The word floor is interpolated from `MINIMUM_CANDIDATE_WORDS` rather than
- * written out. The ladder REFUSES a candidate spanning fewer words than that,
- * so a prompt asking for fewer produces quotes the ladder throws away and a
- * report that blames the model for it; a second copy of the number here would
- * be free to drift from the one enforced. Same reason `ACTION_RANK` is exported
- * from core's orchestrator instead of being restated in the compiler.
+ * written out, so a second copy here cannot drift from the one enforced. Same
+ * reason `ACTION_RANK` is exported from core's orchestrator instead of being
+ * restated in the compiler.
+ *
+ * What that floor actually gates, since this comment used to overstate it and
+ * the prompt repeated the overstatement to the model: it gates RUNG 2 only,
+ * inside the peel loop. Rung 1 has no word check at all -- MEASURED against
+ * this ladder, the one-word quote "Northwind" resolves at rung 1, and so does
+ * the two-word "Northwind Traders", because both occur exactly once. Nothing
+ * here refuses a short quote for being short.
+ *
+ * Asking for the whole clause anyway is still the right instruction, for two
+ * reasons that are about uniqueness and recoverability rather than about a
+ * refusal: a longer quote is likelier to occur exactly once, which is the only
+ * thing rung 1 tests; and a quote already AT the floor leaves rung 2 nothing to
+ * work with past its final word. MEASURED against a message reading "Ship the
+ * deploy pin today ...": the three-word quote "the deploy pXn" recovers "the
+ * deploy p", but "the dXploy pin" -- perturbed one word earlier -- recovers
+ * nothing at all, because reaching a matching prefix would take the candidate
+ * below the floor and the descent stops there.
  *
  * What is deliberately NOT in this prompt: the IR's `examples` and
  * `counterExamples`. Those are authored strings that in at least one corpus
@@ -131,7 +271,7 @@ const SYSTEM_PROMPT = [
   "- quote must be copied from the passage character for character, including",
   "  its punctuation and capitalisation.",
   `- Quote the whole clause that carries the evidence, and at least ${MINIMUM_CANDIDATE_WORDS} words.`,
-  "  A shorter quote cannot be located in the passage and is discarded.",
+  "  A quote that occurs more than once in the passage is discarded, not guessed at.",
   "- Never quote anything that is not in the passage.",
   '- If nothing in the passage satisfies any predicate, answer {"findings":[]}.',
 ].join("\n");
@@ -139,7 +279,8 @@ const SYSTEM_PROMPT = [
 export class WebLlmJudge implements SemanticJudge {
   readonly #engine: Tier2Engine;
   readonly #budgetMs: number;
-  readonly #stats: MutableStats = { ...ZERO_STATS };
+  readonly #counters: MutableCounters = { ...ZERO_COUNTERS };
+  readonly #calls: JudgeCallRecord[] = [];
 
   /**
    * @param engine the `Tier2Engine` SEAM, never a `WebLlmEngine` directly. The
@@ -148,10 +289,23 @@ export class WebLlmJudge implements SemanticJudge {
    *   that asserts nothing about the thing it is applied to.
    * @throws when `budgetMs` is not a finite duration `setTimeout` can hold.
    *   `runWithDeadline` performs the same check, but not until the first engine
-   *   call: measured on Node 26, Infinity -- the natural spelling of "no
-   *   budget" -- fires in 1-4 ms, so a judge built with it interrupts a model
-   *   that has not answered yet, once per segment, for a whole arm. Checked at
-   *   construction so it fails before a bake-off starts rather than during it.
+   *   call: MEASURED on Node 26, Infinity -- the natural spelling of "no
+   *   budget" -- fires in under 1 ms, so a judge built with it interrupts a
+   *   model that has not answered yet, once per segment, for a whole arm.
+   *   Checked at construction so it fails before a bake-off starts rather than
+   *   during it.
+   *
+   *   The two clauses catch disjoint things and both are load-bearing. The
+   *   RANGE clause catches every bad number, and MEASURED on Node 26 those are
+   *   the values `setTimeout` reinterprets: Infinity, NaN, 0, -1 and
+   *   2147483648 each fired in under 2 ms while 2147483647 did not fire within
+   *   400 ms. `Number.isFinite` catches something else entirely -- a numeric
+   *   STRING, which compares fine against both bounds. MEASURED on the same
+   *   run, `setTimeout(fn, "300")` fired at 302 ms: coerced and honoured, not
+   *   collapsed. So a quoted number in an eval driver's JSON config would run
+   *   correctly here and be recorded as a string in a field typed `number`,
+   *   which is the record-states-something-other-than-fact defect rather than a
+   *   timing one, and it is caught for that reason.
    */
   constructor(engine: Tier2Engine, options: WebLlmJudgeOptions) {
     if (
@@ -163,8 +317,10 @@ export class WebLlmJudge implements SemanticJudge {
     ) {
       throw new Error(
         `tier-2 judge budgetMs must be a finite number of milliseconds in ` +
-          `(0, ${MAX_BUDGET_MS}], got ${options.budgetMs}; setTimeout silently turns ` +
-          `anything else into a 1ms deadline`,
+          `(0, ${MAX_BUDGET_MS}], got ${options.budgetMs} (${typeof options.budgetMs}); ` +
+          `setTimeout rejects no alternative -- it reinterprets a nonsense number as a ` +
+          `1ms deadline and coerces a numeric string -- so a bad budget is never ` +
+          `reported as one`,
       );
     }
     this.#engine = engine;
@@ -172,12 +328,13 @@ export class WebLlmJudge implements SemanticJudge {
   }
 
   /**
-   * A snapshot, copied on every read. The counters are this object's own state
-   * and a caller holding a live reference could rewrite the numbers a bake-off
-   * row is built from.
+   * A snapshot, copied on every read, one level deep. The counters and the call
+   * rows are this object's own state and a caller holding a live reference
+   * could rewrite the numbers a bake-off row is built from -- so the array is
+   * rebuilt and each row is re-spread, not just the outer object.
    */
   get stats(): JudgeStats {
-    return { ...this.#stats };
+    return { ...this.#counters, calls: this.#calls.map((row) => ({ ...row })) };
   }
 
   /**
@@ -192,8 +349,15 @@ export class WebLlmJudge implements SemanticJudge {
    * says an over-budget tier-2 run falls back to the lower tiers' findings --
    * and the counters are where that shows up. An empty return is NOT the same
    * claim as "this passage is clean", and a caller reading recall from these
-   * findings must read `failedClosed`, `deadlineExpiries` and `callerAborts`
-   * alongside them.
+   * findings must read `failedClosed`, `segmentsSkipped`, `deadlineExpiries`
+   * and the two caller-abort counters alongside them.
+   *
+   * Anything OTHER than a `DeadlineExpired` from the engine propagates
+   * untouched. `engine.ts` throws on a response with no choices and on one that
+   * names no model, and both exist because folding them into an empty answer
+   * would have a judge report the segment clean. Degrading those here would
+   * undo the tripwire and, since such an error carries no `reason`, would file
+   * the event as a caller abort as well.
    *
    * `scope` on a `SemanticPredicate` is not honoured yet: every predicate is
    * judged per segment, including one declared `scope: "message"`. The judge is
@@ -223,7 +387,8 @@ export class WebLlmJudge implements SemanticJudge {
     // a judge() call would silently delete the next message's findings.
     const emitted = new Set<string>();
 
-    for (const segment of segments) {
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index]!;
       let messages = buildMessages(segment, predicates, priorFindings);
       let repaired = false;
 
@@ -235,23 +400,44 @@ export class WebLlmJudge implements SemanticJudge {
             signal,
           });
         } catch (cause) {
+          // NOT a stop we own, so not ours to degrade. `engine.ts` throws on a
+          // response with no choices and on one naming no model precisely
+          // because folding either into an empty answer would report the
+          // segment CLEAN; swallowing it here would restore that false negative
+          // and, since such an error has no `reason`, file it as a caller abort
+          // on top.
           if (!(cause instanceof DeadlineExpired)) throw cause;
-          // Both stops end the RUN, not just this segment. A budget expiry says
-          // the engine is too slow for this arm, and the next segment would
-          // spend another full budget proving it again; a caller abort says
-          // nobody is waiting for any of it. Either way the message degrades to
-          // whatever the lower tiers found, which is what has been collected.
-          if (cause.reason === "budget") this.#stats.deadlineExpiries += 1;
-          else this.#stats.callerAborts += 1;
+          // Every stop ends the RUN, not just this segment, and the honest
+          // reason is narrower than "the model is too slow". A budget expiry
+          // says THIS call did not finish in THIS budget; whether the next
+          // segment would is unknown, because segments differ in length and a
+          // short one can meet a budget a long one blew. What is known is that
+          // we cannot tell a slow model from a slow segment from here, and
+          // continuing risks spending a full budget per remaining segment to
+          // find out. A caller abort needs no such argument: nobody is waiting
+          // for any of it. Either way the message degrades to whatever the
+          // lower tiers found, which is what has been collected.
+          //
+          // The segment this call was for is counted as skipped along with the
+          // ones after it: it got no answer either.
+          this.#counters.segmentsSkipped += segments.length - index;
+          if (cause.reason === "budget") this.#counters.deadlineExpiries += 1;
+          else if (cause.interrupted) this.#counters.callerAbortsMidGeneration += 1;
+          else this.#counters.callerAbortsWhileQueued += 1;
           return findings;
         }
+
+        // One row per answered call, repair retries included. Recorded before
+        // the body is looked at, because a call that will fail to parse still
+        // spent its tokens and its time-to-first-token.
+        this.#calls.push(callRecord(completion));
 
         // Counted from what the ENGINE reported, before and independently of
         // whether the body parsed: a truncated response that happens to parse
         // is still a response the model did not finish, and the bake-off reads
         // this to tell a budget-killed arm from an incapable one.
-        if (completion.finishReason === "length") this.#stats.truncatedResponses += 1;
-        if (completion.finishReason === "abort") this.#stats.abortedResponses += 1;
+        if (completion.finishReason === "length") this.#counters.truncatedResponses += 1;
+        if (completion.finishReason === "abort") this.#counters.abortedResponses += 1;
 
         // `finishReason` is threaded rather than left out: Task 2 measured
         // inferring truncation from the thrown SyntaxError's wording putting 6
@@ -259,6 +445,7 @@ export class WebLlmJudge implements SemanticJudge {
         // stating that IT cut the response off.
         const parsed = parseJudgeResponse(completion.content, completion.finishReason);
         if (parsed.ok) {
+          this.#counters.segmentsJudged += 1;
           this.#collect(parsed.value, segment, completion.model, severityOf, emitted, findings);
           break;
         }
@@ -273,19 +460,28 @@ export class WebLlmJudge implements SemanticJudge {
         // latched, a repair retry would be answered instantly and emptily, and
         // so would every remaining segment. Retrying would also file the event
         // as a model failure when nothing about the model was exercised.
+        //
+        // Nothing here recovers the engine, and that is worth stating rather
+        // than leaving to be discovered: `clearInterrupt` is deliberately NOT
+        // on the `Tier2Engine` seam, and `runWithDeadline` clears only the flag
+        // it set itself. So a judge holding a latched engine fails this way on
+        // its NEXT message too, and the one after -- one wasted call per
+        // message, indefinitely, until whoever set the flag clears it or the
+        // engine is rebuilt.
         if (parsed.reason === "aborted") {
-          this.#stats.failedClosed += 1;
+          this.#counters.failedClosed += 1;
+          this.#counters.segmentsSkipped += segments.length - index - 1;
           return findings;
         }
 
         if (repaired) {
           // One repair, then fail closed. A model that will not emit valid JSON
           // twice must never have its prose passed through as a judgement.
-          this.#stats.failedClosed += 1;
+          this.#counters.failedClosed += 1;
           break;
         }
         repaired = true;
-        this.#stats.repairAttempts += 1;
+        this.#counters.repairAttempts += 1;
         messages = [...messages, repairMessage(parsed.reason, parsed.detail)];
       }
     }
@@ -307,7 +503,7 @@ export class WebLlmJudge implements SemanticJudge {
       // normalizeFindings throw, which loses the message including the findings
       // that were fine -- so it is dropped here, where it costs one finding.
       if (severity === undefined) {
-        this.#stats.unknownPredicates += 1;
+        this.#counters.unknownPredicates += 1;
         continue;
       }
 
@@ -316,7 +512,7 @@ export class WebLlmJudge implements SemanticJudge {
       // model never read.
       const resolved = resolveQuote(segment.text, finding.quote);
       if (resolved === undefined) {
-        this.#stats.unresolvedQuotes += 1;
+        this.#counters.unresolvedQuotes += 1;
         continue;
       }
 
@@ -330,12 +526,12 @@ export class WebLlmJudge implements SemanticJudge {
         // Models restate a finding, and Plan 5's own probe corpus caught one
         // looping a single finding until its token budget ran out. Two findings
         // over one span are one piece of evidence counted twice.
-        this.#stats.duplicatesDropped += 1;
+        this.#counters.duplicatesDropped += 1;
         continue;
       }
       emitted.add(key);
-      if (resolved.rung === 1) this.#stats.rung1 += 1;
-      else this.#stats.rung2 += 1;
+      if (resolved.rung === 1) this.#counters.rung1 += 1;
+      else this.#counters.rung2 += 1;
 
       out.push({
         start,
@@ -367,6 +563,29 @@ export class WebLlmJudge implements SemanticJudge {
       });
     }
   }
+}
+
+/**
+ * Copy the four numbers a bake-off row needs off one completion.
+ *
+ * `engine.ts` went to real trouble to pass `usage` through verbatim, NaN caveat
+ * included, and the judge is the only holder of a `Tier2Completion` inside a
+ * `detect()` run -- so anything not copied here is unobtainable downstream.
+ *
+ * No `?? 0` anywhere, deliberately. Every one of these is `undefined` when the
+ * engine reported no `usage`, and `undefined` is the honest value for "not
+ * reported": a 0 would say the call used no prompt tokens and answered
+ * instantly, which is a claim about the model rather than about a missing
+ * field. Seconds become milliseconds and nothing else is transformed.
+ */
+function callRecord(completion: Tier2Completion): JudgeCallRecord {
+  const ttftSeconds = completion.usage?.extra.time_to_first_token_s;
+  return {
+    finishReason: completion.finishReason,
+    promptTokens: completion.usage?.prompt_tokens,
+    completionTokens: completion.usage?.completion_tokens,
+    ttftMs: ttftSeconds === undefined ? undefined : ttftSeconds * 1000,
+  };
 }
 
 /**

@@ -211,6 +211,24 @@ describe("runWithDeadline", () => {
     await expect(runWithDeadline(ok, (s) => ok.create(s), 2_147_483_647)).resolves.toBeDefined();
   });
 
+  it("refuses a budgetMs that is not a number at all", async () => {
+    // The other half of the guard, and the half the loop above cannot reach.
+    // Every value there is caught by the RANGE clause; what `Number.isFinite`
+    // uniquely contributes is a numeric STRING, which compares fine against
+    // both bounds. And a string is not the 1 ms hazard the loop documents --
+    // MEASURED on Node 26, `setTimeout(fn, "300")` fired at 302 ms, coerced and
+    // honoured. It is refused because `budgetMs` is typed `number` and every
+    // record built from it says milliseconds-as-a-number; an eval driver reads
+    // its config from JSON, where a quoted number is one typo away and
+    // TypeScript is not present to object.
+    const e = fakeEngine({ hangs: true });
+    await expect(
+      runWithDeadline(e, (s) => e.create(s), "300" as unknown as number),
+    ).rejects.toThrow(/budgetMs/);
+    expect(e.state.calls).toBe(0);
+    expect(e.state.interrupted).toBe(0);
+  });
+
   it("clears its timer on the success path", async () => {
     // A leaked timer keeps the process alive after the suite finishes, which
     // shows up as vitest hanging rather than as a failure.
