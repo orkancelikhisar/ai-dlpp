@@ -878,14 +878,21 @@ describe("judge verdict", () => {
     expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
   });
 
-  it("reports a blown per-call budget as a budget notice", async () => {
+  it("reports a blown per-call budget against the PER-CALL budget, not the message's", async () => {
+    // `call-budget-exhausted`, not `budget-exhausted`. The number that expired
+    // is the one this judge was constructed with; `ir.latencyBudgetMs` is
+    // 30000 here and untouched, and a bake-off aggregating on `reason` would
+    // otherwise count model slowness against the spec 5.3 message budget.
     const judge = new WebLlmJudge(
       fakeEngine({ throws: new DeadlineExpired("budget", 30_000, true) }),
       BUDGET,
     );
     const verdict = await judge.judge(req(whole(), predicateIr()));
     expect(judge.stats.deadlineExpiries).toBe(1);
-    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["budget-exhausted"]);
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["call-budget-exhausted"]);
+    // The message budget is what the orchestrator's own word is about, and no
+    // part of it was consumed by this fake.
+    expect(verdict.degraded?.[0]!.detail).toContain("per-call budget");
   });
 
   it("says nothing about an abort its own caller raised", async () => {
@@ -907,6 +914,64 @@ describe("judge verdict", () => {
     const verdict = await judge.judge(req(whole(), predicateIr()));
     expect(judge.stats.failedClosed).toBe(1);
     expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
+  });
+
+  // Both early returns below leave the loop mid-message, and both were asserted
+  // only on `stats` and `degraded[].reason` -- so `scopesJudged: []` on either
+  // path survived the whole suite. It is not a cosmetic field: the orchestrator
+  // turns "the policy declares a scope you did not evaluate" into a
+  // `scope-unjudged` notice, so a judge that answered k segments and then
+  // stopped would collect a SECOND notice for the same event, one of them
+  // saying those predicates were never judged in their own scope. That is the
+  // records-state-fact defect inside the field added to prevent it.
+  const twoSegments = (): Segment[] => [
+    { kind: "prose", start: 0, end: MSG.length, text: MSG },
+    { kind: "prose", start: MSG.length + 1, end: MSG.length + 1 + MSG.length, text: MSG },
+  ];
+
+  it("still names the scope it judged when a per-call budget ends the run early", async () => {
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        script: [{ findings: [hit()] }, { throws: new DeadlineExpired("budget", 30_000, true) }],
+      }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(twoSegments(), predicateIr()));
+    // Segment 1 really was judged in the segment scope: its finding is here.
+    expect(verdict.findings).toHaveLength(1);
+    expect(judge.stats.segmentsJudged).toBe(1);
+    expect(verdict.scopesJudged).toEqual(["segment"]);
+  });
+
+  it("still names the scope it judged when a latched engine ends the run early", async () => {
+    const judge = new WebLlmJudge(
+      fakeEngine({ script: [{ findings: [hit()] }, { raw: "", finishReason: "abort" }] }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(twoSegments(), predicateIr()));
+    expect(verdict.findings).toHaveLength(1);
+    expect(judge.stats.segmentsJudged).toBe(1);
+    expect(verdict.scopesJudged).toEqual(["segment"]);
+  });
+
+  it("files no scope-unjudged notice for a run its own budget cut short", async () => {
+    // The two notices this pairing must not produce together, through the real
+    // orchestrator: one saying the run stopped, one saying the scope was never
+    // evaluated. Only the first is true.
+    const result = await detect({
+      ir: loadPolicyIr(JSON.stringify(predicateIr())),
+      provider: "claude",
+      text: MSG,
+      config: { tier0: false, tier1: false, tier2: true },
+      engines: {
+        tier2: new WebLlmJudge(
+          fakeEngine({ throws: new DeadlineExpired("budget", 30_000, true) }),
+          BUDGET,
+        ),
+      },
+    });
+    expect(result.degraded.filter((d) => d.reason === "scope-unjudged")).toEqual([]);
+    expect(result.degraded.filter((d) => d.reason === "call-budget-exhausted")).toHaveLength(1);
   });
 
   it("never puts message text or model output in a notice", async () => {

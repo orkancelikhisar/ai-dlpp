@@ -48,6 +48,17 @@ export interface TierConfig {
  * against that budget rather than bounded by it -- so a slow tier 1 shortens
  * tier 2's share and can spend the whole budget itself. Bounding tier 1 is a
  * change to what Plan 4 measured and has no owner yet.
+ *
+ * There is also NO degradation channel here, and that is a real gap rather than
+ * an omission from this comment. `tag` returns findings and nothing else, while
+ * `SemanticJudge` returns a `JudgeVerdict` that carries notices -- so everything
+ * tier 1 loses is lost silently as far as `DetectionResult` is concerned.
+ * `Tier1TaggerStats` counts the losses (`truncatedWords` for a segment read as a
+ * contiguous prefix, `droppedWords` for words that tokenised to nothing) on the
+ * tagger object, and `detect` never reads them. Closing that means returning a
+ * verdict from here, which changes every implementor's signature; it is unowned
+ * work. See `DetectionResult.degraded` for what a caller must therefore not
+ * conclude from an empty array.
  */
 export interface SpanTagger {
   tag(segments: Segment[], ir: PolicyIr, signal?: AbortSignal): Promise<Finding[]>;
@@ -58,25 +69,51 @@ export interface SpanTagger {
  *
  * TWO unions, not one, because the two producers know different things. An
  * engine can only report what happened inside its own run; whether a tier ran
- * AT ALL, and whether a predicate scope went unevaluated, are facts about the
- * orchestrator's own calls and are not an engine's to assert. Keeping the
- * engine union narrow is what lets `EngineDegradedNotice` carry no `tier` --
- * see there.
+ * AT ALL, whether a predicate scope went unevaluated, and how much of the
+ * MESSAGE's budget was left are facts about the orchestrator's own calls and
+ * are not an engine's to assert. Keeping the engine union narrow is what lets
+ * `EngineDegradedNotice` carry no `tier` -- see there -- and it is what makes
+ * `stampEngineNotice` in the orchestrator able to refuse a word an engine is
+ * not entitled to say.
+ *
+ * ENGINE words -- what happened inside one engine's own run:
  *
  * - `failed-closed`: the tier ran and refused to answer for part of the
  *   message. Spec section 7: a tier-2 body still invalid after one repair retry
  *   is flagged for user review and never passed through as a judgement.
+ * - `call-budget-exhausted`: one of the engine's OWN calls did not answer
+ *   inside the per-call budget that engine holds. For `WebLlmJudge` that is
+ *   `WebLlmJudgeOptions.budgetMs`, fixed when the judge was constructed; it is
+ *   not `ir.latencyBudgetMs` and says nothing about it, and a run can carry
+ *   this word with almost all of the message's budget still unspent.
+ *
+ * ORCHESTRATOR words -- facts about the calls `detect` itself made:
+ *
  * - `budget-exhausted`: `ir.latencyBudgetMs` for this MESSAGE ran out. Emitted
  *   whether the tier was cut short mid-run or never started because the earlier
  *   tiers had already spent it.
- * - `absent`: the tier did not run. Not a failure and deliberately not spelled
- *   as one -- a machine with no WebGPU runs tier 0 and tier 1 exactly as
- *   designed -- but a caller reading an empty `findings` still has to know.
+ * - `absent`: the tier was not enabled in this `TierConfig`. Not a failure and
+ *   deliberately not spelled as one -- a machine with no WebGPU runs tier 0 and
+ *   tier 1 exactly as designed -- but a caller reading an empty `findings`
+ *   still has to know. What it costs a caller that wanted one boolean is spelled
+ *   out on `DetectionResult.degraded`.
  * - `scope-unjudged`: the policy declares predicates in a scope the judge did
  *   not evaluate. See `JudgeVerdict.scopesJudged`.
+ *
+ * The two budget words are separate deliberately, and the separation is
+ * load-bearing rather than a nicety: they count different events against
+ * different denominators, and a bake-off aggregating on `reason` is the
+ * consumer. One word for both would report a model with a tight per-call budget
+ * as violating the spec 5.3 MESSAGE budget it never touched, and a reader
+ * raising `ir.latencyBudgetMs` in response would see no change. Only the
+ * free-text `detail` could tell them apart, and no analysis parses prose.
  */
-export type EngineDegradedReason = "failed-closed" | "budget-exhausted";
-export type DegradedReason = EngineDegradedReason | "absent" | "scope-unjudged";
+export type EngineDegradedReason = "failed-closed" | "call-budget-exhausted";
+export type DegradedReason =
+  | EngineDegradedReason
+  | "budget-exhausted"
+  | "absent"
+  | "scope-unjudged";
 
 /**
  * A degradation an ENGINE reports about its own run.
@@ -110,6 +147,16 @@ export interface EngineDegradedNotice {
  * `DegradedReason` WIDENS the engine union, and a widened property is not a
  * legal override of the one it widens. The two shapes are deliberately
  * separate declarations for that reason.
+ *
+ * `tier` is the full `Tier` union, but not every (tier, reason) pair is
+ * PRODUCIBLE today, and reading one that is not into the shape of the type
+ * would be reading an intention rather than a fact. What `detect` can actually
+ * emit: `{tier: 0, absent}`, `{tier: 1, absent}`, and any word at all for tier
+ * 2. Tiers 0 and 1 have no other channel -- tier 0 is in-process and never
+ * short of anything, and `SpanTagger.tag` returns findings with no notices --
+ * so a tier-1 entry saying `failed-closed` or `budget-exhausted` cannot arise
+ * from this module. The type is wide because narrowing it would have to be
+ * undone by whoever gives tier 1 a channel, not because the values exist.
  */
 export interface DegradedNotice {
   readonly tier: Tier;
@@ -236,17 +283,46 @@ export interface DetectionResult {
    */
   timings: { tier0Ms: number; tier1Ms?: number; tier2Ms?: number };
   /**
-   * Every way this result is weaker than a complete run of the configured
-   * pipeline, in tier order. EMPTY means every configured tier ran and answered
-   * for the whole message -- so an empty `findings` with an empty `degraded` is
-   * the one thing that entitles a caller to say the message is clean.
+   * Every way this result is weaker than a full THREE-TIER run, in tier order.
+   *
+   * Read it per ENTRY, branching on `reason`; `degraded.length` is not a
+   * cleanliness test and this doc used to say it was. Two properties of the
+   * shipped pipeline are why, and they fail in opposite directions:
+   *
+   * 1. An `absent` entry is filed for every tier the `TierConfig` switched OFF,
+   *    so `degraded` is NON-EMPTY on every arm that is not all three tiers on --
+   *    the Approach-A tier-0 baseline and the compiler's self-test included. It
+   *    states coverage, not failure: nothing went wrong, the caller did not ask
+   *    that tier. A consumer reading `degraded.length > 0` as "this run was
+   *    weakened" marks every tier-0 and tier-1 row in the bake-off matrix as
+   *    weakened, and a UI doing it flags 100% of messages on any machine without
+   *    WebGPU, which trains the user to dismiss the flag.
+   * 2. Only tier 2 can contribute a non-`absent` entry. `SpanTagger.tag` returns
+   *    `Promise<Finding[]>` -- no verdict, no notices -- so tier 1's own
+   *    documented losses never arrive: `Tier1TaggerStats.truncatedWords` counts
+   *    the tail of a long segment that the model, which reads a contiguous
+   *    prefix, never tokenised, and `detect` reads no tagger stats at all. Nor
+   *    does anything record that tier 1 is handed non-code segments only. So a
+   *    tier-1 run that answered for half the message is indistinguishable HERE
+   *    from one that answered for all of it, and an empty array is not evidence
+   *    that it did.
+   *
+   * What the field does buy, which is what it was added for and is real: a
+   * tier-2 arm that failed closed on 40% of its messages is distinguishable from
+   * one that found nothing, where before the difference lived only on the
+   * judge's own counters. That comparison is the bake-off's central one and it
+   * lives entirely in the tier-2 entries.
+   *
+   * The nearest honest "nothing was skipped" test a caller can run today is
+   * `findings.length === 0 && degraded.every((d) => d.reason === "absent")`,
+   * plus knowing which tiers it disabled -- and, if tier 1 was on, reading that
+   * tagger's own stats. Giving tier 1 a channel would shorten that; it is a
+   * change to `SpanTagger` and is unowned.
    *
    * REQUIRED, not optional, and that is the field's whole value. An optional
    * one lets a producer that never learned to report degradation look exactly
-   * like a clean run, which is the ambiguity being closed here: today an arm
-   * that fails closed on 40% of its messages and an arm that finds nothing
-   * produce identical results, and the bake-off's central comparison is between
-   * exactly those two. `[]` is a positive claim; `undefined` would be silence.
+   * like a clean run, which is the ambiguity being closed here. `[]` is a
+   * positive claim; `undefined` would be silence.
    *
    * It also settles a question `timings` could not: `tier0Ms` reads 0 both for
    * "ran instantly" and for "was not enabled", which its own doc warns about.

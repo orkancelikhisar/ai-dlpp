@@ -466,7 +466,7 @@ git add -A && git commit -m "feat(tier2): grammar-constrained JSON contract with
 - Create: `packages/tier2/src/cancel.ts`
 - Test: `packages/tier2/test/cancel.test.ts`
 
-**This task exists because of one measurement.** A naive `Promise.race` timeout around a WebLLM call leaves the engine **permanently wedged** — measured on the real pipeline in the browser, the next call did not return within 8 s. Core's `SemanticJudge` accepts an `AbortSignal` precisely so a tier-2 run exceeding `latencyBudgetMs` can degrade to the tier 0/1 findings, and doing that wrong costs every subsequent message.
+**This task exists because of one measurement.** A naive `Promise.race` timeout around a WebLLM call leaves the engine **permanently wedged** — measured on the real pipeline in the browser, the next call did not return within 8 s. Core's `SemanticJudge` is handed an `AbortSignal` -- on `JudgeRequest.signal` since Task 6, not as a positional argument -- precisely so a tier-2 run exceeding `latencyBudgetMs` can degrade to the tier 0/1 findings, and doing that wrong costs every subsequent message.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -981,11 +981,26 @@ Implements core's `SemanticJudge`. **The obligation core has been carrying since
 
 ```ts
 import { describe, expect, it } from "vitest";
+import type { Finding, PolicyIr, Segment } from "@sih/core";
 import { detect, loadPolicyIr } from "@sih/core";
 import { WebLlmJudge } from "../src/judge.js";
 import { fakeEngine, predicateIr } from "./helpers.js";
 
 const MSG = "Please review the Northwind Traders renewal before Friday.";
+
+// CORRECTED after Task 6 shipped. `SemanticJudge.judge` takes ONE object and
+// returns a `JudgeVerdict`, not a `Finding[]` -- the positional form these
+// snippets were written against no longer compiles. `packages/tier2/test/judge.test.ts`
+// is the authority; these two helpers are the minimum that keeps the snippets
+// below runnable.
+const seg = (text = MSG, start = 0): Segment[] => [
+  { kind: "prose", start, end: start + text.length, text },
+];
+const judged = async (
+  instance: WebLlmJudge, segments: Segment[], ir: PolicyIr,
+  priorFindings: Finding[] = [], text = MSG,
+): Promise<Finding[]> =>
+  (await instance.judge({ text, segments, ir, priorFindings, budgetMs: 30_000 })).findings;
 
 describe("WebLlmJudge", () => {
   it("emits the SHADOW entityType, not the bare predicate id", async () => {
@@ -995,7 +1010,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [{ predicateId: "client-relationship", quote: "Northwind Traders renewal", confidence: 0.9 }] }),
       { budgetMs: 30_000 },
     );
-    const found = await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr(), []);
+    const found = await judged(judge, seg(), predicateIr());
     expect(found[0]!.entityType).toBe("pred:client-relationship");
   });
 
@@ -1022,7 +1037,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [{ predicateId: "not-a-predicate", quote: "Northwind Traders renewal", confidence: 0.9 }] }),
       { budgetMs: 30_000 },
     );
-    const found = await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr(), []);
+    const found = await judged(judge, seg(), predicateIr());
     expect(found).toEqual([]);
   });
 
@@ -1031,7 +1046,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [{ predicateId: "client-relationship", quote: "text that is not in the message", confidence: 0.9 }] }),
       { budgetMs: 30_000 },
     );
-    const found = await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr(), []);
+    const found = await judged(judge, seg(), predicateIr());
     expect(found).toEqual([]);
     expect(judge.stats.unresolvedQuotes).toBe(1);
   });
@@ -1044,7 +1059,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [{ predicateId: "client-relationship", quote: "Northwind Traders renewal", confidence: 0.9 }] }),
       { budgetMs: 30_000 },
     );
-    await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr(), []);
+    await judged(judge, seg(), predicateIr());
     expect(judge.stats.rung1 + judge.stats.rung2).toBe(1);
   });
 
@@ -1057,10 +1072,7 @@ describe("WebLlmJudge", () => {
       fakeEngine({ findings: [{ predicateId: "client-relationship", quote: "Northwind Traders renewal", confidence: 0.9 }] }),
       { budgetMs: 30_000 },
     );
-    const found = await judge.judge(
-      [{ kind: "prose", start: prefix.length, end: whole.length, text: MSG }],
-      predicateIr(), [],
-    );
+    const found = await judged(judge, seg(MSG, prefix.length), predicateIr(), [], whole);
     expect(whole.slice(found[0]!.start, found[0]!.end)).toBe("Northwind Traders renewal");
   });
 
@@ -1069,7 +1081,7 @@ describe("WebLlmJudge", () => {
     // to ask about nothing costs seconds per message.
     let calls = 0;
     const judge = new WebLlmJudge(fakeEngine({ findings: [], onCall: () => { calls += 1; } }), { budgetMs: 30_000 });
-    const found = await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr({ predicates: [] }), []);
+    const found = await judged(judge, seg(), predicateIr({ predicates: [] }));
     expect(found).toEqual([]);
     expect(calls).toBe(0);
   });
@@ -1079,7 +1091,7 @@ describe("WebLlmJudge", () => {
     // "flag for user review" -- a model that will not emit valid JSON must
     // never silently pass text through.
     const judge = new WebLlmJudge(fakeEngine({ raw: "not json at all" }), { budgetMs: 30_000 });
-    const found = await judge.judge([{ kind: "prose", start: 0, end: MSG.length, text: MSG }], predicateIr(), []);
+    const found = await judged(judge, seg(), predicateIr());
     expect(judge.stats.repairAttempts).toBe(1);
     expect(judge.stats.failedClosed).toBe(1);
     expect(found).toEqual([]);
@@ -1093,7 +1105,7 @@ Write `packages/tier2/test/helpers.ts` in this task: `predicateIr(options)` retu
 
 - [ ] **Step 3: Implement**
 
-`WebLlmJudge implements SemanticJudge`. Per `judge(segments, ir, priorFindings, signal)`:
+`WebLlmJudge implements SemanticJudge`. Per `judge(request)` -- ONE object, `{ text, segments, ir, priorFindings, budgetMs, signal }`, returning a `JudgeVerdict` of `{ findings, scopesJudged, degraded? }`. The positional signature this line used to name was replaced when Task 6 needed `text` (for `scope: "message"`) and `budgetMs` (for the per-message budget) reachable without breaking every implementor again:
 
 1. If `ir.semanticPredicates` is empty, return `[]` **without calling the engine**.
 2. Build one prompt per segment carrying: the predicates (`id` + `nlPredicate`), the segment text, and a compact summary of `priorFindings` overlapping that segment. Prompt for a **verbatim quote of the whole enclosing clause, at least three words** — measured, three-word quotes are ~0% ambiguous while one-word are non-unique 22-51% of the time.
@@ -1125,18 +1137,18 @@ git add -A && git commit -m "feat(tier2): WebLlmJudge emitting shadow entityType
 
 ---
 
-**Five things Task 6 established that later tasks depend on.** Two are corrections to this plan; three are gaps nothing currently closes.
+**Five things Task 6 established that later tasks depend on.** Two are corrections to this plan; three were gaps, and the degraded-channel commit closed all three — see each entry for what it left open.
 
 *Corrections:*
 
 1. **"Call through `runWithDeadline`" (step 3) is not possible from the judge, and should not be.** `runWithDeadline` takes an `Interruptible`; Task 5's `Tier2Engine` seam exposes only `complete(messages, { budgetMs, signal })`, which already performs the deadline, drain, interrupt-clear and per-engine serialization internally. The judge passes a budget; the engine owns the deadline. This plan text predates the seam.
 2. **"confidence clamped to a finite `[0,1]`" (step 6) would be dead code, and contradicts `schema.ts`.** `JudgeResponseSchema` is `z.number().min(0).max(1)`, which rejects NaN, both infinities and out-of-range values before `parseJudgeResponse` returns `ok`. And the schema **rejects rather than clamps** on purpose — clamping a model's `95` to `1.0` would turn a misread scale into a maximally confident finding and hide it from the per-arm failure counts. Confidence is passed through; the validation boundary is `schema.ts`, and it is documented there.
 
-*Gaps — each needs an owner before the bake-off:*
+*Gaps as Task 6 left them. All three were closed by the degraded-channel commit; each entry below now records what closed it and what it left open:*
 
-3. **`SemanticPredicate.scope` is unhonoured.** Every predicate is judged per segment, including `scope: "message"`. The judge is handed segments, not the message, and Task 7 will hand it a *filtered* list — so the message cannot be reassembled without inventing text. Evidence for a message-scoped predicate spanning two segments is seen by neither call. Closing this means changing core's `SemanticJudge` signature; leaving it open means the bake-off silently under-measures message-scoped predicates, and the write-up must say so.
-4. **Nothing bounds the whole-message tier-2 budget.** `budgetMs` is per call; spec §5.3's `ir.latencyBudgetMs` is a per-message number, and no code enforces it across N segments. A 12-segment message can spend 12x the intended budget while every individual call is compliant. Owner: Task 7, the orchestrator, or the judge — decide before Task 12 reports latency.
-5. **"Fail closed to flag for user review" has no channel.** `DetectionResult` still has no `degraded`/`warnings` field (core's orchestrator notes one is "expected in Plan 5"). Today, failing closed means emitting nothing and incrementing a counter — so **an empty tier-2 return is indistinguishable from a clean message** unless the caller reads `stats`. That is a gap in the product promise, not only in the record: the spec says a model that will not emit valid JSON must never silently pass text through, and right now it silently passes text through to a caller who does not inspect `stats`.
+3. **CLOSED (`feat(core)`, the degraded-channel commit) — `SemanticPredicate.scope` was unhonoured.** Every predicate is still judged per segment, including `scope: "message"`, but the gap is now *reported* rather than silent: `JudgeVerdict.scopesJudged` is required, `WebLlmJudge` answers `["segment"]`, and the orchestrator turns "the policy declares a scope you did not evaluate" into a `scope-unjudged` notice on every affected row. `JudgeRequest.text` now carries the whole message, so a judge that wants to answer the message scope can; doing so is Task 7's, and until it does the bake-off says so in every row instead of in a write-up nobody reads.
+4. **CLOSED — nothing bounded the whole-message tier-2 budget. Owner: THE ORCHESTRATOR.** `detect` reads `ir.latencyBudgetMs`, subtracts what tiers 0 and 1 already spent (`remainingBudgetMs`), refuses to call the judge at all on a spent budget, and arms a single `AbortController` deadline at what is left — a deadline, never a `Promise.race`, since Task 3 measured that racing wedges the engine. The judge still spends a per-call budget per segment; what the orchestrator adds is the ceiling across N of them. The remaining seam is that `JudgeRequest.budgetMs` is informational — `WebLlmJudge` reads it for nothing and sizes its calls from its constructor budget — so sizing per-call budgets from what is left of the message is still open, and belongs with Task 12, which measures the result.
+5. **CLOSED — "fail closed to flag for user review" now has a channel.** `DetectionResult.degraded` is a REQUIRED `DegradedNotice[]`: `{ tier, reason, detail }`, with `reason` one of `failed-closed`, `call-budget-exhausted`, `budget-exhausted`, `absent`, `scope-unjudged`. An empty tier-2 return is no longer indistinguishable from a clean message. Read the field's own docblock before consuming it: `absent` is filed for every deliberately-disabled tier, so `degraded.length` is NOT a cleanliness test, and tier 1 has no channel into it at all (`SpanTagger.tag` returns findings with no verdict), so a truncated tier-1 read is still invisible here. Giving tier 1 a channel is the one piece of this gap still open, and has no owner.
 
 Also settled: on `DeadlineExpired` and on a latched-engine `"abort"`, the judge **stops the run** rather than continuing to the next segment, and returns what it has collected. Continuing is not merely wasteful — Task 3 measured that a latched engine returns an instant empty answer to every subsequent call, which a judge reads as "no findings", so continuing would manufacture clean segments.
 
@@ -1582,6 +1594,8 @@ describe("RunRecordSchema tier-2 fields", () => {
 - [ ] **Step 2: Run to verify failure** — the schema has no `tier2Stats`.
 
 - [ ] **Step 3: Implement** — add `tier2Stats` to `RunRecordSchema`, coupled to `config.tier2 && error === null`, carrying every counter above plus `finishReason`, `promptTokens`, `completionTokens`, `ttftMs`. Populate it in `runArm` **in the round trip it already makes**, exactly as `tier1Stats` is.
+
+  **Counters are not sufficient, and this step as written does not deliver what Task 12 needs.** `RunRecordSchema` has no `degraded` field and `runArm` projects `DetectionResult` field by field (`findings`, `timings`), so the array is silently dropped — adding it to `DetectionResult` produced no type error and no output change. Three of the five reason words have no counter equivalent: `absent` and `scope-unjudged` are the orchestrator's own facts and no judge counts them, and the budget-spent-before-start path makes **no judge call at all**, so nothing is there to count. Carry `degraded` onto the record alongside `tier2Stats`, or Task 12's table still cannot separate the two arms this whole channel exists to separate: "failed closed on 40% of messages" and "found nothing".
 
 - [ ] **Step 4: Verify pass** — 4 passed; root suite green.
 

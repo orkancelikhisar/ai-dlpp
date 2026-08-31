@@ -7,6 +7,8 @@ import type {
   DegradedNotice,
   DetectionResult,
   DetectorEngines,
+  EngineDegradedNotice,
+  EngineDegradedReason,
   Finding,
   JudgeVerdict,
   ResolvedFinding,
@@ -264,6 +266,71 @@ function absentNotice(tier: Tier): DegradedNotice {
   };
 }
 
+/**
+ * The reason words an ENGINE is entitled to say, as values to test against.
+ *
+ * Built from a `satisfies Record<EngineDegradedReason, true>` literal for the
+ * same reason `PREDICATE_SCOPES` is: widening the engine union has to be a
+ * compile error here, not a word this guard silently starts rejecting at
+ * runtime.
+ */
+const ENGINE_DEGRADED_REASONS = Object.keys({
+  "failed-closed": true,
+  "call-budget-exhausted": true,
+} satisfies Record<EngineDegradedReason, true>);
+
+/**
+ * One engine notice, turned into a result entry field by field -- never a
+ * spread -- with both fields defended.
+ *
+ * The two fields need DIFFERENT defences because the orchestrator knows
+ * different amounts about them. `tier` it knows outright: this call was made as
+ * tier N, so an engine's claim is overwritten rather than consulted. `reason` it
+ * cannot know -- what went wrong inside a model is precisely what the engine is
+ * being asked -- so there is no correct value to substitute, and the choices are
+ * to refuse the notice or to file a word that means something else. It refuses,
+ * exactly as `normalizeFindings` refuses an entityType the IR does not declare,
+ * and for the same reason: a confidently wrong record is worse than a loud one.
+ *
+ * `absent` is the case that makes this matter rather than tidy. It is an
+ * orchestrator-only word meaning "this tier did not run", and an engine that
+ * reached this line demonstrably ran -- so a `{tier: 2, reason: "absent"}` entry
+ * would say the judge never ran on a row that carries the judge's own findings.
+ * That is the same inverted record the `tier` defence exists to prevent,
+ * arriving through the other field. `budget-exhausted` and `scope-unjudged` are
+ * refused on the same ground: both are claims about `ir.latencyBudgetMs` and the
+ * policy's scopes, which only `detect` measures.
+ *
+ * The threat model is untyped JS -- which the eval harness's page boundary is --
+ * so the guard is written against values the types already forbid, and `detail`
+ * is checked for being a non-empty string on the same grounds: it is the whole
+ * human-readable payload of a notice, and `DegradedNotice` types it `string`.
+ * A spread would additionally copy whatever else such a producer attached (a
+ * `{reason, detail, offendingBody}` shape, say) into a diagnostic that gets
+ * logged, which `EngineDegradedNotice`'s docblock forbids.
+ *
+ * The offending word is named in the message. It is a fixed-vocabulary field
+ * rather than a place a message's text lives, and naming it is what makes the
+ * error diagnosable -- the same trade `normalizeFindings` makes with `source`
+ * and `entityType`.
+ */
+function stampEngineNotice(tier: Tier, notice: EngineDegradedNotice): DegradedNotice {
+  if (!ENGINE_DEGRADED_REASONS.includes(notice.reason)) {
+    throw new Error(
+      `tier-${tier} engine reported a degradation reason it may not name: "${String(notice.reason)}" ` +
+        `(an engine may report ${ENGINE_DEGRADED_REASONS.join(" or ")}; "absent", ` +
+        `"budget-exhausted" and "scope-unjudged" are facts about the orchestrator's own calls)`,
+    );
+  }
+  if (typeof notice.detail !== "string" || notice.detail.length === 0) {
+    throw new Error(
+      `tier-${tier} engine reported a "${notice.reason}" degradation with no detail; ` +
+        `detail is required and is the entire human-readable payload of a notice`,
+    );
+  }
+  return { tier, reason: notice.reason, detail: notice.detail };
+}
+
 export interface DetectInput {
   ir: PolicyIr;
   provider: string;
@@ -382,10 +449,18 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     // `ir.latencyBudgetMs` and how much of it the earlier tiers already spent.
     const remaining = remainingBudgetMs(ir.latencyBudgetMs, performance.now() - messageStarted);
     if (remaining === undefined) {
-      // Not called at all, rather than called with a budget of zero: a judge
-      // handed 0 either refuses it (tier 2's own constructor does) or hands it
-      // to a timer that fires in about 1 ms -- see MAX_TIMER_DELAY_MS for that
-      // measurement -- and interrupts a generation that has produced nothing.
+      // Not called at all, rather than called with a budget of zero -- and the
+      // refusal has to be HERE, because no judge performs it. The shipped one
+      // does not: `WebLlmJudge`'s constructor validates the per-call budget it
+      // is BUILT with (`WebLlmJudgeOptions.budgetMs`) and `judge()` reads
+      // `request.budgetMs` for nothing at all, which its own docblock states in
+      // as many words. Handed a 0 it would ignore the 0 and run a full call.
+      //
+      // What a spent budget actually buys is the deadline below armed at 0, and
+      // a setTimeout(0) fires in about 1 ms -- see MAX_TIMER_DELAY_MS for that
+      // measurement -- so the judge would be started and aborted before its
+      // first token: one model call spent to produce nothing.
+      //
       // `timings.tier2Ms` stays unset for the same reason it does for any tier
       // that did not run: a 0 there would read as a tier that ran instantly.
       degraded.push({
@@ -419,10 +494,28 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
           signal: controller.signal,
         });
       } finally {
-        // In `finally` because the throw path is the one that leaks: an
-        // uncleared timer outlives the message that armed it and aborts
-        // whichever detect() is in flight when it fires, which reads as a slow
-        // model on a message that was never slow.
+        // In `finally` because the throw path is the one that leaks.
+        //
+        // What a leaked timer costs, MEASURED here rather than assumed, because
+        // this comment used to claim the larger of the two and the larger one
+        // cannot happen: it does NOT abort a later message. `controller` is
+        // built inside this branch, so it is per-call; a probe that neutered
+        // `clearTimeout` for a call whose judge threw, then ran a second detect
+        // with a 10s budget and a judge watching its signal, saw call 1's own
+        // signal abort (control) and call 2's signal stay unaborted through the
+        // whole run. A leaked timer aborts a controller nobody is listening to.
+        //
+        // What it does cost: `setTimeout` returns a REF'd handle -- measured on
+        // Node v26.0.0, `hasRef()` is true, and a process whose only remaining
+        // work was an uncleared 800 ms timer exited at 803 ms instead of at 0.
+        // So a batch harness lingers for the rest of every abandoned budget and
+        // vitest reports the run as holding a handle. Cheap to prevent, so it is
+        // prevented.
+        //
+        // The cross-message abort is worth keeping named because it becomes REAL
+        // the moment someone hoists `controller` to `detect` scope, or shares one
+        // across messages: then a leaked timer aborts whatever is in flight, and
+        // it reads as a slow model on a message that was never slow.
         clearTimeout(deadline);
       }
       timings.tier2Ms = performance.now() - started;
@@ -441,12 +534,11 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
         });
       }
 
-      // Field by field, never a spread: the tier is the one this call was made
-      // as, and an engine does not get to name it. `EngineDegradedNotice` has no
-      // `tier` for that reason, so a spread would only ever import one from
-      // untyped JS -- which the eval harness's page boundary is.
+      // The tier this call was made as, stamped; the engine's own words,
+      // checked. See `stampEngineNotice` for why the two fields get different
+      // treatment and why an off-vocabulary reason throws rather than passing.
       for (const notice of verdict.degraded ?? []) {
-        degraded.push({ tier: 2, reason: notice.reason, detail: notice.detail });
+        degraded.push(stampEngineNotice(2, notice));
       }
 
       // The scope the policy ASKED about against the scopes the judge says it

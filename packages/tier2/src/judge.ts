@@ -405,6 +405,10 @@ export class WebLlmJudge implements SemanticJudge {
    * Sizing per-call budgets from what is left of the message is a change to how
    * this judge spends its time, and it belongs with the task that measures the
    * result.
+   *
+   * That is also why a blown budget here reports `call-budget-exhausted` and
+   * not `budget-exhausted`: this judge cannot observe the message's budget at
+   * all, so naming it would be a record stating a number nothing here measured.
    */
   async judge(request: JudgeRequest): Promise<JudgeVerdict> {
     const { segments, ir, priorFindings, signal } = request;
@@ -464,8 +468,14 @@ export class WebLlmJudge implements SemanticJudge {
           this.#counters.segmentsSkipped += segments.length - index;
           if (cause.reason === "budget") {
             this.#counters.deadlineExpiries += 1;
+            // `call-budget-exhausted`, never `budget-exhausted`. The number that
+            // expired is `this.#budgetMs`, fixed when this judge was
+            // constructed; `ir.latencyBudgetMs` may have almost all of itself
+            // left, and the orchestrator files its own word for that from the
+            // timer IT armed. One word for both would have a bake-off count
+            // per-call model slowness against the spec 5.3 message budget.
             notices.push({
-              reason: "budget-exhausted",
+              reason: "call-budget-exhausted",
               detail:
                 `the tier-2 call for segment ${index + 1} of ${segments.length} did not answer ` +
                 `within its ${this.#budgetMs}ms per-call budget; that segment and the ` +

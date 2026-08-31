@@ -462,16 +462,38 @@ const aborted = (signal: AbortSignal) =>
   });
 
 describe("degraded channel", () => {
-  it("stays empty when every configured tier ran and answered", async () => {
+  it("stays empty when all three tiers ran and answered", async () => {
     const result = await detect({
       ir, provider: "chatgpt", text: "what is a monad?",
       config: { tier0: true, tier1: true, tier2: true },
       engines: { tier1: tagger([]), tier2: judge() },
     });
-    // Empty findings AND empty degraded is the only combination that entitles a
-    // caller to say the message is clean.
     expect(result.findings).toEqual([]);
     expect(result.degraded).toEqual([]);
+  });
+
+  it("files absent for a tier the config disabled, so length is not a cleanliness test", async () => {
+    // All-three-on is the ONLY configuration that can produce an empty array,
+    // and this test exists because every assertion about emptiness above uses
+    // it -- so "every CONFIGURED tier ran" and "all three tiers ran" were
+    // indistinguishable. A tier-0-only arm on a genuinely clean message is a
+    // complete run of the pipeline it was asked for, and it still reports two
+    // entries. A consumer reading `degraded.length > 0` as "this run was
+    // weakened" therefore marks every tier-0 row in the bake-off matrix, and
+    // every WebGPU-less machine, as weakened.
+    const result = await detect({
+      ir, provider: "chatgpt", text: "what is a monad?",
+      config: { tier0: true, tier1: false, tier2: false },
+    });
+    expect(result.findings).toEqual([]);
+    expect(result.degraded).not.toEqual([]);
+    expect(kinds(result)).toEqual([
+      { tier: 1, reason: "absent" },
+      { tier: 2, reason: "absent" },
+    ]);
+    // The test the field's docblock actually offers a caller, in place of the
+    // one it used to promise.
+    expect(result.degraded.every((d) => d.reason === "absent")).toBe(true);
   });
 
   it("separates a clean message from one tier 2 refused to judge", async () => {
@@ -515,6 +537,69 @@ describe("degraded channel", () => {
     expect(result.degraded).toEqual([{ tier: 2, reason: "failed-closed", detail: "d" }]);
   });
 
+  it("refuses a reason word the engine is not entitled to say", async () => {
+    // The other half of the same defence, and it has to be a REFUSAL rather
+    // than an override: the orchestrator knows which tier it called, so it can
+    // correct `tier`, but what went wrong inside a model is exactly what the
+    // engine is being asked, so there is no right value to substitute. `absent`
+    // is the case that makes this matter -- it means "this tier did not run",
+    // and an engine that reached this line demonstrably ran, so passing it
+    // through files the inverted record the `tier` defence exists to prevent.
+    const claims = (reason: string): SemanticJudge => ({
+      judge: async () => ({
+        findings: [], scopesJudged: ["segment"],
+        degraded: [{ reason, detail: "d" } as unknown as EngineDegradedNotice],
+      }),
+    });
+    const run = (reason: string) =>
+      detect({ ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(claims(reason)) });
+    for (const reason of ["absent", "budget-exhausted", "scope-unjudged", "ranch-dressing"]) {
+      await expect(run(reason)).rejects.toThrow(/may not name/);
+      await expect(run(reason)).rejects.toThrow(reason);
+    }
+    // Both legal engine words still pass through untouched.
+    for (const reason of ["failed-closed", "call-budget-exhausted"] as const) {
+      expect(kinds(await run(reason))).toEqual([{ tier: 2, reason }]);
+    }
+  });
+
+  it("refuses an engine notice with no detail to carry", async () => {
+    // `detail` is the entire human-readable payload of a notice; `reason` only
+    // says the category. An empty one from the same untyped boundary is typed
+    // `string` on the result and is not one.
+    const silent: SemanticJudge = {
+      judge: async () => ({
+        findings: [], scopesJudged: ["segment"],
+        degraded: [{ reason: "failed-closed" } as unknown as EngineDegradedNotice],
+      }),
+    };
+    await expect(
+      detect({ ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(silent) }),
+    ).rejects.toThrow(/no detail/);
+  });
+
+  it("copies the two fields a notice carries and nothing else", async () => {
+    // `EngineDegradedNotice`'s docblock forbids a notice carrying message text,
+    // a finding's text or model output, because notices get logged. Field by
+    // field is what keeps that promise; `{ ...notice, tier: 2 }` reads
+    // identically at the call site and carries whatever else the producer
+    // attached straight into the log.
+    const chatty: SemanticJudge = {
+      judge: async () => ({
+        findings: [], scopesJudged: ["segment"],
+        degraded: [
+          { reason: "failed-closed", detail: "d", offendingBody: "my PAN is ABCPD1234E" } as unknown as EngineDegradedNotice,
+        ],
+      }),
+    };
+    const result = await detect({
+      ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(chatty),
+    });
+    expect(result.degraded).toEqual([{ tier: 2, reason: "failed-closed", detail: "d" }]);
+    expect(Object.keys(result.degraded[0]!).sort()).toEqual(["detail", "reason", "tier"]);
+    expect(JSON.stringify(result.degraded)).not.toContain("ABCPD1234E");
+  });
+
   it("names every tier that did not run", async () => {
     const result = await detect({
       ir, provider: "chatgpt", text: MESSAGE,
@@ -525,7 +610,12 @@ describe("degraded channel", () => {
       { tier: 1, reason: "absent" },
       { tier: 2, reason: "absent" },
     ]);
-    for (const notice of result.degraded) expect(notice.detail.length).toBeGreaterThan(0);
+    // Not just non-empty: a one-character detail passed the length check, and
+    // `detail` is the entire human-readable payload of a notice.
+    for (const notice of result.degraded) {
+      expect(notice.detail).toContain(`tier ${notice.tier}`);
+      expect(notice.detail).toContain("not enabled");
+    }
   });
 
   it("tells a tier 0 that did not run from a tier 0 that ran", async () => {
@@ -649,15 +739,77 @@ describe("message latency budget", () => {
     const spy: SemanticJudge = {
       judge: async (request) => { seen = request.budgetMs; return { findings: [], scopesJudged: ["segment"] }; },
     };
-    await detect({
-      ir: irWith({ latencyBudgetMs: 5000 }), provider: "chatgpt", text: MESSAGE,
+    const SLEPT = 300;
+    // TWO budgets, because 5000 is also `minimalIr()`'s own default and a test
+    // that exercises only the default value cannot tell "reads the IR" from
+    // "hardcodes the default" -- `budgetMs: 1000` survived the whole suite.
+    for (const budget of [5000, 2000]) {
+      await detect({
+        ir: irWith({ latencyBudgetMs: budget }), provider: "chatgpt", text: MESSAGE,
+        config: { tier0: true, tier1: true, tier2: true },
+        engines: { tier1: slowTagger(SLEPT), tier2: spy },
+      });
+      // BOTH bounds are load-bearing, and the window is the test's own
+      // arithmetic over its own constants rather than anything the orchestrator
+      // computed. Upper: elapsed ignored, i.e. the whole budget passed through.
+      // Lower: elapsed OVER-charged, which is the double-count this seam is
+      // exposed to since the orchestrator is the one layer subtracting a
+      // per-message number -- doubling the subtraction survived a one-sided
+      // assertion, and in the results it reads as a slow model rather than as a
+      // mis-subtracted budget.
+      expect(seen).toBeLessThan(budget - SLEPT + 150);
+      expect(seen).toBeGreaterThan(budget - SLEPT - 180);
+    }
+  });
+
+  it("arms the deadline at what is LEFT of the budget, not at the whole of it", async () => {
+    // The delay handed to `setTimeout` is the ONLY thing that enforces the
+    // cross-segment budget, and nothing measured WHEN it fires: dividing it by
+    // 1000, adding 2000 to it, and arming it with the whole `ir.latencyBudgetMs`
+    // each left the suite green. `request.budgetMs` is not a stand-in for it --
+    // `JudgeRequest` calls that field informational and names `signal` as the
+    // enforcement.
+    //
+    // Measured between the judge being ENTERED and its signal firing, against
+    // bounds derived from the test's own constants: tier 1 sleeps 300 ms of a
+    // 600 ms budget, so about 300 ms should remain.
+    let entered = 0;
+    let firedAt = 0;
+    const watcher: SemanticJudge = {
+      judge: async (request) => {
+        entered = performance.now();
+        await aborted(request.signal!);
+        firedAt = performance.now();
+        return { findings: [], scopesJudged: ["segment"] };
+      },
+    };
+    const result = await detect({
+      ir: irWith({ latencyBudgetMs: 600 }), provider: "chatgpt", text: MESSAGE,
       config: { tier0: true, tier1: true, tier2: true },
-      engines: { tier1: slowTagger(60), tier2: spy },
+      engines: { tier1: slowTagger(300), tier2: watcher },
     });
-    expect(seen).toBeGreaterThan(0);
-    // Tier 1 slept 60 ms of the 5000, so anything at or above 4940 means the
-    // budget was passed through rather than spent down.
-    expect(seen).toBeLessThan(4940);
+    const waited = firedAt - entered;
+    // A timer fires late, never early, so the upper bound is what catches a
+    // deadline armed with the whole budget (600) or with `remaining` plus a
+    // constant; the lower bound catches one shortened by any real factor.
+    expect(waited).toBeGreaterThan(150);
+    expect(waited).toBeLessThan(480);
+    // And the record agrees with the clock: this run really was cut short.
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
+  });
+
+  it("charges the earlier tiers' time to them, not to the judge", async () => {
+    // `timings.tier2Ms` was only ever asserted `>= 0`, so starting its window
+    // at `messageStarted` -- which charges tier 0, tier 1 and segmentation to
+    // the judge -- survived, reporting a 0.15 ms judge as a 202 ms one. Per-tier
+    // latency between arms is the comparison `timings` exists for.
+    const result = await detect({
+      ir: irWith({ latencyBudgetMs: 10_000 }), provider: "chatgpt", text: MESSAGE,
+      config: { tier0: true, tier1: true, tier2: true },
+      engines: { tier1: slowTagger(200), tier2: judge() },
+    });
+    expect(result.timings.tier1Ms).toBeGreaterThan(150);
+    expect(result.timings.tier2Ms).toBeLessThan(50);
   });
 
   it("hands the judge a signal that has not already fired", async () => {
@@ -686,6 +838,12 @@ describe("message latency budget", () => {
     // No call means no timing: a 0 here would read as a tier that ran instantly.
     expect(result.timings.tier2Ms).toBeUndefined();
     expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
+    // Blanking this detail survived the suite, and so would swapping it for the
+    // mid-run sentence: `reason` is the same word on both paths, so `detail` is
+    // the only thing that tells an operator a budget spent BEFORE the call from
+    // one that expired during it.
+    expect(result.degraded[0]!.detail).toContain("10ms message latency budget was already spent");
+    expect(result.degraded[0]!.detail).toContain("the judge was not called");
     // Spec 5.3: an over-budget tier 2 degrades TO the lower tiers' findings.
     expect(result.findings.length).toBeGreaterThan(0);
   });
@@ -706,6 +864,10 @@ describe("message latency budget", () => {
     });
     expect(kinds(result)).toEqual([{ tier: 2, reason: "budget-exhausted" }]);
     expect(result.findings.some((f) => f.entityType === "client-name")).toBe(true);
+    // The other half of the pair above: this sentence must say the budget ran
+    // out DURING the run, and must name what the judge was actually given.
+    expect(result.degraded[0]!.detail).toContain("30ms message latency budget ran out during the tier-2 run");
+    expect(result.degraded[0]!.detail).toMatch(/given the \d+ms that remained/);
   });
 
   it("does not report a budget expiry when the judge answered inside it", async () => {
@@ -717,9 +879,14 @@ describe("message latency budget", () => {
   });
 
   it("clears its budget timer when the judge throws", async () => {
-    // A timer left running outlives the message that armed it. Its abort then
-    // fires during whatever detect() call happens to be in flight next, which
-    // reads as a slow model on a message that was never slow.
+    // What a leaked timer costs, measured rather than assumed -- this comment
+    // used to claim it aborts the NEXT detect(), and a probe says it cannot:
+    // the AbortController is built per call, so a leaked timer aborts a
+    // controller nobody is listening to. What it does cost is a ref'd handle
+    // (measured on Node v26.0.0: a process whose only remaining work was an
+    // uncleared 800 ms timer exited at 803 ms instead of at 0), so a batch
+    // harness lingers for the rest of every abandoned budget. See the
+    // orchestrator's own comment for both measurements.
     const cleared: unknown[] = [];
     const realClear = globalThis.clearTimeout;
     globalThis.clearTimeout = ((handle: never) => {
