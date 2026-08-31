@@ -749,7 +749,19 @@ describe("WebLlmJudge", () => {
     const judge = new WebLlmJudge(engine, BUDGET);
     await judged(judge, [...whole(), ...whole(MSG, 200)], predicateIr(), []);
     expect(judge.stats.calls).toEqual([
-      { finishReason: "stop", promptTokens: 411, completionTokens: 37, ttftMs: 420 },
+      {
+        finishReason: "stop",
+        promptTokens: 411,
+        completionTokens: 37,
+        ttftMs: 420,
+        // The ENGINE's own decode rate, copied rather than derived. Nothing
+        // downstream can reconstruct it: a record carries `timings.tier2Ms` for
+        // the whole message and no per-call elapsed time, so dividing tokens by
+        // anything available there charges the judge's prompt assembly, JSON
+        // parse and span ladder to the model. The bake-off's
+        // `minDecodeTokPerSec` gate is a floor, so that error kills good arms.
+        decodeTokPerSec: 30,
+      },
       // The second call reported no usage at all. `undefined` and not 0: a 0
       // would claim the model answered instantly on no prompt tokens.
       {
@@ -757,6 +769,7 @@ describe("WebLlmJudge", () => {
         promptTokens: undefined,
         completionTokens: undefined,
         ttftMs: undefined,
+        decodeTokPerSec: undefined,
       },
     ]);
   });
@@ -786,6 +799,14 @@ describe("WebLlmJudge", () => {
     await judged(judge, whole(), predicateIr(), []);
     expect(judge.stats.calls[0]!.ttftMs).toBeNaN();
     expect(judge.stats.calls[0]!.completionTokens).toBe(0);
+    // VERIFIED in the installed 0.2.84 bundle: `decode_tokens_per_s:
+    // completion_tokens / decode_time`, a plain division, so an interrupt that
+    // landed before the first token leaves 0/0. A finite-check substituting 0
+    // here would report the call as an infinitely slow one and a `?? 25` would
+    // report it as passing the floor gate; both are inventions. The driver
+    // excludes non-finite rates from the gate instead, which it can only do if
+    // the non-finite value survives to the record.
+    expect(judge.stats.calls[0]!.decodeTokPerSec).toBeNaN();
   });
 
   it("exposes every documented counter, all of them at zero, before any call", async () => {

@@ -172,7 +172,13 @@ interface PreparedArm {
  */
 const FILE_SAFE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
-function assertFileSafe(what: string, value: string): void {
+/**
+ * EXPORTED because `bakeoff.ts` names files by the same two-part rule, and a
+ * second copy of this regex is a second definition of "safe" free to drift from
+ * this one -- which on a rule about path separators means one driver refusing a
+ * name the other writes.
+ */
+export function assertFileSafe(what: string, value: string): void {
   if (!FILE_SAFE.test(value)) {
     throw new Error(
       `${what} "${value}" cannot be used in a file name; use letters, digits, and . _ + - only`,

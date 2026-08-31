@@ -151,9 +151,13 @@ export interface SegmentSizeOptions {
    * anything: `WebLlmJudge` returns an empty verdict without an engine call when
    * the IR declares no predicates, so a distribution measured at `false` sizes a
    * budget for zero calls. Worth knowing when reading any number this produces:
-   * BOTH IRs under `apps/eval/fixtures` declare `semanticPredicates: []`, so
-   * the default here is the policy shape the bake-off needs and not the one the
-   * harness currently loads.
+   * of the THREE IRs under `apps/eval/fixtures`, only `semantic-ir.json`
+   * declares a predicate -- `minimal-ir.json` and `multiclass-ir.json` both
+   * carry `semanticPredicates: []`, and `minimal` is the page's default. So the
+   * default here is the policy shape the bake-off needs and not the one the
+   * harness loads unless a caller has asked for `semantic`. (This paragraph
+   * named two fixtures until `semantic-ir.json` was added under it; re-read
+   * from the files rather than trusted.)
    */
   readonly hasPredicates?: boolean;
   /**
@@ -207,7 +211,18 @@ export function percentile(values: readonly number[], percent: number): number {
   return sorted[rank - 1]!;
 }
 
-function statsOf(values: readonly number[]): SizeStats | undefined {
+/**
+ * The four-number summary of a sample, or `undefined` for an empty one.
+ *
+ * EXPORTED rather than kept private because `bakeoff.ts` summarises latency and
+ * token samples with exactly this shape, and a second copy of these four lines
+ * is a second definition of "p95" free to drift from this one -- which is how
+ * one file's nearest-rank number ends up being compared against another file's
+ * interpolated one. The `undefined` on an empty sample is the same refusal
+ * `SegmentSizeDistribution.chars` documents: a `p50: 0` over no samples asserts
+ * a median that no observation supports.
+ */
+export function sizeStats(values: readonly number[]): SizeStats | undefined {
   if (values.length === 0) return undefined;
   return {
     p50: percentile(values, 50),
@@ -263,10 +278,10 @@ export function segmentSizeDistribution(
     items: items.length,
     segmentsTotal,
     count: chars.length,
-    chars: statsOf(chars),
-    bytes: statsOf(bytes),
-    words: statsOf(words),
-    perItem: statsOf(perItem),
+    chars: sizeStats(chars),
+    bytes: sizeStats(bytes),
+    words: sizeStats(words),
+    perItem: sizeStats(perItem),
     samples: { chars, bytes, words, perItem },
     escalation: { hasPredicates, uncertainBelow },
   };

@@ -320,6 +320,17 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
               // something that is not a number" are different facts.
               ttftMs:
                 call.ttftMs === undefined || Number.isFinite(call.ttftMs) ? call.ttftMs : null,
+              // The same mapping, for the same round-trip reason, on the field
+              // where the non-finite case is MORE reachable rather than less:
+              // the library computes this one as `completion_tokens /
+              // decode_time` with no zero guard, so a call interrupted before
+              // its first token is a literal 0/0. `bakeoff.ts` computes the
+              // `minDecodeTokPerSec` gate from this column and excludes the
+              // nulls, which it can only do because the null arrives.
+              decodeTokPerSec:
+                call.decodeTokPerSec === undefined || Number.isFinite(call.decodeTokPerSec)
+                  ? call.decodeTokPerSec
+                  : null,
             })),
           };
         }

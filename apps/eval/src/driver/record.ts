@@ -265,6 +265,30 @@ const Tier2CallSchema = z.object({
    * a null there would be a third state nothing produces.
    */
   ttftMs: z.number().nullable().optional(),
+  /**
+   * `usage.extra.decode_tokens_per_s` -- or `null` when the engine reported one
+   * that is not a finite number.
+   *
+   * THE ONLY SOURCE for the bake-off's `minDecodeTokPerSec` gate. A record
+   * carries `timings.tier2Ms` for the whole message and no per-call elapsed
+   * time, so the only rate derivable from the rest of this file is
+   * `completionTokens / (tier2Ms - ttft)`, which charges the judge's prompt
+   * assembly, JSON parse and span ladder to the model. That gate is a FLOOR, so
+   * that error kills capable arms; `bakeoff.ts` reads this field instead.
+   *
+   * VERIFIED in the installed 0.2.84 bundle, not assumed: the library assigns
+   * `decode_tokens_per_s: completion_tokens / decode_time` with `decode_time =
+   * pipeline.getCurRoundDecodingTotalTime()` -- an accumulation over this
+   * round's decode steps only, so no prefill and no harness time is inside it.
+   *
+   * Nullable for exactly the reason `ttftMs` is, and it is MORE reachable here:
+   * that division has no zero guard, and a call interrupted before its first
+   * token has `completion_tokens` 0 and `decode_time` 0, so 0/0 is NaN. Null is
+   * that fact spelled so it survives `JSON.stringify`; absent means the engine
+   * reported no usage at all. `.nonnegative()` and NOT `.int()`: it is a rate,
+   * and a division of two non-negative quantities is never negative.
+   */
+  decodeTokPerSec: z.number().nonnegative().nullable().optional(),
 } satisfies Record<keyof JudgeCallRecord, z.ZodType>);
 
 /** Every counter is a non-negative integer; deltas over counters that only rise. */

@@ -912,6 +912,28 @@ describe("the tier-2 evidence a record has to carry", () => {
     expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, promptTokens: null }] } }).success).toBe(false);
   });
 
+  it("carries the engine's decode rate, and treats a poisoned one the way ttft is treated", () => {
+    // The field the bake-off's `minDecodeTokPerSec` gate is computed from.
+    // Nothing else on a record can answer it: `timings.tier2Ms` covers the
+    // whole message and no per-call elapsed time is recorded, so a derived rate
+    // would charge the judge's prompt assembly, JSON parse and span ladder to
+    // the model -- on a FLOOR gate, which kills capable arms.
+    //
+    // VERIFIED in the installed 0.2.84 bundle: `decode_tokens_per_s` is
+    // `completion_tokens / decode_time`, a plain division, so a call
+    // interrupted before its first token leaves 0/0. Same round-trip hazard as
+    // `ttftMs` and therefore the same three answers.
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: 31.4 }] } }).success).toBe(true);
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: null }] } }).success).toBe(true);
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: Number.NaN }] } }).success).toBe(false);
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: Infinity }] } }).success).toBe(false);
+    // A rate is not a count, so it is not an integer -- and it must not be
+    // negative, which no division of two non-negative quantities produces.
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: -1 }] } }).success).toBe(false);
+    const parsed = t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, decodeTokPerSec: 31.4 }] } });
+    expect(parsed.success && parsed.data.tier2Stats?.calls[0]?.decodeTokPerSec).toBe(31.4);
+  });
+
   it("couples degraded to error, so a thrown item cannot claim a clean run", () => {
     // `DetectionResult.degraded` is REQUIRED there and its doc says why: "[] is
     // a positive claim; undefined would be silence". The record keeps that,

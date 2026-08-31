@@ -70,6 +70,31 @@ export interface JudgeCallRecord {
    * is a fact about the call and not a number to invent a replacement for.
    */
   readonly ttftMs: number | undefined;
+  /**
+   * `usage.extra.decode_tokens_per_s`, verbatim: tokens per second of
+   * autoregressive decoding for THIS call, excluding prefill.
+   *
+   * Here because the bake-off's `minDecodeTokPerSec` gate is otherwise
+   * uncomputable from a run's output. A record carries `timings.tier2Ms` for
+   * the whole message and no per-call elapsed time, so the only rate derivable
+   * downstream is `completionTokens / (tier2Ms - ttft)` -- which charges the
+   * judge's prompt assembly, JSON parse and span ladder to the model, on a
+   * gate that is a FLOOR. That error kills capable arms.
+   *
+   * READ from the installed 0.2.84 bundle rather than assumed: the field is
+   * assigned `completion_tokens / decode_time`, where `decode_time` is
+   * `pipeline.getCurRoundDecodingTotalTime()` -- an accumulation over this
+   * round's decode steps only. So it is the engine's own measurement of the
+   * quantity the gate names, and no harness time is inside it.
+   *
+   * It is a PLAIN DIVISION with no zero guard, which is why nothing here
+   * guards it either: a call interrupted before its first token has
+   * `completion_tokens` 0 and `decode_time` 0, and 0/0 is NaN. That NaN is a
+   * fact about the call. `JSON.stringify` writes NaN and both infinities as
+   * `null`, so whoever records this has to map it -- see `Tier2CallSchema` in
+   * apps/eval/src/driver/record.ts, which does, for `ttftMs` and for this.
+   */
+  readonly decodeTokPerSec: number | undefined;
 }
 
 /**
@@ -681,6 +706,9 @@ export function completionCallRecord(completion: Tier2Completion): JudgeCallReco
     promptTokens: completion.usage?.prompt_tokens,
     completionTokens: completion.usage?.completion_tokens,
     ttftMs: ttftSeconds === undefined ? undefined : ttftSeconds * 1000,
+    // Copied, not converted: the library already reports tokens per SECOND, so
+    // the unit the gate is written in is the unit the engine hands over.
+    decodeTokPerSec: completion.usage?.extra.decode_tokens_per_s,
   };
 }
 
