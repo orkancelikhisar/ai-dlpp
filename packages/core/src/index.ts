@@ -12,7 +12,21 @@ export { segmentText, type Segment, type SegmentKind } from "./segment/segment.j
 export { getValidator, hasValidator, shannonEntropy, type Validator } from "./detect/validators.js";
 export { runTier0 } from "./detect/tier0.js";
 export { mergeFindings, clusterOverlapping } from "./detect/merge.js";
-export { ACTION_RANK, detect, type DetectInput, type Detector } from "./detect/orchestrator.js";
+// `resolveFindings` and `remainingBudgetMs` are here for the Approach-B
+// baseline, which implements `Detector` directly and is therefore its own
+// orchestrator: it has to validate findings against the IR, resolve overlaps
+// and arm the message budget exactly as `detect` does, and a second copy of
+// either would make the head-to-head measure the harness. `normalizeFindings`
+// stays private -- `resolveFindings` is the door, and it normalizes first, so
+// no caller can hold a partly-checked result.
+export {
+  ACTION_RANK,
+  detect,
+  remainingBudgetMs,
+  resolveFindings,
+  type DetectInput,
+  type Detector,
+} from "./detect/orchestrator.js";
 // Spec 4.1's escalation policy. Here rather than in `@sih/tier2` -- where Plan 5
 // named it -- because `detect` is its caller and core cannot depend on the tier
 // it gates; see the module. `@sih/tier2` re-exports it, as `@sih/compiler` does

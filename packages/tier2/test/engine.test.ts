@@ -333,6 +333,33 @@ describe("buildCallParams", () => {
     // caller.
     expect(() => buildCallParams([], DEFAULT_TIER2_CONFIG)).toThrow(/message/i);
   });
+
+  it("lets a caller replace the SCHEMA and nothing else in the pinned recipe", () => {
+    // The seam the Approach-B arm reaches through, and the fairness property
+    // the head-to-head rests on: B shares the model, the window, the
+    // temperature and the token budget with the compiled arm by construction,
+    // and differs only in the one property name it asks the model for. This is
+    // the assertion that "and nothing else" is true rather than intended.
+    const mine = JSON.stringify({ type: "object", properties: {} });
+    const swapped = buildCallParams(MSGS, DEFAULT_TIER2_CONFIG, mine);
+    expect(swapped.response_format).toEqual({ type: "json_object", schema: mine });
+
+    const { response_format: _swappedFormat, ...swappedRest } = swapped;
+    const { response_format: _defaultFormat, ...defaultRest } = p;
+    expect(swappedRest).toEqual(defaultRest);
+  });
+
+  it("refuses a schema that is empty or not a string, because a bad grammar HANGS", () => {
+    // The threat model is untyped JS, which the eval harness's page boundary
+    // is. Both known ways this engine stops responding -- an uncompilable
+    // grammar and `structural_tag` -- were reported as a call that never
+    // returns rather than as an error, so a bad value here is not reported as
+    // one; it is reported as a hang someone else has to diagnose.
+    expect(() => buildCallParams(MSGS, DEFAULT_TIER2_CONFIG, "")).toThrow(/schema/i);
+    expect(() =>
+      buildCallParams(MSGS, DEFAULT_TIER2_CONFIG, { type: "object" } as unknown as string),
+    ).toThrow(/schema/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -482,6 +509,29 @@ describe("WebLlmEngine", () => {
     const e = await engineOver(f);
     const r = await e.complete(MSGS, { budgetMs: 1000 });
     expect(r.usage).toBeUndefined();
+  });
+
+  it("puts the CALLER's schema on the wire, and leaves the rest of the recipe alone", async () => {
+    // Found by mutation testing, and it is the mutation that matters most in
+    // this task: with `complete` dropping `opts.responseSchemaJson`, the whole
+    // tier-2 suite stayed green, because every Approach-B test drives a FAKE
+    // engine that never reaches `buildCallParams`. In real Chrome that arm
+    // would be grammar-constrained to the judge's `predicateId` schema while
+    // its prompt asked for `entityType`, so every B response would fail the
+    // zod schema and B would fail closed on every message -- losing the
+    // head-to-head for a reason that has nothing to do with its design.
+    const mine = JSON.stringify({ type: "object", properties: { entityType: { type: "string" } } });
+    const f = fakeEngine();
+    const e = await engineOver(f);
+    await e.complete(MSGS, { budgetMs: 1000, responseSchemaJson: mine });
+
+    const sent = f.state.seen[0] as Record<string, unknown>;
+    expect(sent["response_format"]).toEqual({ type: "json_object", schema: mine });
+    // The other three pinned fields are untouched by the swap, which is the
+    // "and nothing else" half of the claim.
+    expect(sent["temperature"]).toBe(0);
+    expect(sent["max_tokens"]).toBe(DEFAULT_TIER2_CONFIG.maxTokens);
+    expect(deepKeys(sent)).not.toContain("enable_thinking");
   });
 
   it("sends a request carrying the schema and neither banned key", async () => {

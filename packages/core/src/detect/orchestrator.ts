@@ -220,13 +220,21 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
  * What is left of one MESSAGE's `ir.latencyBudgetMs`, or `undefined` when it is
  * spent.
  *
- * Exported for its tests and deliberately not re-exported from the package
- * index. The boundary that matters here -- elapsed exactly equal to the budget
- * -- cannot be steered onto with a wall clock, and it is the one an off-by-one
- * turns into a 1 ms deadline: `> 0` handed on as a number is the difference
- * between a judge that gets its remaining budget and a judge that is
- * interrupted before its first token. Nothing else in this module is exported
- * this way, which is the cost of testing it honestly.
+ * Exported for two reasons. The first is testing: the boundary that matters
+ * here -- elapsed exactly equal to the budget -- cannot be steered onto with a
+ * wall clock, and it is the one an off-by-one turns into a 1 ms deadline
+ * (`> 0` handed on as a number is the difference between a judge that gets its
+ * remaining budget and a judge that is interrupted before its first token).
+ *
+ * The second arrived with the Approach-B baseline and is why this is now on the
+ * package index as well. `detect` is no longer the only orchestrator: B
+ * implements `Detector` itself, so nothing else on that arm enforces the
+ * per-MESSAGE budget spec 5.3 writes down, and B has to arm the same deadline
+ * from the same arithmetic. A second copy would drift on exactly the two things
+ * this function exists for -- the `> 0` boundary and the MAX_TIMER_DELAY_MS
+ * clamp, without which a legal `ir.latencyBudgetMs` above 2^31-1 becomes an
+ * IMMEDIATE deadline rather than a long one -- and the arm that drifted would
+ * be compared on its budget rather than on its method.
  *
  * `!(remaining > 0)` rather than `remaining <= 0` so a NaN budget lands in
  * "spent" instead of passing through: `loadPolicyIr` is the boundary that keeps
@@ -650,24 +658,64 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     }
   }
 
-  // The per-cluster composition recipe documented in merge.ts: cluster once,
-  // merge within each cluster, and give that cluster's winners the strictest
-  // action any member of the cluster resolved to. Merging a cluster is the same
-  // as merging everything and filtering (a cluster re-clusters to itself), so
-  // this loses nothing the whole-input call would have found.
+  return { findings: resolveFindings(ir, provider, text, raw), timings, degraded };
+}
+
+/**
+ * Everything between "the tiers have spoken" and "the caller has a
+ * DetectionResult.findings": validate against the IR, resolve overlaps, and
+ * attach the action each survivor carries.
+ *
+ * Extracted from `detect` and EXPORTED because `detect` is no longer the only
+ * producer of a `DetectionResult`. The Approach-B baseline
+ * (`packages/tier2/src/baselineB.ts`) implements `Detector` directly -- no
+ * compiler, no tiers -- and the head-to-head between the two is the whole
+ * result Plan 5 exists to produce. A second copy of this composition in that
+ * arm is the way that result becomes an artifact of the harness: the recipe is
+ * cluster-wide strictest action with a per-winner escalation, three decisions
+ * whose reasoning lives on `strictestAction` and `winnerAction`, and an arm
+ * that got any one of them differently would be compared on ACTION RESOLUTION
+ * while the write-up said it was compared on method. Callers do not get to
+ * hold a partly-normalized result.
+ *
+ * `detect` still normalizes PER TIER before calling this, and that is not
+ * redundant: it fails fast, so a tier-1 hallucination throws before tier 2
+ * spends its budget. Normalization is idempotent -- it validates spans and
+ * re-derives severity from the same entity table -- so the second pass over an
+ * already-normalized finding returns that same object.
+ *
+ * The per-cluster composition recipe is documented in merge.ts: cluster once,
+ * merge within each cluster, and give that cluster's winners the strictest
+ * action any member of the cluster resolved to. Merging a cluster is the same
+ * as merging everything and filtering (a cluster re-clusters to itself), so
+ * this loses nothing the whole-input call would have found.
+ *
+ * The result is already globally ordered and deliberately not re-sorted:
+ * clusters come back ordered by start and are pairwise disjoint, and each
+ * cluster's winners come back in merge.ts's canonical order, so concatenation
+ * preserves both. A re-sort here on `start` alone would be a weaker order than
+ * the one the clusters already carry.
+ *
+ * @param text the message the offsets index into; required because the first
+ *   thing this does is refuse a finding whose reported text is not the slice.
+ * @throws whatever `normalizeFindings` throws -- an out-of-range span, a span
+ *   whose text disagrees with it, an entityType the IR does not declare.
+ */
+export function resolveFindings(
+  ir: PolicyIr,
+  provider: string,
+  text: string,
+  raw: Finding[],
+): ResolvedFinding[] {
+  const normalized = normalizeFindings(ir, text, raw);
   const findings: ResolvedFinding[] = [];
-  for (const cluster of clusterOverlapping(raw)) {
+  for (const cluster of clusterOverlapping(normalized)) {
     const action = strictestAction(ir, provider, cluster);
     for (const winner of mergeFindings(cluster)) {
       findings.push({ ...winner, action: winnerAction(ir, winner, action) });
     }
   }
-  // Already globally ordered, and deliberately not re-sorted: clusters come back
-  // ordered by start and are pairwise disjoint, and each cluster's winners come
-  // back in merge.ts's canonical order, so concatenation preserves both. A
-  // re-sort here on `start` alone would be a weaker order than the one the
-  // clusters already carry.
-  return { findings, timings, degraded };
+  return findings;
 }
 
 /**

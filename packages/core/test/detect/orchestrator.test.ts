@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detect, remainingBudgetMs } from "../../src/detect/orchestrator.js";
+import { detect, remainingBudgetMs, resolveFindings } from "../../src/detect/orchestrator.js";
 import { loadPolicyIr } from "../../src/policy/load.js";
 import { resolveAction } from "../../src/policy/resolve.js";
 import { segmentText, type Segment } from "../../src/segment/segment.js";
@@ -1113,5 +1113,81 @@ describe("message latency budget", () => {
       globalThis.clearTimeout = realClear;
     }
     expect(cleared).toHaveLength(1);
+  });
+});
+
+
+describe("resolveFindings", () => {
+  // Exported because `detect` is no longer the only producer of a
+  // DetectionResult: the Approach-B baseline implements `Detector` directly,
+  // and a second copy of this composition would make the head-to-head measure
+  // action resolution rather than method. These tests are what an outside
+  // caller is entitled to rely on.
+
+  const text = "We have PAN ABCPD1234E and AKIAIOSFODNN7EXAMPLE on file.";
+  const finding = (over: Partial<Finding> = {}): Finding => ({
+    start: text.indexOf("ABCPD1234E"),
+    end: text.indexOf("ABCPD1234E") + "ABCPD1234E".length,
+    text: "ABCPD1234E",
+    entityType: "in-pan",
+    severity: "high",
+    tier: 2,
+    source: "some-model",
+    confidence: 0.8,
+    ...over,
+  });
+
+  it("attaches the provider-resolved action, and resolves it per provider", () => {
+    const of = (provider: string) =>
+      resolveFindings(ir, provider, text, [finding({ entityType: "client-name", text: "PAN", start: 8, end: 11 })]);
+    // The IR's default for client-name is pseudonymize; its deepseek override
+    // is redact. One provider alone could not tell resolution from a constant.
+    expect(of("claude").map((f) => f.action)).toEqual(["pseudonymize"]);
+    expect(of("deepseek").map((f) => f.action)).toEqual(["redact"]);
+  });
+
+  it("normalizes before resolving, so an outside producer cannot skip the guard", () => {
+    // The whole reason this and not a bare cluster/merge helper is exported: a
+    // caller that could resolve without normalizing would be a caller that can
+    // put a mis-located span into a DetectionResult.
+    expect(() => resolveFindings(ir, "claude", text, [finding({ text: "not the slice" })])).toThrow(
+      /does not match its span/,
+    );
+    expect(() => resolveFindings(ir, "claude", text, [finding({ entityType: "invented" })])).toThrow(
+      /unknown entityType/,
+    );
+  });
+
+  it("re-derives severity from the IR rather than trusting the producer", () => {
+    const inflated = resolveFindings(ir, "claude", text, [finding({ severity: "low" })]);
+    expect(inflated[0]!.severity).toBe("high");
+  });
+
+  it("resolves overlaps rather than returning both, and keeps the stronger", () => {
+    const wide = finding({
+      start: 8,
+      end: text.indexOf("ABCPD1234E") + "ABCPD1234E".length,
+      text: text.slice(8, text.indexOf("ABCPD1234E") + "ABCPD1234E".length),
+      entityType: "generic-secret",
+      severity: "critical",
+      confidence: 0.7,
+    });
+    const out = resolveFindings(ir, "claude", text, [finding(), wide]);
+    // Merge is severity-first, so the critical entropy-shaped span wins over
+    // the high-severity PAN inside it -- and the cluster's strictest action,
+    // the PAN's `block`, is what the winner carries.
+    expect(out).toHaveLength(1);
+    expect(out[0]!.entityType).toBe("generic-secret");
+    expect(out[0]!.action).toBe("block");
+  });
+
+  it("is idempotent over an already-normalized list, which is why detect can call it last", () => {
+    // `detect` normalizes per tier for fail-fast and then hands the accumulated
+    // list here, so every finding is normalized twice. If that were not a
+    // no-op, every tier-0 row in the corpus would differ from a B row for a
+    // reason nobody looked for.
+    const once = resolveFindings(ir, "claude", text, [finding({ severity: "low" })]);
+    const twice = resolveFindings(ir, "claude", text, once);
+    expect(twice).toEqual(once);
   });
 });

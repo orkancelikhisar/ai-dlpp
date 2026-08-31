@@ -132,6 +132,24 @@ export interface CompleteOptions {
   readonly budgetMs: number;
   /** Honoured while queued as well as while generating. */
   readonly signal?: AbortSignal;
+  /**
+   * The STRINGIFIED JSON schema this call is grammar-constrained to. Omitted
+   * means the tier-2 judge's schema, which is what every judge call sends.
+   *
+   * Here rather than on `Tier2Config` because it varies per CALLER, not per
+   * loaded model: the Approach-B baseline shares an engine's model, window,
+   * temperature and token budget with the compiled arm and differs only in the
+   * one property name it asks the model for (`entityType` rather than
+   * `predicateId`). Sharing the engine is what makes those four settings equal
+   * by construction instead of by convention, and that equality is the whole
+   * reason the head-to-head is about method.
+   *
+   * It replaces `response_format.schema` and NOTHING ELSE in the pinned recipe.
+   * A caller cannot reach `temperature`, `max_tokens`, `stream`,
+   * `enable_thinking` or `structural_tag` through this seam, which is the point:
+   * each of those is a measured hazard held by `buildCallParams`.
+   */
+  readonly responseSchemaJson?: string;
 }
 
 /**
@@ -208,7 +226,19 @@ const JUDGE_SCHEMA_JSON = JSON.stringify(JUDGE_SCHEMA);
 export function buildCallParams(
   messages: readonly ChatCompletionMessageParam[],
   config: Tier2Config,
+  responseSchemaJson: string = JUDGE_SCHEMA_JSON,
 ): Tier2CallParams {
+  if (typeof responseSchemaJson !== "string" || responseSchemaJson.length === 0) {
+    // The threat model is untyped JS, which the eval harness's page boundary
+    // is. An empty or non-string schema reaches `response_format.schema`
+    // declared `string`, and an uncompilable grammar surfaces as a call that
+    // never returns rather than as an error -- so a bad value here is not
+    // reported as one, it is reported as a hang somebody else has to diagnose.
+    throw new Error(
+      `tier-2 responseSchemaJson must be a non-empty stringified JSON schema, got ` +
+        `${typeof responseSchemaJson}; an uncompilable grammar hangs rather than erroring`,
+    );
+  }
   if (messages.length === 0) {
     // `postInitAndCheckFields` reads `messages[messages.length - 1].role` with
     // no length check, so an empty list surfaces as a bare TypeError from
@@ -224,7 +254,7 @@ export function buildCallParams(
     messages: [...messages],
     temperature: config.temperature,
     max_tokens: config.maxTokens,
-    response_format: { type: "json_object", schema: JUDGE_SCHEMA_JSON },
+    response_format: { type: "json_object", schema: responseSchemaJson },
   };
 }
 
@@ -350,7 +380,7 @@ export class WebLlmEngine implements Tier2Engine {
     messages: readonly ChatCompletionMessageParam[],
     opts: CompleteOptions,
   ): Promise<Tier2Completion> {
-    const params = buildCallParams(messages, this.#config);
+    const params = buildCallParams(messages, this.#config, opts.responseSchemaJson);
     // Never a Promise.race: it abandons the promise but not the generation,
     // which keeps the engine's per-model lock. Task 3 measured the cost and
     // `cancel.ts` carries the numbers; `runWithDeadline` interrupts, waits for

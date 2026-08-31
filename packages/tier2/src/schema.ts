@@ -73,53 +73,141 @@ export const JUDGE_SCHEMA = deepFreeze({
   additionalProperties: false,
 } as const);
 
+/**
+ * The schema the Approach-B arm is constrained to: `JUDGE_SCHEMA` with one
+ * property renamed, and nothing else different.
+ *
+ * Written out rather than derived from `JUDGE_SCHEMA` so the two are
+ * independent objects that a test can compare -- a derived one agrees with its
+ * source by construction and could only ever prove that the derivation ran.
+ * `schema.test.ts` asserts the two are equal once `predicateId` is renamed, and
+ * asserts this object's own shape against literals, so a change to either alone
+ * fails there.
+ *
+ * Why the rename at all, rather than reusing the judge's schema unchanged: B
+ * has no compiler and therefore no predicates to name. What it names is an
+ * entity CLASS from the IR's vocabulary, and a wire field called `predicateId`
+ * carrying an entityType id is the field-says-one-thing-holds-another defect
+ * this project has shipped twice, one layer down.
+ *
+ * What the two arms share is what matters for the comparison and is unchanged
+ * here: the same keyword set (`type`, `properties`, `items`, `required`,
+ * `additionalProperties`, `minimum`, `maximum`), the same nesting, the same
+ * `additionalProperties: false`, and the same `[0, 1]` bounds that xgrammar
+ * folds into the grammar so an out-of-range confidence is unemittable. Only a
+ * property NAME differs.
+ *
+ * NOT re-measured on the grammar compiler. Task 2 put `JUDGE_SCHEMA` through
+ * `compileJSONSchema` -- the call `llm_chat` makes -- under an external
+ * watchdog, and it compiled. This object uses that same keyword set and differs
+ * from it only in the text of one property name, which is a claim about this
+ * object's SHAPE (and is the thing the test above checks); it is not a claim
+ * that anyone ran the compiler on this object. If a future arm needs a keyword
+ * `JUDGE_SCHEMA` does not already carry, run the Node harness again -- an
+ * uncompilable schema hangs rather than erroring.
+ */
+export const BASELINE_B_SCHEMA = deepFreeze({
+  type: "object",
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          entityType: { type: "string" },
+          quote: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+        },
+        required: ["entityType", "quote", "confidence"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["findings"],
+  additionalProperties: false,
+} as const);
+
+// The two field validators both response schemas use, defined once. Shared
+// rather than repeated because the arms must be parsed under IDENTICAL
+// strictness: a `quote` rule that is tighter for one arm, or a `confidence`
+// bound that is looser for the other, would show up in the bake-off as a
+// difference in findings and be read as a difference in the models.
+
+/**
+ * An empty quote matches at offset 0 of every message, which is a finding
+ * pointing at the wrong text. A whitespace-only quote is the same defect one
+ * character further along -- a single space matches in almost every message --
+ * so the check is "has a non-whitespace character", not `min(1)`. It must NOT
+ * be written as `z.string().trim().min(1)`: zod's .trim() rewrites the value,
+ * and the span ladder needs the quote verbatim to find it in the message.
+ */
+const QUOTE_FIELD = z.string().refine((s) => s.trim().length > 0, {
+  message: "quote must contain a non-whitespace character",
+});
+
+/**
+ * core/src/detect/merge.ts requires tier adapters to validate confidence at the
+ * boundary, and core/src/detect/types.ts documents the field as 0..1; this
+ * module is that boundary. The bounds are not decoration: JSON has no Infinity
+ * literal but `1e999` parses to one, and a non-finite confidence makes every
+ * merge comparison false, which makes Array#sort's ordering inconsistent and
+ * destroys determinism downstream. MEASURED on zod 4.4.3: `z.number()` already
+ * rejects NaN and both infinities, and `.min(0).max(1)` excludes them
+ * independently of that.
+ *
+ * This is the SECOND of two layers, and it is not redundant. Both JSON schemas
+ * now carry the same bounds, and MEASURED on the shipped grammar compiler they
+ * are real: 95, -0.5 and 1e999 become unemittable. But the compiled rule pins
+ * only the leading digit -- `("0" | "1" | "0" "." [0-9]{1,6} | "1" "."
+ * [0-9]{1,6})` -- so it is a sound over-approximation, not an exact one, and
+ * `1.5` still reaches here. Deleting this check because "the grammar already
+ * handles it" would let exactly that value through. The grammar also only binds
+ * a grammar-constrained call; anything replayed from a record, or read back
+ * from a run made before the bounds were added, arrives unfiltered.
+ *
+ * Out-of-range values are REJECTED, not clamped. A model answering on a
+ * percentage scale has failed to honour the contract; clamping 95 to 1.0 would
+ * turn that misunderstanding into a maximally confident finding and hide it
+ * from the bake-off's per-arm failure counts.
+ */
+const CONFIDENCE_FIELD = z.number().min(0).max(1);
+
 export const JudgeResponseSchema = z.object({
   findings: z.array(
     z.object({
       predicateId: z.string().min(1),
-      // An empty quote matches at offset 0 of every message, which is a finding
-      // pointing at the wrong text. A whitespace-only quote is the same defect
-      // one character further along -- a single space matches in almost every
-      // message -- so the check is "has a non-whitespace character", not
-      // `min(1)`. It must NOT be written as `z.string().trim().min(1)`: zod's
-      // .trim() rewrites the value, and the span ladder needs the quote
-      // verbatim to find it in the message.
-      quote: z.string().refine((s) => s.trim().length > 0, {
-        message: "quote must contain a non-whitespace character",
-      }),
-      // core/src/detect/merge.ts requires tier adapters to validate confidence
-      // at the boundary, and core/src/detect/types.ts documents the field as
-      // 0..1; this module is that boundary. The bounds are not decoration:
-      // JSON has no Infinity literal but `1e999` parses to one, and a
-      // non-finite confidence makes every merge comparison false, which makes
-      // Array#sort's ordering inconsistent and destroys determinism downstream.
-      // MEASURED on zod 4.4.3: `z.number()` already rejects NaN and both
-      // infinities, and `.min(0).max(1)` excludes them independently of that.
-      //
-      // This is the SECOND of two layers, and it is not redundant. `JUDGE_SCHEMA`
-      // now carries the same bounds, and MEASURED on the shipped grammar
-      // compiler they are real: 95, -0.5 and 1e999 become unemittable. But the
-      // compiled rule pins only the leading digit --
-      // `("0" | "1" | "0" "." [0-9]{1,6} | "1" "." [0-9]{1,6})` -- so it is a
-      // sound over-approximation, not an exact one, and `1.5` still reaches
-      // here. Deleting this check because "the grammar already handles it"
-      // would let exactly that value through. The grammar also only binds a
-      // grammar-constrained call; anything replayed from a record, or read back
-      // from a run made before the bounds were added, arrives unfiltered.
-      //
-      // Out-of-range values are REJECTED, not clamped. A model answering on a
-      // percentage scale has failed to honour the contract; clamping 95 to 1.0
-      // would turn that misunderstanding into a maximally confident finding and
-      // hide it from the bake-off's per-arm failure counts.
-      confidence: z.number().min(0).max(1),
+      quote: QUOTE_FIELD,
+      confidence: CONFIDENCE_FIELD,
+    }),
+  ),
+});
+
+/**
+ * What the Approach-B arm is allowed to have said, under the same two field
+ * validators as the judge's.
+ *
+ * `entityType` is checked for being a non-empty string and NOT for being an id
+ * the IR declares -- deliberately, and symmetrically with `predicateId` above.
+ * Rejecting an invented label here would reject the whole RESPONSE, losing the
+ * findings alongside it that were fine; both arms instead drop the one finding
+ * and count it (`JudgeStats.unknownPredicates`, `BaselineStats.unknownEntityTypes`),
+ * because a model inventing labels is a measurement, not a parse error.
+ */
+export const BaselineResponseSchema = z.object({
+  findings: z.array(
+    z.object({
+      entityType: z.string().min(1),
+      quote: QUOTE_FIELD,
+      confidence: CONFIDENCE_FIELD,
     }),
   ),
 });
 
 export type JudgeResponse = z.infer<typeof JudgeResponseSchema>;
+export type BaselineResponse = z.infer<typeof BaselineResponseSchema>;
 
-export type ParseResult =
-  | { ok: true; value: JudgeResponse }
+export type ParseResult<T = JudgeResponse> =
+  | { ok: true; value: T }
   | { ok: false; reason: "aborted" | "truncated" | "malformed" | "schema"; detail: string };
 
 /**
@@ -149,7 +237,35 @@ export type ParseResult =
  * does the findings in it are real. The caller holds `finishReason` too and can
  * decide whether to trust a judgement from a call it cancelled.
  */
-export function parseJudgeResponse(raw: string, finishReason?: string): ParseResult {
+export function parseJudgeResponse(raw: string, finishReason?: string): ParseResult<JudgeResponse> {
+  return parseConstrainedResponse(raw, finishReason, JudgeResponseSchema);
+}
+
+/**
+ * The same parse for the Approach-B arm, differing only in which zod schema
+ * validates the object.
+ *
+ * A separate entry point rather than a `schema` parameter on the one above so
+ * neither arm can be handed the other's validator by accident; a shared PRIVATE
+ * core rather than a second implementation because the thing that must not
+ * differ between the arms is the failure CLASSIFICATION. B is the arm most
+ * exposed to it -- one call for a whole message against the judge's one per
+ * segment, so B is likelier to run out of completion tokens -- and a B that
+ * called truncation "malformed" would be reported as decoding under a broken
+ * grammar constraint while the compiled arm was reported as merely verbose.
+ */
+export function parseBaselineResponse(
+  raw: string,
+  finishReason?: string,
+): ParseResult<BaselineResponse> {
+  return parseConstrainedResponse(raw, finishReason, BaselineResponseSchema);
+}
+
+function parseConstrainedResponse<T>(
+  raw: string,
+  finishReason: string | undefined,
+  schema: z.ZodType<T>,
+): ParseResult<T> {
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -182,7 +298,7 @@ export function parseJudgeResponse(raw: string, finishReason?: string): ParseRes
       detail: String(cause),
     };
   }
-  const parsed = JudgeResponseSchema.safeParse(json);
+  const parsed = schema.safeParse(json);
   if (!parsed.success) return { ok: false, reason: "schema", detail: z.prettifyError(parsed.error) };
   return { ok: true, value: parsed.data };
 }

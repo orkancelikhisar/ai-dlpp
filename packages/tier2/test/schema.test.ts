@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { JUDGE_SCHEMA, JudgeResponseSchema, parseJudgeResponse } from "../src/schema.js";
+import {
+  BASELINE_B_SCHEMA,
+  BaselineResponseSchema,
+  JUDGE_SCHEMA,
+  JudgeResponseSchema,
+  parseBaselineResponse,
+  parseJudgeResponse,
+} from "../src/schema.js";
 
 describe("JUDGE_SCHEMA", () => {
   it("is a plain JSON schema, serializable for the grammar constraint", () => {
@@ -398,5 +405,122 @@ describe("JUDGE_SCHEMA stays inside the keyword set measured to compile", () => 
     const items = JUDGE_SCHEMA.properties.findings.items;
     expect([...items.required].sort()).toEqual(Object.keys(items.properties).sort());
     expect(JUDGE_SCHEMA.required).toEqual(["findings"]);
+  });
+});
+
+
+describe("BASELINE_B_SCHEMA", () => {
+  it("is the judge's schema with exactly one property renamed", () => {
+    // Written out separately from JUDGE_SCHEMA rather than derived from it, so
+    // this comparison is between two independent objects and a change to
+    // either one alone fails here. Anything MORE than the rename -- a looser
+    // confidence bound, a dropped additionalProperties -- is one arm decoding
+    // under a different grammar, which is the head-to-head measuring the
+    // harness instead of the method.
+    const renamed = JSON.parse(
+      JSON.stringify(JUDGE_SCHEMA).replaceAll("predicateId", "entityType"),
+    ) as unknown;
+    expect(BASELINE_B_SCHEMA).toEqual(renamed);
+  });
+
+  it("names the field Approach B actually asks the model for", () => {
+    // The independent half: the shape above is only the right shape if this is
+    // the shape. Asserted against literals, not against JUDGE_SCHEMA.
+    const items = BASELINE_B_SCHEMA.properties.findings.items;
+    expect(items.required).toEqual(["entityType", "quote", "confidence"]);
+    expect(items.additionalProperties).toBe(false);
+    expect(items.properties.confidence).toEqual({ type: "number", minimum: 0, maximum: 1 });
+  });
+
+  it("is deeply frozen, for the same reason the judge's is", () => {
+    const thawed: string[] = [];
+    const walk = (node: unknown, path: string): void => {
+      if (node === null || typeof node !== "object") return;
+      if (!Object.isFrozen(node)) thawed.push(path);
+      for (const [key, value] of Object.entries(node)) walk(value, `${path}.${key}`);
+    };
+    walk(BASELINE_B_SCHEMA, "BASELINE_B_SCHEMA");
+    expect(thawed).toEqual([]);
+  });
+
+  it("is serializable, since the grammar constraint takes a string", () => {
+    // The round trip is asserted rather than the absence of a throw:
+    // JSON.stringify(undefined) throws nothing either, so a missing export
+    // would pass a not-toThrow check.
+    expect(JSON.parse(JSON.stringify(BASELINE_B_SCHEMA))).toEqual(BASELINE_B_SCHEMA);
+  });
+});
+
+describe("the two arms are parsed under identical rules", () => {
+  // The bake-off's headline number is "compiled pipeline versus Approach B".
+  // A parser that is stricter for one of them turns a difference in harness
+  // into a difference attributed to method, so the two entry points share a
+  // private core and these tests are what say so from outside.
+
+  const BODIES: Array<[string, string, string | undefined]> = [
+    ["an empty body from a latched engine", "", "abort"],
+    ["a body cut off at max_tokens", '{"findings":[{"quote":"Northwind Tr', "length"],
+    ["a body cut mid-number with no finish reason", '{"findings":[{"confidence":0.', undefined],
+    ["prose instead of JSON", "Here are the findings I found:", undefined],
+    ["content after a closed document", '{"findings":[]} and also', undefined],
+  ];
+
+  for (const [label, raw, finishReason] of BODIES) {
+    it(`classifies ${label} the same way for both arms`, () => {
+      const judged = parseJudgeResponse(raw, finishReason);
+      const baseline = parseBaselineResponse(raw, finishReason);
+      expect(judged.ok).toBe(false);
+      expect(baseline.ok).toBe(false);
+      if (judged.ok || baseline.ok) return;
+      expect(baseline.reason).toBe(judged.reason);
+    });
+  }
+
+  it("holds each arm to its OWN field name, so a schema swap is loud", () => {
+    const asJudge = '{"findings":[{"predicateId":"p","quote":"three whole words","confidence":0.5}]}';
+    const asBaseline = '{"findings":[{"entityType":"in-pan","quote":"three whole words","confidence":0.5}]}';
+    expect(parseJudgeResponse(asJudge).ok).toBe(true);
+    expect(parseBaselineResponse(asBaseline).ok).toBe(true);
+    // Cross-wired, both fail as a SCHEMA mismatch rather than silently
+    // producing a finding with an undefined label.
+    const crossed = parseJudgeResponse(asBaseline);
+    expect(crossed.ok).toBe(false);
+    if (!crossed.ok) expect(crossed.reason).toBe("schema");
+    const crossedBack = parseBaselineResponse(asJudge);
+    expect(crossedBack.ok).toBe(false);
+    if (!crossedBack.ok) expect(crossedBack.reason).toBe("schema");
+  });
+
+  it("applies the same quote and confidence rules to both arms", () => {
+    // The two field validators are shared consts in schema.ts precisely so
+    // this holds. A whitespace-only quote matches almost every message at some
+    // offset; 1.5 is what the grammar's leading-digit rule still lets through.
+    const cases = [
+      ['"   "', "0.5"],
+      ['"three whole words"', "1.5"],
+      ['"three whole words"', "-0.5"],
+      ['"three whole words"', "1e999"],
+    ];
+    for (const [quote, confidence] of cases) {
+      const judge = parseJudgeResponse(
+        `{"findings":[{"predicateId":"p","quote":${quote},"confidence":${confidence}}]}`,
+      );
+      const baseline = parseBaselineResponse(
+        `{"findings":[{"entityType":"e","quote":${quote},"confidence":${confidence}}]}`,
+      );
+      expect(judge.ok, `${quote} / ${confidence}`).toBe(false);
+      expect(baseline.ok, `${quote} / ${confidence}`).toBe(false);
+    }
+  });
+
+  it("accepts the same well-formed answer on both arms", () => {
+    // The other direction, so the test above cannot pass by rejecting
+    // everything.
+    expect(
+      parseJudgeResponse('{"findings":[{"predicateId":"p","quote":"three whole words","confidence":1}]}').ok,
+    ).toBe(true);
+    expect(
+      parseBaselineResponse('{"findings":[{"entityType":"e","quote":"three whole words","confidence":1}]}').ok,
+    ).toBe(true);
   });
 });

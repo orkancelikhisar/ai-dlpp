@@ -21,6 +21,18 @@ export {
   uncertainSegmentStarts,
   type EscalationInput,
 } from "./escalate.js";
+// The Approach-B baseline: core's `Detector` implemented directly, with no
+// compiler and no tiers, so the eval harness runs it as just another arm.
+// `completionCallRecord` and `priorFindingsLine` are shared between this arm
+// and the judge inside the package and stop at their own modules -- they are
+// how the two arms cannot drift, not API.
+export {
+  createBaselineB,
+  createBaselineBPlusTier0,
+  type BaselineB,
+  type BaselineBOptions,
+  type BaselineStats,
+} from "./baselineB.js";
 export {
   createWebLlmEngine,
   type CompleteOptions,
@@ -43,9 +55,13 @@ export {
   type Tier2Model,
 } from "./manifest.js";
 export {
+  BASELINE_B_SCHEMA,
+  BaselineResponseSchema,
   JUDGE_SCHEMA,
   JudgeResponseSchema,
+  parseBaselineResponse,
   parseJudgeResponse,
+  type BaselineResponse,
   type JudgeResponse,
   type ParseResult,
 } from "./schema.js";

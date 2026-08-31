@@ -157,7 +157,17 @@ export interface JudgeStats {
    * exercised the model.
    */
   readonly failedClosed: number;
-  /** Completions the engine reported as cut off at `max_tokens`. */
+  /**
+   * Completions the engine reported cut off, by `finishReason === "length"`.
+   *
+   * NOT only `max_tokens`, which is what this line used to say. READ from the
+   * shipped 0.2.84 bundle, "Stop condition 4" sets the same `finishReason` when
+   * `filledKVCacheLength` reaches `contextWindowSize`, so a prompt that fits at
+   * prefill and then exhausts the window mid-answer lands here too and is
+   * indistinguishable from a verbose model. At tier-2 segment sizes that is
+   * unlikely rather than impossible; it is the Approach-B arm, whose prompt
+   * carries a whole policy, where it is a live cause.
+   */
   readonly truncatedResponses: number;
   /** Completions the engine reported as interrupted. */
   readonly abortedResponses: number;
@@ -495,7 +505,7 @@ export class WebLlmJudge implements SemanticJudge {
         // One row per answered call, repair retries included. Recorded before
         // the body is looked at, because a call that will fail to parse still
         // spent its tokens and its time-to-first-token.
-        this.#calls.push(callRecord(completion));
+        this.#calls.push(completionCallRecord(completion));
 
         // Counted from what the ENGINE reported, before and independently of
         // whether the body parsed: a truncated response that happens to parse
@@ -658,8 +668,13 @@ export class WebLlmJudge implements SemanticJudge {
  * reported": a 0 would say the call used no prompt tokens and answered
  * instantly, which is a claim about the model rather than about a missing
  * field. Seconds become milliseconds and nothing else is transformed.
+ *
+ * Exported for the Approach-B arm, which records the same rows for the same
+ * bake-off. Two projections would let the arms' token and TTFT columns drift --
+ * one arm converting seconds and the other not, one defaulting a missing usage
+ * to 0 -- and the comparison would then be between the projections.
  */
-function callRecord(completion: Tier2Completion): JudgeCallRecord {
+export function completionCallRecord(completion: Tier2Completion): JudgeCallRecord {
   const ttftSeconds = completion.usage?.extra.time_to_first_token_s;
   return {
     finishReason: completion.finishReason,
@@ -721,7 +736,7 @@ function buildMessages(
   for (const predicate of predicates) {
     lines.push(`- ${predicate.id}: ${predicate.nlPredicate}`);
   }
-  lines.push("", priorLine(segment, priorFindings), "", "Passage:", segment.text);
+  lines.push("", priorFindingsLine(segment, priorFindings), "", "Passage:", segment.text);
   return [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: lines.join("\n") },
@@ -741,8 +756,14 @@ function buildMessages(
  *
  * Restricted to priors that OVERLAP this segment, since a label from three
  * paragraphs away is noise about a passage the model cannot see.
+ *
+ * Exported for the Approach-B-plus-tier-0 arm, which hands its model the same
+ * context about the same lower tier. The leak this function exists to prevent
+ * is the one that matters most for a bake-off, so there is one implementation
+ * of it rather than one per arm; B passes the whole message as the "segment",
+ * which is exactly the passage its model was shown.
  */
-function priorLine(segment: Segment, priorFindings: readonly Finding[]): string {
+export function priorFindingsLine(segment: Segment, priorFindings: readonly Finding[]): string {
   const counts = new Map<string, number>();
   for (const prior of priorFindings) {
     if (prior.start >= segment.end || prior.end <= segment.start) continue;
