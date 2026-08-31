@@ -16,6 +16,32 @@ import { minimalIr } from "../fixtures/minimal-ir.js";
 
 const ir = loadPolicyIr(JSON.stringify(minimalIr()));
 const config = { tier0: true, tier1: false, tier2: false };
+
+/** A loadable IR built from the fixture, so every field the schema polices is real. */
+const irWith = (over: Record<string, unknown>) =>
+  loadPolicyIr(JSON.stringify({ ...minimalIr(), ...over }));
+
+const predicate = (id: string, scope: "segment" | "message") => ({
+  id,
+  nlPredicate: `test predicate ${id}`,
+  scope,
+});
+
+/**
+ * The policy every test uses whose subject is what the JUDGE does rather than
+ * whether it is called at all.
+ *
+ * `minimalIr()` declares no `semanticPredicates`, and escalation (spec 4.1)
+ * spends a judge only where one can help -- so under that policy a clean
+ * message escalates nothing and tier 2 is never reached. A degraded-channel or
+ * budget test written against `ir` and a clean message would be asserting about
+ * a call that did not happen, and would pass for the wrong reason.
+ *
+ * Scoped to `segment` deliberately: the judge stubs below report
+ * `scopesJudged: ["segment"]`, so a message-scoped predicate would add a
+ * `scope-unjudged` entry next to the one under test.
+ */
+const irPredicate = irWith({ semanticPredicates: [predicate("p1", "segment")] });
 const SECRET = "x9K2mQ8vL4jR7nT3wY6zB1cD5fG0hJpZ";
 
 const MESSAGE = [
@@ -98,9 +124,12 @@ describe("engine-presence guards", () => {
 
   // Tier 2 judges semantic predicates, which do not depend on tier-1 spans, so
   // predicates-only escalation is a legitimate configuration -- not a guard case.
+  // `irPredicate`, because the point is that the judge really RUNS here: under a
+  // policy with no predicates escalation selects nothing on a clean message and
+  // `tier2Ms` would be undefined for a reason that has nothing to do with tier 1.
   it("allows tier 2 without tier 1", async () => {
     const result = await detect({
-      ir, provider: "chatgpt", text: "what is a monad?",
+      ir: irPredicate, provider: "chatgpt", text: "what is a monad?",
       config: { tier0: true, tier1: false, tier2: true },
       engines: { tier2: judge() },
     });
@@ -217,7 +246,8 @@ describe("finding normalization", () => {
     const bad = finding({ start: 0, end: 6, text: "Globe", entityType: "client-name", tier: 2, source: "stub-t2" });
     await expect(
       detect({
-        ir, provider: "chatgpt", text: drifted,
+        // A policy with predicates, so escalation reaches the judge at all.
+        ir: irPredicate, provider: "chatgpt", text: drifted,
         config: { tier0: false, tier1: false, tier2: true },
         engines: { tier2: judge([bad]) },
       }),
@@ -393,25 +423,26 @@ describe("tier seams (Plans 4-5)", () => {
     expect(result.timings.tier2Ms).toBeUndefined();
   });
 
-  it("gives tier 2 every segment plus the prior findings, and merges what it returns", async () => {
-    let seen: Segment[] = [];
+  it("gives tier 2 everything the earlier tiers found, and merges what it returns", async () => {
     let priors: Finding[] = [];
     const extra = finding({
       start: 0, end: 3, text: MESSAGE.slice(0, 3), entityType: "client-name", tier: 2, source: "stub-t2",
     });
     const spy: SemanticJudge = {
       judge: async (request) => {
-        seen = request.segments;
         priors = request.priorFindings;
         return { findings: [extra], scopesJudged: ["segment"] };
       },
     };
     const result = await detect({
-      ir, provider: "chatgpt", text: MESSAGE,
+      ir: irPredicate, provider: "chatgpt", text: MESSAGE,
       config: { tier0: true, tier1: false, tier2: true },
       engines: { tier2: spy },
     });
-    expect(seen).toEqual(segmentText(MESSAGE));
+    // Priors are the whole message's findings, NOT just the escalated segments'.
+    // A judge weighs a segment against what the pipeline already knows, and
+    // filtering these to the escalated set would hide the tier-0 hit sitting one
+    // segment away.
     expect(priors.map((p) => p.entityType).sort()).toEqual(["aws-key", "generic-secret", "in-pan"]);
     const added = result.findings.find((x) => x.entityType === "client-name")!;
     expect(added.action).toBe("pseudonymize");
@@ -419,6 +450,7 @@ describe("tier seams (Plans 4-5)", () => {
     expect(result.timings.tier2Ms).toBeGreaterThanOrEqual(0);
   });
 });
+
 
 // ---------------------------------------------------------------------------
 // Plan 5's three orchestrator gaps: the degraded channel, predicate scope, and
@@ -434,16 +466,6 @@ const T2 = { tier0: true, tier1: true, tier2: true };
 
 /** Tier 1 present and silent, so only tier 2 can add to `degraded`. */
 const withT2 = (tier2: SemanticJudge) => ({ tier1: tagger([]), tier2 });
-
-/** A loadable IR built from the fixture, so every field the schema polices is real. */
-const irWith = (over: Record<string, unknown>) =>
-  loadPolicyIr(JSON.stringify({ ...minimalIr(), ...over }));
-
-const predicate = (id: string, scope: "segment" | "message") => ({
-  id,
-  nlPredicate: `test predicate ${id}`,
-  scope,
-});
 
 /** Tier and reason only: the details are prose and are asserted where they are produced. */
 const kinds = (result: DetectionResult) =>
@@ -461,10 +483,180 @@ const aborted = (signal: AbortSignal) =>
     else signal.addEventListener("abort", () => { resolve(); }, { once: true });
   });
 
+// ---------------------------------------------------------------------------
+// Escalation -- spec 4.1: "tier2 iff (uncertain OR semanticPredicates present)
+// AND TierConfig.tier2". At the seconds-per-call a judge costs, this decides
+// whether the pipeline answers inside `ir.latencyBudgetMs` at all.
+// ---------------------------------------------------------------------------
+
+/** prose, kv and code in one message, with nothing in any of them for tier 0 to find. */
+const MIXED = "Renewal notes.\nclient: Northwind Traders\n```\nconst total = a + b;\n```\n";
+/** That fenced block alone: a message with no segment escalation can select. */
+const CODE_ONLY = "```\nconst total = a + b;\n```\n";
+
+/** A judge that answers nothing and records every request it was handed. */
+const spyJudge = () => {
+  const calls: JudgeRequest[] = [];
+  return {
+    calls,
+    engine: {
+      judge: async (request: JudgeRequest) => {
+        calls.push(request);
+        return { findings: [], scopesJudged: ["segment"] as const };
+      },
+    } satisfies SemanticJudge,
+  };
+};
+
+describe("tier-2 escalation", () => {
+  it("premise: MIXED and CODE_ONLY carry nothing for tier 0 to find", async () => {
+    // Every test below reads escalation, and a stray tier-0 hit would add an
+    // uncertainty flag and quietly change which segments get selected -- so the
+    // fixtures' emptiness is asserted rather than assumed.
+    for (const text of [MIXED, CODE_ONLY]) {
+      const result = await detect({
+        ir, provider: "chatgpt", text, config: { tier0: true, tier1: false, tier2: false },
+      });
+      expect(result.findings).toEqual([]);
+    }
+    // And MIXED really does contain one of each kind, which is what makes the
+    // prose/kv/code assertions below able to fail.
+    expect(segmentText(MIXED).map((s) => s.kind)).toEqual(["prose", "kv", "code"]);
+  });
+
+  it("does not call the judge at all when nothing qualifies", async () => {
+    // The expensive default. Without it every message pays a model call per
+    // segment to ask about a policy that declares no semantic clauses.
+    const { calls, engine } = spyJudge();
+    const result = await detect({
+      ir, provider: "chatgpt", text: MIXED, config: T2, engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(calls).toEqual([]);
+    // No call, no timing: a 0 here would read as a tier that ran instantly,
+    // which is the ambiguity `timings`' own doc warns about.
+    expect(result.timings.tier2Ms).toBeUndefined();
+    // And NOT a degradation. `degraded` means "weaker than a full three-tier
+    // run", and a full run is not stronger here: `WebLlmJudge.judge` returns
+    // `{findings: [], scopesJudged: []}` on an IR with no `semanticPredicates`
+    // before it touches the engine, so calling it would have produced the same
+    // findings and the same degraded array. `timings.tier2Ms` above is the one
+    // field that differs, and it is what tells a caller the judge did not run.
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("selects prose and kv but not code when the policy declares predicates", async () => {
+    const { calls, engine } = spyJudge();
+    await detect({
+      ir: irPredicate, provider: "chatgpt", text: MIXED, config: T2,
+      engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.segments.map((s) => s.kind)).toEqual(["prose", "kv"]);
+  });
+
+  it("selects a code segment tier 0 left uncertain, with no predicates at all", async () => {
+    // The uncertainty branch, wired to the confidences tier 0 really emits:
+    // MESSAGE's fenced block holds an entropy finding, and `tier0.ts` fixes
+    // entropy below every regex rule's floor precisely because it cannot tell a
+    // random-looking string from a secret. Nothing here is hand-fed -- the
+    // flag comes from running tier 0 over this message.
+    const { calls, engine } = spyJudge();
+    const result = await detect({
+      ir, provider: "chatgpt", text: MESSAGE, config: T2, engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(segmentText(MESSAGE).map((s) => s.kind)).toEqual(["prose", "code"]);
+    expect(calls).toHaveLength(1);
+    // The code segment ALONE: the prose segment holds only a validated PAN,
+    // which no judge call can improve on, and there are no predicates to make
+    // it qualify on the other branch.
+    expect(calls[0]!.segments.map((s) => s.kind)).toEqual(["code"]);
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("reads TierConfig.uncertainBelow instead of the built-in threshold", async () => {
+    // THREE thresholds, because a test exercising only the default cannot tell
+    // "reads the config" from "hardcodes 0.8" -- the failure this project has
+    // shipped twice. The expectations come from tier 0's own confidences
+    // (entropy 0.7 in the code segment, a boosted PAN 0.95 in the prose one),
+    // not from anything escalation computed.
+    const run = async (uncertainBelow?: number) => {
+      const { calls, engine } = spyJudge();
+      await detect({
+        ir, provider: "chatgpt", text: MESSAGE,
+        config: { ...T2, uncertainBelow },
+        engines: { tier1: tagger([]), tier2: engine },
+      });
+      return calls.map((c) => c.segments.map((s) => s.kind));
+    };
+    // Under 0.7: nothing is uncertain, so the judge is never called.
+    expect(await run(0.5)).toEqual([]);
+    // Over 0.95: every tier-0 finding qualifies, so both segments are judged.
+    expect(await run(0.96)).toEqual([["prose", "code"]]);
+    // Omitted falls back to the default, which sits between the two.
+    expect(await run()).toEqual([["code"]]);
+  });
+
+  it("refuses a threshold that would disable the branch silently", async () => {
+    // `confidence < NaN` is false for every finding, so an unvalidated NaN
+    // reports "nothing was uncertain" on every message an arm ever sees.
+    await expect(
+      detect({
+        ir, provider: "chatgpt", text: MESSAGE,
+        config: { ...T2, uncertainBelow: Number.NaN },
+        engines: { tier1: tagger([]), tier2: judge() },
+      }),
+    ).rejects.toThrow(/threshold/i);
+  });
+
+  it("reports the predicates it could not judge when escalation selects nothing", async () => {
+    // The other half of the skip decision. Here a full run WOULD have been
+    // stronger: the policy declares a clause and no segment qualified to carry
+    // it, so the run is weaker and says so. `scope-unjudged` already means
+    // exactly "the policy declares predicates in a scope nothing evaluated"; a
+    // new reason word would split that count across two spellings.
+    const { calls, engine } = spyJudge();
+    const result = await detect({
+      ir: irPredicate, provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(calls).toEqual([]);
+    expect(result.timings.tier2Ms).toBeUndefined();
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+    // The detail must say escalation was the reason, not that a judge answered
+    // for fewer scopes than it was asked: no judge ran at all.
+    expect(result.degraded[0]!.detail).toContain("escalation selected none");
+    expect(result.degraded[0]!.detail).toContain("was not called");
+  });
+
+  it("reports nothing when the skipped message had no predicate to judge either", async () => {
+    const result = await detect({
+      ir, provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: tagger([]), tier2: judge() },
+    });
+    expect(result.degraded).toEqual([]);
+  });
+
+  it("names escalation, not the budget, when both would have stopped the call", async () => {
+    // The budget notice claims a cause -- "already spent ... so the judge was
+    // not called" -- and here it would be the wrong one: no budget at all
+    // produces a call on a message with no escalatable segment, so an operator
+    // who raised `ir.latencyBudgetMs` in response would see no change.
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("p1", "segment")], latencyBudgetMs: 10 }),
+      provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: slowTagger(60), tier2: judge() },
+    });
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+  });
+});
+
 describe("degraded channel", () => {
   it("stays empty when all three tiers ran and answered", async () => {
+    // `irPredicate`, so tier 2 really is one of the three that ran: escalation
+    // skips the judge under a policy with no semantic clauses, and this test's
+    // name would then be false while its assertion still held.
     const result = await detect({
-      ir, provider: "chatgpt", text: "what is a monad?",
+      ir: irPredicate, provider: "chatgpt", text: "what is a monad?",
       config: { tier0: true, tier1: true, tier2: true },
       engines: { tier1: tagger([]), tier2: judge() },
     });
@@ -502,9 +694,9 @@ describe("degraded channel", () => {
     // DetectionResult gave a caller no way to reach -- so a model that will not
     // emit valid JSON silently passed text through, which spec section 7 forbids.
     const text = "what is a monad?";
-    const clean = await detect({ ir, provider: "chatgpt", text, config: T2, engines: withT2(judge()) });
+    const clean = await detect({ ir: irPredicate, provider: "chatgpt", text, config: T2, engines: withT2(judge()) });
     const refused = await detect({
-      ir, provider: "chatgpt", text, config: T2,
+      ir: irPredicate, provider: "chatgpt", text, config: T2,
       engines: withT2(
         verdictJudge({
           degraded: [{ reason: "failed-closed", detail: "2 of 3 segments unparseable after one repair" }],
@@ -532,7 +724,7 @@ describe("degraded channel", () => {
       }),
     };
     const result = await detect({
-      ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(liar),
+      ir: irPredicate, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(liar),
     });
     expect(result.degraded).toEqual([{ tier: 2, reason: "failed-closed", detail: "d" }]);
   });
@@ -552,7 +744,10 @@ describe("degraded channel", () => {
       }),
     });
     const run = (reason: string) =>
-      detect({ ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(claims(reason)) });
+      detect({
+        ir: irPredicate, provider: "chatgpt", text: "what is a monad?", config: T2,
+        engines: withT2(claims(reason)),
+      });
     for (const reason of ["absent", "budget-exhausted", "scope-unjudged", "ranch-dressing"]) {
       await expect(run(reason)).rejects.toThrow(/may not name/);
       await expect(run(reason)).rejects.toThrow(reason);
@@ -574,7 +769,7 @@ describe("degraded channel", () => {
       }),
     };
     await expect(
-      detect({ ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(silent) }),
+      detect({ ir: irPredicate, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(silent) }),
     ).rejects.toThrow(/no detail/);
   });
 
@@ -593,7 +788,7 @@ describe("degraded channel", () => {
       }),
     };
     const result = await detect({
-      ir, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(chatty),
+      ir: irPredicate, provider: "chatgpt", text: "what is a monad?", config: T2, engines: withT2(chatty),
     });
     expect(result.degraded).toEqual([{ tier: 2, reason: "failed-closed", detail: "d" }]);
     expect(Object.keys(result.degraded[0]!).sort()).toEqual(["detail", "reason", "tier"]);
@@ -642,15 +837,28 @@ describe("semantic predicate scope", () => {
   it("hands the judge the whole message, with segment offsets that index into it", async () => {
     // A judge cannot reconstruct the message from segments it may have been
     // handed a filtered list of, so scope: "message" is unanswerable without this.
+    //
+    // MIXED rather than MESSAGE, and that choice is what gives this test teeth.
+    // Escalation drops MIXED's code segment, so the segments the judge receives
+    // no longer tile the message and `segments.map(s => s.text).join("")` is
+    // strictly shorter than it. Passing that join in place of `text` was a
+    // KNOWN EQUIVALENT MUTANT here -- with every segment escalated the two
+    // strings are byte-identical -- and the three assertions below are what
+    // stop it being equivalent again.
     let seen: JudgeRequest | undefined;
     const spy: SemanticJudge = {
       judge: async (request) => { seen = request; return { findings: [], scopesJudged: ["segment"] }; },
     };
     await detect({
       ir: irWith({ semanticPredicates: [predicate("p1", "message")] }),
-      provider: "chatgpt", text: MESSAGE, config: T2, engines: withT2(spy),
+      provider: "chatgpt", text: MIXED, config: T2, engines: withT2(spy),
     });
-    expect(seen?.text).toBe(MESSAGE);
+    expect(seen?.text).toBe(MIXED);
+    // Premise: the judge really was handed less than the whole message, so the
+    // assertion above is about `text` and not about a segment list that happens
+    // to reconstruct it.
+    expect(seen!.segments.length).toBeLessThan(segmentText(MIXED).length);
+    expect(seen!.segments.map((s) => s.text).join("")).not.toBe(MIXED);
     for (const segment of seen!.segments) {
       expect(seen!.text.slice(segment.start, segment.end)).toBe(segment.text);
     }

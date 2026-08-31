@@ -13,6 +13,16 @@ export { getValidator, hasValidator, shannonEntropy, type Validator } from "./de
 export { runTier0 } from "./detect/tier0.js";
 export { mergeFindings, clusterOverlapping } from "./detect/merge.js";
 export { ACTION_RANK, detect, type DetectInput, type Detector } from "./detect/orchestrator.js";
+// Spec 4.1's escalation policy. Here rather than in `@sih/tier2` -- where Plan 5
+// named it -- because `detect` is its caller and core cannot depend on the tier
+// it gates; see the module. `@sih/tier2` re-exports it, as `@sih/compiler` does
+// for `shadowIdFor`.
+export {
+  UNCERTAIN_BELOW,
+  selectSegments,
+  uncertainSegmentStarts,
+  type EscalationInput,
+} from "./detect/escalate.js";
 export type * from "./detect/types.js";
 
 // -- pseudonymization layer (spec §5.4) ------------------------------------

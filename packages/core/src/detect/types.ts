@@ -27,6 +27,23 @@ export interface TierConfig {
   t1Model?: string;
   t2Model?: string;
   backend?: "wasm" | "webgpu";
+  /**
+   * Confidence below which a tier-0/1 finding escalates its segment to tier 2 --
+   * spec 4.1's "uncertainty above threshold". Omitted means `UNCERTAIN_BELOW`.
+   *
+   * On `TierConfig` rather than in the IR because it is an EXPERIMENT variable,
+   * not policy: it changes how much a run costs and what it catches, and the
+   * bake-off's whole job is varying that per arm. A policy author has no way to
+   * pick it -- the numbers it is compared against are tier internals (tier 0's
+   * fixed entropy confidence, tier 1's sigmoid scores), not anything a written
+   * policy talks about. `Tier1Config.threshold` is on the same footing and its
+   * own doc calls it "an experiment variable, not a constant".
+   *
+   * Validated where it is used, not here: `escalate.ts` refuses anything that is
+   * not a finite number in [0, 1], because a NaN reaching the comparison
+   * disables the branch silently.
+   */
+  uncertainBelow?: number;
 }
 
 /**

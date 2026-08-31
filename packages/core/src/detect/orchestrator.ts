@@ -1,6 +1,7 @@
 import type { Action, PolicyIr, PredicateScope, Tier } from "../policy/types.js";
 import { resolveAction } from "../policy/resolve.js";
 import { segmentText } from "../segment/segment.js";
+import { selectSegments, uncertainSegmentStarts } from "./escalate.js";
 import { clusterOverlapping, mergeFindings } from "./merge.js";
 import { runTier0 } from "./tier0.js";
 import type {
@@ -251,6 +252,29 @@ const PREDICATE_SCOPES = Object.keys({
 } satisfies Record<PredicateScope, true>) as PredicateScope[];
 
 /**
+ * Scopes the policy declares a predicate in that nothing evaluated, with how
+ * many predicates each one holds.
+ *
+ * Shared by the two paths that can leave a scope unevaluated -- a judge that
+ * ran and reported evaluating fewer scopes than the policy declares, and an
+ * escalation that selected no segment so the judge was never called -- because
+ * the ENUMERATION must not differ between them. Each caller writes its own
+ * `detail`, since the two facts are different sentences and a shared one would
+ * have to be vague enough to cover both.
+ */
+function unjudgedScopes(
+  ir: PolicyIr,
+  judged: readonly PredicateScope[],
+): Array<{ scope: PredicateScope; declared: number }> {
+  const out: Array<{ scope: PredicateScope; declared: number }> = [];
+  for (const scope of PREDICATE_SCOPES) {
+    const declared = ir.semanticPredicates.filter((p) => p.scope === scope).length;
+    if (declared > 0 && !judged.includes(scope)) out.push({ scope, declared });
+  }
+  return out;
+}
+
+/**
  * A tier that did not run, recorded as the fact it is.
  *
  * The detail says the tier was not enabled and stops there. WHY a caller
@@ -425,22 +449,20 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
   if (!config.tier2) {
     degraded.push(absentNotice(2));
   } else if (engines?.tier2 !== undefined) {
-    // Every segment, plus everything found so far. Escalation -- deciding which
-    // segments are worth a judge at all -- is still Plan 5's Task 7; running the
-    // judge over the whole message is the conservative placeholder.
+    // Escalation -- spec 4.1: "tier2 iff (uncertain OR semanticPredicates
+    // present) AND TierConfig.tier2". The config half is the branch above; the
+    // other half is `escalate.ts`, and it is applied HERE for the same reason
+    // tier 1's kind filter is: engines answer about the segments they are
+    // handed, so which segments deserve a model has to be changeable for every
+    // engine at once -- including the Approach-B arm, which is not a judge.
     //
-    // Priors are a snapshot, not the live accumulator: `raw` is pushed into
-    // again the moment the judge returns, so handing over the array itself
-    // would let an engine that holds onto it observe findings it never saw --
-    // or splice the list detection is about to resolve.
-    //
-    // Shallow on purpose. The Finding objects inside ARE shared with the
-    // pipeline, which is safe only because findings are treated as immutable
-    // everywhere (nothing here or downstream mutates one; normalizeFindings
-    // copies rather than rewrites). An engine that mutates a prior in place
-    // violates that convention and corrupts the merge. Deep-cloning every
-    // finding on every tier-2 call would buy protection against a contract
-    // breach at a per-message allocation cost, and is not worth it.
+    // `raw` is the right input to the uncertainty half and the only moment it is
+    // available: it holds exactly what tiers 0 and 1 found on this message, and
+    // spec 4.1 defines uncertainty as what THEY left behind.
+    const escalated = selectSegments(segments, {
+      hasPredicates: ir.semanticPredicates.length > 0,
+      uncertain: uncertainSegmentStarts(segments, raw, config.uncertainBelow),
+    });
 
     // The per-MESSAGE budget, enforced here because nothing else can: a judge
     // makes one engine call per segment, each one compliant with its own
@@ -448,7 +470,51 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     // spec 5.3 wrote down. The orchestrator is the only layer that knows both
     // `ir.latencyBudgetMs` and how much of it the earlier tiers already spent.
     const remaining = remainingBudgetMs(ir.latencyBudgetMs, performance.now() - messageStarted);
-    if (remaining === undefined) {
+
+    // Tested BEFORE the budget, because the budget's notice makes a causal
+    // claim ("already spent ... so the judge was not called") that would be
+    // wrong here: with nothing escalated, no budget at all would have produced
+    // a call, and an operator who raised `ir.latencyBudgetMs` in response would
+    // see no change.
+    //
+    // Whether this is a DEGRADATION depends on what the policy asked for, and
+    // the two cases genuinely differ:
+    //
+    // - No predicates and nothing uncertain: NOT a degradation, and nothing is
+    //   filed. `DetectionResult.degraded` means "weaker than a full THREE-TIER
+    //   run", and this is not weaker than one. `WebLlmJudge.judge` returns
+    //   `{findings: [], scopesJudged: []}` on an IR with no `semanticPredicates`
+    //   before it touches the engine, so calling it would have produced the same
+    //   `findings` and the same `degraded` -- filing a notice here would report
+    //   a degradation the pipeline does not report when the judge really runs.
+    //   The one thing that DOES differ is `timings.tier2Ms`, set on the call
+    //   path and unset on this one, and that is precisely how a caller asking
+    //   "did tier 2 run?" tells them apart.
+    //
+    // - Predicates declared but no segment selected (a message that is entirely
+    //   a code fence, with nothing uncertain in it): weaker, and reported. The
+    //   policy declares clauses that went unevaluated, which is what
+    //   `scope-unjudged` already means -- no new reason word is needed, and
+    //   inventing one would split the bake-off's count of unevaluated
+    //   predicates across two words that mean the same thing to a reader.
+    //
+    // No `timings.tier2Ms` on either path: a 0 there reads as a tier that ran
+    // instantly, which is the confusion `timings`' own doc warns about.
+    if (escalated.length === 0) {
+      // No scope was judged, because no judge ran -- hence the empty second
+      // argument. The enumeration is shared with the post-verdict loop below so
+      // the two paths cannot disagree about which scopes a policy declares.
+      for (const { scope, declared } of unjudgedScopes(ir, [])) {
+        degraded.push({
+          tier: 2,
+          reason: "scope-unjudged",
+          detail:
+            `the policy declares ${declared} semantic predicate(s) with scope "${scope}", and ` +
+            `escalation selected none of this message's ${segments.length} segment(s), so the ` +
+            `tier-2 judge was not called and those predicates were not judged`,
+        });
+      }
+    } else if (remaining === undefined) {
       // Not called at all, rather than called with a budget of zero -- and the
       // refusal has to be HERE, because no judge performs it. The shipped one
       // does not: `WebLlmJudge`'s constructor validates the per-call budget it
@@ -486,9 +552,33 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
       let verdict: JudgeVerdict;
       try {
         verdict = await engines.tier2.judge({
+          // The WHOLE message alongside a FILTERED segment list, which is
+          // exactly the pairing `JudgeRequest.text` exists for: since
+          // escalation landed, `escalated.map(s => s.text).join("")` is no
+          // longer the message, so a judge that reconstructed the text from its
+          // segments would silently lose whatever escalation dropped -- and a
+          // `scope: "message"` predicate would be judged against a message with
+          // holes in it.
           text,
-          segments,
+          segments: escalated,
           ir,
+          // A snapshot, not the live accumulator: `raw` is pushed into again the
+          // moment the judge returns, so handing over the array itself would let
+          // an engine that holds onto it observe findings it never saw -- or
+          // splice the list detection is about to resolve.
+          //
+          // Shallow on purpose. The Finding objects inside ARE shared with the
+          // pipeline, which is safe only because findings are treated as
+          // immutable everywhere (nothing here or downstream mutates one;
+          // normalizeFindings copies rather than rewrites). An engine that
+          // mutates a prior in place violates that convention and corrupts the
+          // merge. Deep-cloning every finding on every tier-2 call would buy
+          // protection against a contract breach at a per-message allocation
+          // cost, and is not worth it.
+          //
+          // The WHOLE message's findings, not the escalated segments'. A judge
+          // weighs a segment against what the pipeline already knows, and a hit
+          // one segment away is context escalation had no reason to drop.
           priorFindings: [...raw],
           budgetMs: remaining,
           signal: controller.signal,
@@ -545,18 +635,15 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
       // evaluated. This is the whole of `SemanticPredicate.scope`'s enforcement
       // today: core cannot make a judge read a message, but it can refuse to let
       // a bake-off count an unevaluated predicate as a clean one.
-      for (const scope of PREDICATE_SCOPES) {
-        const declared = ir.semanticPredicates.filter((p) => p.scope === scope).length;
-        if (declared > 0 && !verdict.scopesJudged.includes(scope)) {
-          degraded.push({
-            tier: 2,
-            reason: "scope-unjudged",
-            detail:
-              `the policy declares ${declared} semantic predicate(s) with scope "${scope}" and the ` +
-              `tier-2 judge reported evaluating [${verdict.scopesJudged.join(", ")}], so those ` +
-              `predicates were not judged in the scope they were written for`,
-          });
-        }
+      for (const { scope, declared } of unjudgedScopes(ir, verdict.scopesJudged)) {
+        degraded.push({
+          tier: 2,
+          reason: "scope-unjudged",
+          detail:
+            `the policy declares ${declared} semantic predicate(s) with scope "${scope}" and the ` +
+            `tier-2 judge reported evaluating [${verdict.scopesJudged.join(", ")}], so those ` +
+            `predicates were not judged in the scope they were written for`,
+        });
       }
 
       raw.push(...normalizeFindings(ir, text, verdict.findings));

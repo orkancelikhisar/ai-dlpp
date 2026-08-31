@@ -13,6 +13,14 @@ export {
 // constructor is private, so `createWebLlmEngine` is the only way to build one
 // and the only place that can refuse a modelId disagreeing with its config.
 // Same reasoning as `schema.ts` keeping `classifyJsonPrefix` private.
+// Spec 4.1's escalation policy, re-exported from `@sih/core`; see escalate.ts
+// for why it cannot be defined in this package.
+export {
+  UNCERTAIN_BELOW,
+  selectSegments,
+  uncertainSegmentStarts,
+  type EscalationInput,
+} from "./escalate.js";
 export {
   createWebLlmEngine,
   type CompleteOptions,
