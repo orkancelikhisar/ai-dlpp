@@ -28,7 +28,7 @@ export {
   type ParseResult,
 } from "./schema.js";
 export {
-  buildFoldMap,
+  MINIMUM_CANDIDATE_WORDS,
   resolveQuote,
   type ResolvedQuote,
 } from "./spans.js";
