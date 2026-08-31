@@ -404,10 +404,11 @@ describe("WebLlmJudge", () => {
     // The prompt's own doc says examples and counterExamples are deliberately
     // absent: they are authored strings, and in one corpus the only tier-1 gold
     // value was also the IR's `examples` entry -- a model handed the answer
-    // scores without doing the work. `predicateIr` gives every entityType,
-    // shadow and authored alike, a sentinel example list so this has something
-    // to catch; with the empty lists it used to carry, an implementation that
-    // interpolated `entity.examples` straight into the prompt would pass.
+    // scores without doing the work. `predicateIr` gives the AUTHORED entityType
+    // a sentinel example list so this has something to catch; with the empty
+    // lists it used to carry, an implementation that interpolated
+    // `entity.examples` straight into the prompt would pass. Shadow entityTypes
+    // stay empty here because that is what the compiler mints.
     const engine = fakeEngine({ findings: [] });
     const ir = predicateIr({
       predicates: [
@@ -423,7 +424,7 @@ describe("WebLlmJudge", () => {
       expect(prompt).not.toContain(sentinel);
     }
     // ... and the IR really did carry some, so the loop above is not vacuous.
-    expect(ir.entityTypes.flatMap((e) => e.examples)).toContain("SENTINEL-SHADOW-EXAMPLE");
+    expect(ir.entityTypes.flatMap((e) => e.examples)).toContain("SENTINEL-AUTHORED-EXAMPLE");
     expect(ir.entityTypes.flatMap((e) => e.counterExamples)).toContain(
       "SENTINEL-AUTHORED-COUNTEREXAMPLE",
     );

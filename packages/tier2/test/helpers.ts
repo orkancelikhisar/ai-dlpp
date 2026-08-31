@@ -52,16 +52,19 @@ const DEFAULT_PREDICATES: readonly PredicateSpec[] = [
  * would otherwise be unloadable. It doubles as a prior-findings label that is
  * not a shadow.
  *
- * EVERY entityType here carries a non-empty `examples` and `counterExamples`
- * list, and the values are sentinels that appear nowhere else. That is what
- * makes "the prompt carries no examples" a real assertion instead of a vacuous
- * one -- with empty lists, a judge that interpolated `entity.examples`
- * straight into its prompt would pass. Stated honestly: the compiler mints
- * SHADOW entityTypes with `examples: []` by construction
- * (`mintShadowEntityTypes`), so a shadow's list being non-empty here is
- * adversarial rather than representative. The authored `client-name` one is
- * representative -- authored entityTypes really do carry examples -- and either
- * kind reaching the prompt is the leak the assertion is for.
+ * The AUTHORED `client-name` entityType carries sentinel `examples` and
+ * `counterExamples` that appear nowhere else. That is what makes "the prompt
+ * carries no examples" a real assertion rather than a vacuous one: with empty
+ * lists everywhere, a judge that interpolated `entity.examples` straight into
+ * its prompt would pass.
+ *
+ * SHADOW entityTypes keep `examples: []`, because that is what the compiler
+ * actually mints (`mintShadowEntityTypes` hardcodes it). Giving them sentinels
+ * would make the assertion catch one more hypothetical mutation, at the cost of
+ * handing every test in this suite an IR shape the compiler cannot produce --
+ * and this fixture is shared by all of them. A shadow list that is empty in
+ * production cannot leak anything, so nothing is lost: the mutation that
+ * matters, interpolating examples at all, is still caught by the authored one.
  */
 export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
   const predicates = options.predicates ?? DEFAULT_PREDICATES;
@@ -84,8 +87,9 @@ export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
       id: shadowId,
       tier: 2,
       nlDefinition: predicate.nlPredicate,
-      examples: ["SENTINEL-SHADOW-EXAMPLE"],
-      counterExamples: ["SENTINEL-SHADOW-COUNTEREXAMPLE"],
+      // Empty, as `mintShadowEntityTypes` mints them. See the note above.
+      examples: [],
+      counterExamples: [],
       severity: predicate.severity ?? "high",
       neverPseudonymize: true,
     });
