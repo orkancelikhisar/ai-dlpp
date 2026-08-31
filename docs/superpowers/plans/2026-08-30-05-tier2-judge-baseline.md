@@ -56,6 +56,8 @@ await engine.chat.completions.create({
 - **One engine per arm.** Swapping models in one page leaks VRAM.
 - **`context_window_size: 8192` loads fine** on the shipped lib (1.7 s warm) and prefills a 4,360-token prompt at 452 tok/s. The 4096 default is a WebLLM override and is liftable — raise it for **both** tier 2 and Approach B so B does not fail on long messages for a reason unrelated to its design.
 
+  **Task 9 measured what actually needs the window, and it is not tier 2.** A tier-2 prompt is the fixed 776-character system turn plus the predicates plus one SEGMENT, and over `corpora/fixtures/smoke.jsonl` the largest selected segment is 153 characters — a whole prompt of **1,196 characters**, 1,105 at the median. Even at the pathological ceiling of one token per character that is under 1,200 tokens, so tier 2 fits the unlifted 4096 with 3.4x headroom and never comes near 8192. The window lift is therefore justified by **Approach B alone**, whose prompt carries the whole policy (`policies/p-fin.md` is 5,320 characters) plus the whole message rather than one segment. Keep the lift — the two arms must share a window or the head-to-head measures context rather than method, which is this bullet's original argument and is unaffected — but stop attributing the requirement to tier 2, and note that the load-only 8192 probe this plan still owes is a probe for B's benefit.
+
   **But that was measured on `Qwen3.5-2B` ONLY.** The other three arms each ship their own `overrides.context_window_size: 4096` and are **unmeasured at 8192**. Before Task 12 commits four arms to it, probe each remaining model at 8192 and record what happens — a model that refuses the larger window, or that loads but thrashes, is a finding, and discovering it as three failed arms mid-bake-off would waste a full run. If a model cannot take 8192, the honest options are to run that arm at 4096 and **report the asymmetry**, or to drop the arm; silently mixing window sizes across arms would make the comparison measure context rather than method.
 
 ### Cancellation must interrupt, drain, AND clear — corrected by Task 3 against the real engine
@@ -101,6 +103,10 @@ The spec's original rules were replaced (see the amended spec §4.2) because bot
   **Qualified during Task 1, and it matters for the budget.** "0 malformed" is true and is not the whole picture: **3 of 6 constrained Phi-4-mini calls in the probe corpus failed to `JSON.parse`**, all three identically (`Unterminated string in JSON at position 1959`), because the model emitted a duplicate loop — `"quote": "Halcyon"` about nineteen times — that exhausted the token budget mid-string. The grammar was satisfied throughout, so these are **truncated, not malformed**: a different cause with the same downstream effect, since the parse throws and an unparseable response routes to fail-closed.
 
   Two consequences. First, this validates Task 2's decision to distinguish `truncated` from `malformed` as separate parse outcomes — it is not a hypothetical distinction. Second, **those calls ran at `maxTokens: 600`, and this plan pins the default at 512** — tighter than a budget already observed truncating. So an arm can be killed by the token budget rather than by capability, which is precisely the failure the amended kill rules exist to prevent. Before the bake-off, either raise the default with a measurement behind the new number, or **count truncations per arm and report them beside the gate verdict** so a budget-killed arm is distinguishable from an incapable one. Do not leave it implicit.
+
+  **Task 9 settled which of those two to take: take the second, and leave 512 alone.** A judge's answer is bounded by the passage it is judging, because every `quote` must be copied from it. Measured over `corpora/fixtures/smoke.jsonl`, the largest segment the escalation policy selects is **153 characters**. A maximal honest answer for that segment — one finding quoting the entire passage — is `{"findings":[{"predicateId":"client-relationship-disclosure","quote":<153 chars>,"confidence":0.85}]}`, about **243 characters**. That is ~61 tokens at a conventional English ratio and **243 tokens even at the absolute ceiling of one token per character**, which is the most any byte-level BPE vocabulary can emit. So 512 has 2x headroom over this corpus's worst case under an assumption nobody has to accept, and 8x under the ordinary one: on the corpus that exists, **512 cannot be what kills an arm.**
+
+  Two things that does NOT say. It does not vindicate 512 for Plan 7's corpus, whose segments are not yet measured — re-run Task 9's `segmentSizeDistribution` against it and redo this arithmetic, which is one line. And it does not make the observed truncations harmless: they were a duplicate loop (`"quote": "Halcyon"` about nineteen times) that satisfied the grammar the whole way, and **raising the cap does not fix a loop, it buys a longer one** while spending more wall clock per call against gates that are about wall clock. Report `truncatedResponses` per arm.
 - **No model achieves p95 ≤ 3 s.** A tier-2-shaped call is 4.6 s on the cheapest model; an Approach-B call is 7.5 s, whose TTFT alone (2.8-3.9 s) exceeds the budget before one token is emitted.
 
 New gates: **semantic correctness** (required fields populated, spans resolvable at rung ≤ 2, no duplicate-only output) and **normalized throughput** (p95 TTFT ≤ 1.5 s at tier-2 segment size, decode ≥ 25 tok/s). The wall-clock budget comes from a measured segment-size distribution — which is why Task 9 runs **before** the bake-off.
@@ -1585,13 +1591,90 @@ describe("segmentSizeDistribution", () => {
 
 Then **run it and write the numbers into the plan's Task 12 budget**, replacing the placeholder there. Report the distribution in the commit message so the budget's provenance is in the history.
 
-- [ ] **Step 4: Verify pass** — 3 passed.
+- [ ] **Step 4: Verify pass** — 17 passed, not the 3 this plan predicted; the percentile arithmetic needs hand-computed fixtures of its own and the escalation wiring needs both halves of the union.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add -A && git commit -m "feat(eval): measure the segment-size distribution that sizes the tier-2 budget"
 ```
+
+**What Task 9 measured, and five places this plan was wrong.**
+
+*The measurement.* `apps/eval/src/driver/segments.ts`, over `corpora/fixtures/smoke.jsonl` — the
+only corpus in this repository — keeping the segments spec 4.1's escalation policy selects, with
+`hasPredicates: true` and no priors, which is the input the bake-off runs under:
+
+| | value |
+|---|---|
+| corpus items | 13 |
+| segments produced | 19 |
+| segments **selected** | 17 (two code fences excluded) |
+| characters | **p50 62**, p95 153, max 153, min 22 |
+| words | **p50 9**, p95 25, max 25, min 3 |
+| selected segments per message | **p50 1**, p95 2, max 2 |
+
+The whole ascending sample, in characters, because 17 numbers fit and a percentile nobody can
+re-derive is not a measurement: `22, 28, 36, 39, 39, 45, 48, 49, 62, 65, 70, 71, 72, 74, 78, 130,
+153`. Supplying the real tier-0 findings (`runTier0` under `apps/eval/fixtures/minimal-ir.json`)
+adds exactly one segment — the 66-character AWS-key fence, escalated by an entropy finding at 0.7 —
+taking the count to 18 and **segments per message to a maximum of 3**. It moves neither the median
+nor the maximum size.
+
+*Corrections:*
+
+1. **The plan's field list for this distribution names both `p50` and `p50Chars`, and a bare `p50`
+   next to a `p50Chars` states no unit.** Shipped as `chars`, `words` and `perItem`, each a
+   `{p50, p95, max, min}`, so every number carries the unit it is in. The result also carries
+   `samples`, `segmentsTotal`, and the `escalation` input it ran under: a distribution measured at
+   `hasPredicates: false` describes a different pipeline, and the number should not be quotable
+   without the input that produced it.
+
+2. **`perItem` is not in the plan's field list and is the number the budget most needs.** The
+   orchestrator arms ONE deadline over the whole `judge()` call, and a judge spends one engine call
+   per selected segment, so a size distribution alone cannot say what a message costs. It is also
+   not `count / items`: a mean cannot say whether one message costs three calls.
+
+3. **Task 9 cannot import `selectSegments` from `packages/tier2/src/escalate.ts`, and does not need
+   to.** That file is a bare re-export of `packages/core/src/detect/escalate.ts` — core is where the
+   definition had to live, because `detect` is the caller and core cannot depend on the tier it
+   gates. `apps/eval` already depends on `@sih/core`, so importing from there is importing the same
+   function object Task 7 landed (`packages/tier2/test/escalate.test.ts` asserts the identity).
+   Adding an `@sih/eval` -> `@sih/tier2` dependency would have bought nothing and cost the pull-in of
+   `@mlc-ai/web-llm`, which is WebGPU-only, into a Node driver.
+
+4. **`maxTokens: 512` is not what will kill an arm on this corpus, and raising it is the wrong
+   response to the observed truncations.** See the amended kill-rules section: the largest honest
+   answer a 153-character passage can require is ~243 characters, under 512 tokens even at one token
+   per character.
+
+5. **The 8192 context window is not required by tier 2.** The largest tier-2 prompt this corpus can
+   produce is 1,196 characters. See the pinned-recipe section: the lift is Approach B's requirement,
+   and should be attributed to it.
+
+*Established, and it is the uncomfortable one:*
+
+6. **Tier 2 does not fit `ir.latencyBudgetMs` on this corpus, and no arm choice changes that.**
+   Every IR fixture here carries `latencyBudgetMs: 5000`. At p95 2 segments per message (max 3) and
+   this plan's own 4.6 s per call on the CHEAPEST pinned arm, an escalating message costs 9.2 s at
+   p95 and 13.8 s at the maximum. `detect` will file `budget-exhausted` or leave scopes unjudged on
+   most such messages. Task 12 must count those notices per arm and report them beside the gate
+   verdict; it must not turn them into a kill rule, which would kill all four arms for a reason that
+   is not about capability — the exact failure the amended rules were written to avoid.
+
+*Two limits on every number above, stated because the budget rests on them:*
+
+- **n = 13 items and 17 segments, all hand-authored, none longer than 153 characters.** At n = 17 the
+  nearest-rank 95th percentile IS the maximum — `ceil(0.95 x 17) = 17`, the last rank — so the p95
+  above carries nothing the max does not, and that is a property of the sample size rather than of
+  the corpus. This is a smoke fixture whose own README calls it a pipe-integrity check. It sizes a
+  budget for the bake-off that runs on it; **it does not size a budget for real messages**, and
+  Plan 7's corpus must be re-measured with the same function before any of these numbers is carried
+  forward.
+- **Sizes are characters and words, never tokens.** No pinned arm's tokenizer is cached on this
+  machine and inventing a chars-per-token ratio would put a fabricated number under the budget. The
+  one token claim these numbers do support needs no ratio: characters bound tokens from above for
+  any byte-level BPE vocabulary, so 1,196 characters is a real ceiling of 1,196 tokens.
 
 ---
 
@@ -1821,7 +1904,19 @@ Export `GATES`:
 
 ```ts
 export const GATES = {
-  /** p95 time-to-first-token at the MEASURED tier-2 segment size (Task 9). */
+  /**
+   * p95 time-to-first-token at the MEASURED tier-2 segment size.
+   *
+   * Task 9 measured that size over `corpora/fixtures/smoke.jsonl`, the only
+   * corpus in this repository, keeping the 17 of 19 segments the escalation
+   * policy selects: p50 62 characters, max 153, and 9 words at the median.
+   * Assembled by `buildMessages` with the one semantic predicate the repo's
+   * compiled extraction fixture carries, that is a WHOLE PROMPT of 1,105
+   * characters at the median segment and 1,196 at the largest. So a TTFT
+   * measured against a prompt materially bigger than ~1.2 kB is not measuring
+   * this gate, and an arm must not be killed on a number taken at a different
+   * prompt size.
+   */
   maxP95TtftMs: 1500,
   /** Sustained decode rate. Latency here is dominated by output length. */
   minDecodeTokPerSec: 25,
@@ -1846,7 +1941,34 @@ export const GATES = {
 
 **Compute the gates, do not enforce them by dropping data.** Every arm writes its file; the gate verdict is a field. Plan 8 decides what to do with a killed arm.
 
-Set the wall-clock ceiling from Task 9's measured distribution, and say in a comment which measurement it came from.
+**The wall-clock ceiling, derived from Task 9's measured distribution rather than guessed.** The
+number that has to be sized is `itemTimeoutMs`, and `run.ts` is explicit that it exists to catch a
+wedge and not to enforce a latency target, so it is sized from the worst case and doubled:
+
+```
+  3 selected segments   -- Task 9 max over smoke.jsonl WITH tier-0 priors (2 without)
+x 2 calls per segment   -- the pinned recipe's one repair retry
+x ~10 s per call        -- Plan 5 measured 4.6 s on Qwen3.5-2B (33-46 tok/s decode);
+                           Phi-4-mini decodes at 20-29, so ~1.6x, rounded up for a first call
+= ~60 s, doubled       -> itemTimeoutMs: 120_000
+```
+
+The 120,000 in the Step-1 snippet is therefore right, and now has a derivation behind it. Two
+honesty notes on the inputs: the 4.6 s was measured at a prompt size nobody recorded, while these
+prompts are ~1.2 kB, so the per-call term is if anything generous — which is the safe direction for
+a wedge catcher; and 3 segments is the maximum over 13 items, not a tail.
+
+**What this ceiling does NOT do is make tier 2 fit `ir.latencyBudgetMs`, and the bake-off must
+record that rather than gate on it.** The orchestrator arms ONE deadline over the whole `judge()`
+call from what is left of the message budget, and a judge spends one engine call per selected
+segment. Every IR fixture in this repo carries `latencyBudgetMs: 5000`. At Task 9's measured p95 of
+2 segments per message (max 3) and the plan's own 4.6 s per call on the CHEAPEST arm, one message
+costs 9.2 s at p95 and 13.8 s at the maximum — 1.8x to 2.8x the entire budget. So on this corpus
+tier 2 expires mid-run on most messages that escalate more than one segment, whatever arm wins.
+Derive no kill rule from that: it would kill all four arms for a reason that is not about capability,
+which is exactly why the spec's original rules were replaced. Count the `budget-exhausted` and
+`scope-unjudged` notices per arm and report them beside the gate verdict, the same way the token
+budget's truncations are reported.
 
 - [ ] **Step 4: Verify pass** — 3 passed; full root suite and typecheck green.
 

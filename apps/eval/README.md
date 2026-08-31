@@ -703,3 +703,51 @@ credentials outright. It used to claim `p-fin` and did not have it. Relabelling
 the *gold* to match p-fin is the other way to resolve that, and is deliberately
 not done — that is Plan 7's job, and doing it here would be tuning data to fit a
 claim.
+
+## How big is a segment a tier-2 judge sees?
+
+`src/driver/segments.ts` answers that, and Plan 5's tier-2 wall-clock budget is
+sized from its answer rather than from a guess. `segmentSizeDistribution(items)`
+segments every corpus item with core's `segmentText`, keeps only the segments
+spec 4.1's escalation policy would select — `selectSegments` itself, imported
+from `@sih/core`, never a second copy of the rule — and reports characters,
+words and selected-segments-per-message.
+
+Measured over `corpora/fixtures/smoke.jsonl` with `hasPredicates: true` and no
+prior findings, which is the input a bake-off arm runs under:
+
+| | value |
+|---|---|
+| items / segments produced / segments selected | 13 / 19 / 17 |
+| characters per segment | p50 **62**, p95 153, max 153, min 22 |
+| words per segment | p50 **9**, p95 25, max 25, min 3 |
+| selected segments per message | p50 **1**, p95 2, max 2 |
+
+Supplying the real tier-0 findings (`runTier0` under `fixtures/minimal-ir.json`)
+adds one segment — the 66-character AWS-key fence, escalated by an entropy
+finding at 0.7 — for 18 selected and a maximum of **3** segments in one message.
+Sizes move not at all.
+
+Three things to know before quoting any of these:
+
+- **The p95 is the maximum, and that is arithmetic rather than a finding.**
+  Percentiles here are nearest-rank, so at n = 17 the 95th percentile is
+  `ceil(0.95 × 17) = 17` — the last rank. Below n = 20 that is true of every
+  sample. Read the p95 as "the largest of 17", never as a tail.
+- **Sizes are characters (UTF-16 code units) and whitespace-delimited words —
+  never tokens.** No model's tokenizer is cached here and a made-up
+  chars-per-token ratio would put a fabricated number under a budget. The one
+  token claim these support needs no ratio: characters bound tokens from above
+  for any byte-level BPE vocabulary.
+- **This is the same pipe-integrity fixture the section above warns about.** It
+  sizes a budget for the bake-off that runs on *it*. It does not size one for
+  real messages; re-run this against Plan 7's corpus before carrying a number
+  forward.
+
+`percentile(values, percent)` takes an INTEGER percent, and refusing a
+fractional one is what lets the arithmetic carry no epsilon. Measured on Node 26
+over every (n ≤ 20000, percent 1..100) pair — 2,000,000 of them —
+`Math.ceil((percent * n) / 100)` agreed with exact BigInt arithmetic every time,
+while in the same sweep the fraction spelling `Math.ceil(0.07 * n)` disagreed
+with the true rank 153 times, starting at n = 100 where `0.07 * 100` is
+`7.000000000000001`.
