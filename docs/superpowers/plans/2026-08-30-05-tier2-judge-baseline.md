@@ -1125,6 +1125,23 @@ git add -A && git commit -m "feat(tier2): WebLlmJudge emitting shadow entityType
 
 ---
 
+**Five things Task 6 established that later tasks depend on.** Two are corrections to this plan; three are gaps nothing currently closes.
+
+*Corrections:*
+
+1. **"Call through `runWithDeadline`" (step 3) is not possible from the judge, and should not be.** `runWithDeadline` takes an `Interruptible`; Task 5's `Tier2Engine` seam exposes only `complete(messages, { budgetMs, signal })`, which already performs the deadline, drain, interrupt-clear and per-engine serialization internally. The judge passes a budget; the engine owns the deadline. This plan text predates the seam.
+2. **"confidence clamped to a finite `[0,1]`" (step 6) would be dead code, and contradicts `schema.ts`.** `JudgeResponseSchema` is `z.number().min(0).max(1)`, which rejects NaN, both infinities and out-of-range values before `parseJudgeResponse` returns `ok`. And the schema **rejects rather than clamps** on purpose — clamping a model's `95` to `1.0` would turn a misread scale into a maximally confident finding and hide it from the per-arm failure counts. Confidence is passed through; the validation boundary is `schema.ts`, and it is documented there.
+
+*Gaps — each needs an owner before the bake-off:*
+
+3. **`SemanticPredicate.scope` is unhonoured.** Every predicate is judged per segment, including `scope: "message"`. The judge is handed segments, not the message, and Task 7 will hand it a *filtered* list — so the message cannot be reassembled without inventing text. Evidence for a message-scoped predicate spanning two segments is seen by neither call. Closing this means changing core's `SemanticJudge` signature; leaving it open means the bake-off silently under-measures message-scoped predicates, and the write-up must say so.
+4. **Nothing bounds the whole-message tier-2 budget.** `budgetMs` is per call; spec §5.3's `ir.latencyBudgetMs` is a per-message number, and no code enforces it across N segments. A 12-segment message can spend 12x the intended budget while every individual call is compliant. Owner: Task 7, the orchestrator, or the judge — decide before Task 12 reports latency.
+5. **"Fail closed to flag for user review" has no channel.** `DetectionResult` still has no `degraded`/`warnings` field (core's orchestrator notes one is "expected in Plan 5"). Today, failing closed means emitting nothing and incrementing a counter — so **an empty tier-2 return is indistinguishable from a clean message** unless the caller reads `stats`. That is a gap in the product promise, not only in the record: the spec says a model that will not emit valid JSON must never silently pass text through, and right now it silently passes text through to a caller who does not inspect `stats`.
+
+Also settled: on `DeadlineExpired` and on a latched-engine `"abort"`, the judge **stops the run** rather than continuing to the next segment, and returns what it has collected. Continuing is not merely wasteful — Task 3 measured that a latched engine returns an instant empty answer to every subsequent call, which a judge reads as "no findings", so continuing would manufacture clean segments.
+
+---
+
 ### Task 7: Escalation — which segments are worth a judge
 
 **Files:**
