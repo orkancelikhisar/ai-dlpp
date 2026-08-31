@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { UNCERTAIN_BELOW } from "@sih/core";
 import { loadCorpus } from "../src/driver/corpus.js";
-import { RunRecordSchema } from "../src/driver/record.js";
+import { RunRecordSchema, toJsonl, type RunRecord } from "../src/driver/record.js";
 import { runArm } from "../src/driver/run.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -61,8 +62,15 @@ function watchEvaluate(page: Page): { page: Page; maxInFlight: () => number; cal
   return { page: watched, maxInFlight: () => max, calls: () => total };
 }
 
-/** What the stand-in page does when `detect` is called with a given item's text. */
-type FakeVerdict = "ok" | "throw" | "hang" | "kill";
+/**
+ * What the stand-in page does when `detect` is called with a given item's text.
+ *
+ * `failed-closed` answers exactly as `ok` does but adds a tier-2 notice to the
+ * canned `degraded`. It is a VERDICT rather than a second canned result because
+ * the property under test is per ITEM -- an arm that failed closed on some of
+ * its messages -- and one canned object cannot vary by item.
+ */
+type FakeVerdict = "ok" | "throw" | "hang" | "kill" | "failed-closed";
 
 /**
  * Installs a stand-in `window.__sih` on `about:blank`.
@@ -99,21 +107,78 @@ const FAKE_TIER1_STATS = {
   gpuSubmits: 0,
 };
 
+/**
+ * `Tier2DetectStats` with every counter at zero and no calls -- the honest
+ * reading of a judge that was in the loop and did nothing, which is what a
+ * stand-in page is.
+ *
+ * A default for the same reason `FAKE_TIER1_STATS` is one: `RunRecordSchema`
+ * requires `tier2Stats` on any record whose `config.tier2` is set and whose
+ * `error` is null, so a fake answering nothing would make every tier-2 arm here
+ * produce records the schema refuses for a reason unrelated to what is under
+ * test. Tests that care about the values pass their own, and they pass
+ * non-zeros -- a fixture of zeros cannot tell a producer that copies from one
+ * that hardcodes.
+ */
+const FAKE_TIER2_STATS = {
+  rung1: 0, rung2: 0, unresolvedQuotes: 0, unknownPredicates: 0, duplicatesDropped: 0,
+  repairAttempts: 0, failedClosed: 0, truncatedResponses: 0, abortedResponses: 0,
+  segmentsJudged: 0, segmentsSkipped: 0, deadlineExpiries: 0,
+  callerAbortsMidGeneration: 0, callerAbortsWhileQueued: 0,
+  calls: [] as unknown[],
+};
+
+/**
+ * The tier-2 notice a `failed-closed` verdict adds, worded as
+ * `WebLlmJudge` words its own: a body still unparseable after the one repair
+ * retry. The stand-in does NOT model core's `absent` entries -- it is not core,
+ * and inventing them here would be a fake asserting which tiers ran. The
+ * real-page spec below is what pins those.
+ */
+const FAKE_FAILED_CLOSED = {
+  tier: 2,
+  reason: "failed-closed",
+  detail: "the tier-2 response was still unparseable after one repair retry",
+};
+
 async function installFakeSih(
   page: Page,
   plan: Record<string, FakeVerdict>,
-  result: { findings: unknown[]; timings: { tier0Ms: number; tier1Ms?: number; tier2Ms?: number } },
+  result: {
+    findings: unknown[];
+    timings: { tier0Ms: number; tier1Ms?: number; tier2Ms?: number };
+    /**
+     * Required, matching `DetectionResult` -- where it is required too, and its
+     * doc explains why: "[] is a positive claim; undefined would be silence". A
+     * fake allowed to omit it would let `runArm` be written against a shape the
+     * real page cannot produce.
+     */
+    degraded: unknown[];
+  },
   tier1: Record<string, number> = FAKE_TIER1_STATS,
+  tier2: Record<string, unknown> | undefined = FAKE_TIER2_STATS,
 ): Promise<void> {
   await page.goto("about:blank");
   await page.evaluate(
-    ({ plan: verdicts, result: canned, hash, tier1: stats }) => {
+    ({
+      plan: verdicts,
+      result: canned,
+      hash,
+      tier1: stats,
+      tier2: judged,
+      FAILED_CLOSED_NOTICE,
+    }) => {
+      // How many `detect` calls this fake has answered, so `tier2Status` can
+      // offer a CUMULATIVE `totals` beside the per-item `lastDetect` -- see
+      // there. Nothing else reads it.
+      let detects = 0;
       Object.defineProperty(window, "__sih", {
         configurable: true,
         value: {
           irHash: () => Promise.resolve(hash),
           policyHash: () => "test-hash",
           detect: ({ text, config }: { text: string; config: unknown }) => {
+            detects += 1;
             // Remembered so a spec can assert what `detect` was HANDED, which no
             // assertion on the returned record can establish: runArm builds one
             // config object and uses it for both, so a record agreeing with
@@ -127,6 +192,12 @@ async function installFakeSih(
               return Promise.reject(new Error("the page went away"));
             }
             if (verdict === "throw") return Promise.reject(new Error("detector exploded"));
+            if (verdict === "failed-closed") {
+              return Promise.resolve({
+                ...canned,
+                degraded: [...canned.degraded, FAILED_CLOSED_NOTICE],
+              });
+            }
             return Promise.resolve(canned);
           },
           // Only `lastDetect` is populated: it is the only member runArm reads,
@@ -134,10 +205,40 @@ async function installFakeSih(
           // and which provider ran, which is precisely what this stand-in has
           // no standing to claim.
           tier1Status: () => ({ lastDetect: stats }),
+          // `undefined` when the fake was given no tier-2 stats, which is what
+          // an unloaded page answers -- so a tier-2 arm run against that fake
+          // produces a record the schema refuses, rather than one carrying
+          // counters nobody measured.
+          //
+          // `totals` is deliberately NOT equal to `lastDetect`, and that is the
+          // point of it being here at all. `WebLlmJudge.stats` is CUMULATIVE
+          // across every message a judge has seen -- its own docblock says so
+          // -- so a driver that reads `totals` instead of the per-item delta
+          // gets the arm's running sum and inflates every row after the first,
+          // with a green suite. This fake models that: each counter multiplied
+          // by the number of detects so far, and the call rows repeated. It
+          // only bites at TWO OR MORE items, which is why the specs that read
+          // these stats run at least two.
+          tier2Status: () =>
+            judged === undefined
+              ? undefined
+              : {
+                  totals: Object.fromEntries(
+                    Object.entries(judged).map(([key, value]) => [
+                      key,
+                      typeof value === "number"
+                        ? value * detects
+                        : Array.isArray(value)
+                          ? Array.from({ length: detects }, () => value).flat()
+                          : value,
+                    ]),
+                  ),
+                  lastDetect: judged,
+                },
         },
       });
     },
-    { plan, result, hash: FAKE_IR_HASH, tier1 },
+    { plan, result, hash: FAKE_IR_HASH, tier1, tier2, FAILED_CLOSED_NOTICE: FAKE_FAILED_CLOSED },
   );
 }
 
@@ -294,7 +395,7 @@ test("keeps going after a thrown item without leaking its error onto the next", 
   // tell the difference -- and it also catches the opposite bug, an `error`
   // that is assigned once and never cleared, which would make every item after
   // the first failure look like it failed too.
-  await installFakeSih(page, { "middle text": "throw" }, { findings: [], timings: { tier0Ms: 1.5 } });
+  await installFakeSih(page, { "middle text": "throw" }, { findings: [], timings: { tier0Ms: 1.5 }, degraded: [] });
 
   const records = await runArm(page, {
     runId: "test-run",
@@ -353,6 +454,7 @@ test("carries timings verbatim and emits only the fields the record declares", a
         },
       ],
       timings: { tier0Ms: 12.5, tier1Ms: 3.25 },
+      degraded: [],
     },
   );
 
@@ -396,7 +498,7 @@ test("times an item out instead of wedging the whole arm on it", async ({ page }
   // because records are returned only in bulk at the end, every already
   // completed record would be unreachable. The budget is per item and comes
   // from the caller.
-  await installFakeSih(page, { "wedges forever": "hang" }, { findings: [], timings: { tier0Ms: 2 } });
+  await installFakeSih(page, { "wedges forever": "hang" }, { findings: [], timings: { tier0Ms: 2 }, degraded: [] });
 
   const records = await runArm(page, {
     runId: "test-run",
@@ -430,7 +532,7 @@ test("aborts the arm when the browser dies, rather than filing the rest as error
   // instead of "this run died", and Plan 8 would score it. Here the third item
   // destroys the page API before failing, which is what a navigated-away page
   // looks like from the driver.
-  await installFakeSih(page, { "kills the page": "kill" }, { findings: [], timings: { tier0Ms: 1 } });
+  await installFakeSih(page, { "kills the page": "kill" }, { findings: [], timings: { tier0Ms: 1 }, degraded: [] });
 
   const items = [
     { id: "ok-1", text: "one", policy: "p-fin", gold: [] },
@@ -545,7 +647,7 @@ test("hands detect the arm's backend rather than leaving the label unbacked", as
   // CALLER remembered to set `config.backend` too. Asserted on what the page was
   // handed, not on the record, because runArm builds one object and uses it for
   // both -- a record agreeing with itself would prove nothing.
-  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1 } });
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1 }, degraded: [] });
 
   await runArm(page, {
     runId: "test-run",
@@ -595,7 +697,7 @@ test("stamps the tier-1 config it was given onto every record, and nothing when 
   // verify the config describes the tagger the page holds -- it never loads one
   // -- which is why RunRecordSchema couples the two and runMatrix validates
   // every record before writing.
-  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 } });
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 }, degraded: [] });
   const items = [{ id: "a", text: "one", policy: "p-fin", gold: [] }];
 
   const withTier1 = await runArm(page, {
@@ -648,7 +750,7 @@ test("carries the tier-1 tagger's own counters onto every record", async ({ page
   await installFakeSih(
     page,
     {},
-    { findings: [], timings: { tier0Ms: 1, tier1Ms: 40 } },
+    { findings: [], timings: { tier0Ms: 1, tier1Ms: 40 }, degraded: [] },
     {
       inferences: 3,
       droppedWords: 2,
@@ -713,7 +815,7 @@ test("asks the page for the tier-1 counters without a second round trip per item
   // reading `lastDetect` in its own evaluate would have doubled the per-item
   // cost over a 1,500-item corpus for a value already sitting in the page --
   // and would have raced the loop, since the next `detect` overwrites it.
-  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 } });
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier1Ms: 2 }, degraded: [] });
   const watched = watchEvaluate(page);
   const items = [
     { id: "a", text: "one", policy: "minimal-fixture", gold: [] },
@@ -749,7 +851,7 @@ test("marks every row measured after a deadline expiry, and no row before it", a
   // contention with it -- while carrying `error: null`, so a latency aggregate
   // over non-errored rows silently includes them. The arm is flagged rather
   // than aborted; `abandonedWorkInFlight` in record.ts states why.
-  await installFakeSih(page, { "wedges forever": "hang" }, { findings: [], timings: { tier0Ms: 2 } });
+  await installFakeSih(page, { "wedges forever": "hang" }, { findings: [], timings: { tier0Ms: 2 }, degraded: [] });
 
   const records = await runArm(page, {
     runId: "test-run",
@@ -780,7 +882,7 @@ test("does not flag an arm whose items merely THREW", async ({ page }) => {
   // nothing running in the browser, so later latencies are clean -- flagging
   // them would tell Plan 8 to discard good measurements. Only a deadline
   // expiry, which abandons work still executing, sets the flag.
-  await installFakeSih(page, { "boom": "throw" }, { findings: [], timings: { tier0Ms: 2 } });
+  await installFakeSih(page, { "boom": "throw" }, { findings: [], timings: { tier0Ms: 2 }, degraded: [] });
   const records = await runArm(page, {
     runId: "test-run",
     arm: "t0",
@@ -795,4 +897,328 @@ test("does not flag an arm whose items merely THREW", async ({ page }) => {
   });
   expect(records[0]!.error).toMatch(/detector exploded/);
   expect(records.map((r) => r.abandonedWorkInFlight)).toEqual([false, false]);
+});
+
+test("carries core's degradation notices onto every record", async ({ page }) => {
+  // The highest-severity thing this file guards, and it is a DROP rather than a
+  // mistake: `runArm` projected `DetectionResult` field by field -- `findings`
+  // and `timings` -- so `degraded` never reached a record. Adding it to
+  // `DetectionResult` produced no type error here and no change in the output,
+  // which is exactly why it went unnoticed.
+  //
+  // Run against the REAL page and the real orchestrator, not the stand-in, so
+  // the expectation comes from what core does rather than from canned data.
+  // `absent` is the only word a tier-0 arm can produce, and it is produced
+  // twice -- the two tiers this TierConfig switched off.
+  await page.goto("/");
+  await page.waitForFunction(() => window.__sih !== undefined);
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 10_000,
+    items: [
+      { id: "a", text: "one", policy: "minimal-fixture", gold: [] },
+      { id: "b", text: "two", policy: "minimal-fixture", gold: [] },
+    ],
+  });
+
+  for (const record of records) {
+    // Tier and reason asserted exactly; `detail` only for being non-empty,
+    // because restating core's sentence here would make this a test of a string
+    // literal rather than of the channel.
+    expect(record.degraded?.map((d) => [d.tier, d.reason])).toEqual([
+      [1, "absent"],
+      [2, "absent"],
+    ]);
+    expect(record.degraded?.every((d) => d.detail.length > 0)).toBe(true);
+    expect(RunRecordSchema.safeParse(record).success).toBe(true);
+  }
+  // Not an empty array: a producer that stubbed the field would satisfy the
+  // schema's presence rule and say nothing. This is what says the array came
+  // from the orchestrator.
+  expect(records[0]!.degraded).toHaveLength(2);
+});
+
+test("carries the judge's counters and its per-call rows onto every record", async ({ page }) => {
+  // The tier-2 twin of the tier-1 counters spec above, and the same finding one
+  // tier up: without these, an item where the judge failed closed on every
+  // segment emits a record indistinguishable from one where it read the whole
+  // message and found nothing -- both have no findings and a real `tier2Ms`.
+  //
+  // Values deliberately NOT zeros, and every one of them distinct, so a
+  // producer that hardcodes zeros or writes a counter into the wrong slot is
+  // visible. `calls` carries TWO rows that disagree on `finishReason`: a
+  // message makes one call per selected segment, and this is the shape a single
+  // per-message `finishReason` could not express.
+  await installFakeSih(
+    page,
+    {},
+    { findings: [], timings: { tier0Ms: 1, tier2Ms: 4210 }, degraded: [] },
+    undefined,
+    {
+      rung1: 3, rung2: 1, unresolvedQuotes: 2, unknownPredicates: 6,
+      duplicatesDropped: 4, repairAttempts: 5, failedClosed: 7, truncatedResponses: 8,
+      abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, deadlineExpiries: 12,
+      callerAbortsMidGeneration: 13, callerAbortsWhileQueued: 14,
+      calls: [
+        { finishReason: "stop", promptTokens: 1105, completionTokens: 96, ttftMs: 780 },
+        { finishReason: "length", promptTokens: 1196, completionTokens: 512, ttftMs: 940 },
+      ],
+      // Not a field of `JudgeStats`. A page that decorated its stats would ride
+      // the extra key into the JSONL unless runArm projects what it declares.
+      debugNote: "should not reach the file",
+    },
+  );
+
+  const watched = watchEvaluate(page);
+  const records = await runArm(watched.page, {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: true, t2Model: "Qwen3.5-2B-q4f16_1-MLC" },
+    itemTimeoutMs: 10_000,
+    // TWO items, not one, and the second is what this spec turns on. The stand-in
+    // answers a CUMULATIVE `totals` beside the per-item `lastDetect`, exactly as
+    // `WebLlmJudge.stats` does -- and at ONE item the two are equal, so a driver
+    // reading the running sum would pass a single-item fixture unchanged. The
+    // assertion below is on record[1], where they differ.
+    items: [
+      { id: "a", text: "one", policy: "minimal-fixture", gold: [] },
+      { id: "b", text: "two", policy: "minimal-fixture", gold: [] },
+    ],
+  });
+
+  expect(records[1]!.tier2Stats).toEqual({
+    rung1: 3, rung2: 1, unresolvedQuotes: 2, unknownPredicates: 6,
+    duplicatesDropped: 4, repairAttempts: 5, failedClosed: 7, truncatedResponses: 8,
+    abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, deadlineExpiries: 12,
+    callerAbortsMidGeneration: 13, callerAbortsWhileQueued: 14,
+    calls: [
+      { finishReason: "stop", promptTokens: 1105, completionTokens: 96, ttftMs: 780 },
+      { finishReason: "length", promptTokens: 1196, completionTokens: 512, ttftMs: 940 },
+    ],
+  });
+  // Both rows carry the same per-item numbers, which is what a DELTA means: the
+  // second message is not the first message's work plus its own.
+  expect(records[0]!.tier2Stats).toEqual(records[1]!.tier2Stats);
+  expect(Object.keys(records[1]!.tier2Stats!)).not.toContain("debugNote");
+  // The per-call rows are rows, in order: the second call hit the token ceiling
+  // while the first stopped cleanly, so this message's judgement is partial.
+  // No single per-message value can say that. TWO rows on the second record as
+  // well -- reading the cumulative view would have found four there.
+  expect(records[1]!.tier2Stats!.calls.map((c) => c.finishReason)).toEqual(["stop", "length"]);
+  for (const record of records) expect(RunRecordSchema.safeParse(record).success).toBe(true);
+  // And it cost no extra round trip: one evaluate per item plus the readiness
+  // probe and the hash read, exactly as the tier-1 counters do. Reading
+  // `lastDetect` in its own evaluate would double the per-item cost over a
+  // 1,500-item corpus AND race the loop, since the next `detect` overwrites it.
+  expect(watched.calls()).toBe(records.length + 2);
+});
+
+test("writes a non-finite time-to-first-token as null instead of a NaN", async ({ page }) => {
+  // MEASURED with zod 4.4.3: `z.number()` rejects NaN, and `JSON.stringify(NaN)`
+  // is the string "null". So a NaN copied straight through produces a file its
+  // own reader refuses -- written as null, rejected on the way back in, after
+  // the GPU time is spent. `JudgeCallRecord` says the conversion out of
+  // `usage.extra.time_to_first_token_s` is deliberately unguarded because a NaN
+  // there is a fact about the call, so the mapping has to happen here.
+  //
+  // MEASURED: Playwright's protocol preserves NaN across `evaluate`, so the NaN
+  // really does reach runArm rather than arriving as null already -- without
+  // which this spec would pass against a producer that does nothing.
+  await page.goto("about:blank");
+  expect(await page.evaluate(() => Number.NaN)).toBeNaN();
+
+  await installFakeSih(
+    page,
+    {},
+    { findings: [], timings: { tier0Ms: 1, tier2Ms: 100 }, degraded: [] },
+    undefined,
+    {
+      ...FAKE_TIER2_STATS,
+      segmentsJudged: 1,
+      calls: [{ finishReason: "stop", promptTokens: 1105, completionTokens: 20, ttftMs: Number.NaN }],
+    },
+  );
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: true },
+    itemTimeoutMs: 10_000,
+    items: [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }],
+  });
+
+  expect(records[0]!.tier2Stats!.calls[0]!.ttftMs).toBeNull();
+  // The whole point: it survives the round trip Plan 8 makes.
+  const [line] = toJsonl(records).trim().split("\n");
+  expect(RunRecordSchema.safeParse(JSON.parse(line!)).success).toBe(true);
+});
+
+test("resolves the escalation threshold and hands detect the value it records", async ({ page }) => {
+  // `TierConfig.uncertainBelow` is an EXPERIMENT variable the bake-off varies
+  // per arm, and `TierConfig` says so in as many words. Two tier-2 arms
+  // differing only in it used to emit records identical in every field a scorer
+  // can group by.
+  //
+  // TWO values, one of them not the default, because a spec that only ever
+  // exercises the default cannot tell "carries the config" from "hardcodes
+  // UNCERTAIN_BELOW" -- the trap this plan has already sprung twice.
+  await installFakeSih(page, {}, { findings: [], timings: { tier0Ms: 1, tier2Ms: 9 }, degraded: [] });
+  const items = [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }];
+  const spec = {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu" as const,
+    provider: "claude",
+    itemTimeoutMs: 10_000,
+    items,
+  };
+
+  const explicit = await runArm(page, {
+    ...spec,
+    config: { tier0: true, tier1: false, tier2: true, uncertainBelow: 0.35 },
+  });
+  expect(explicit[0]!.config.uncertainBelow).toBe(0.35);
+
+  const defaulted = await runArm(page, {
+    ...spec,
+    config: { tier0: true, tier1: false, tier2: true },
+  });
+  // RESOLVED, not left absent. A record that says nothing is a record whose
+  // threshold has to be reconstructed from a constant in another package, and
+  // the schema refuses it for that reason.
+  expect(defaulted[0]!.config.uncertainBelow).toBe(UNCERTAIN_BELOW);
+
+  // ... and `detect` was handed the same object, which no assertion on the
+  // record can establish on its own: runArm builds one config and uses it for
+  // both, so a record agreeing with itself proves nothing about the call.
+  const seen = await page.evaluate(
+    () => (window as unknown as { __configs?: { uncertainBelow?: number }[] }).__configs ?? [],
+  );
+  expect(seen.map((c) => c.uncertainBelow)).toEqual([0.35, UNCERTAIN_BELOW]);
+
+  // A tier-0 arm is not given one: escalation never runs, so there is no
+  // threshold to state.
+  const tier0 = await runArm(page, {
+    ...spec,
+    config: { tier0: true, tier1: false, tier2: false },
+  });
+  expect(tier0[0]!.config.uncertainBelow).toBeUndefined();
+});
+
+test("leaves the tier-2 evidence off an item that threw, rather than the previous item's", async ({
+  page,
+}) => {
+  // `tier2Status().lastDetect` is a DELTA over the judge's cumulative counters.
+  // On a thrown item that delta belongs to the PREVIOUS item, so copying it
+  // would attribute one message's failures to another -- and a row of zeros
+  // would assert that nothing failed closed on an item whose judge may never
+  // have returned. `degraded` goes with it: `detect` throws whole, so there is
+  // no result to read an array off.
+  await installFakeSih(
+    page,
+    { "second text": "throw" },
+    { findings: [], timings: { tier0Ms: 1, tier2Ms: 50 }, degraded: [] },
+    undefined,
+    { ...FAKE_TIER2_STATS, segmentsJudged: 2, failedClosed: 1 },
+  );
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: true },
+    itemTimeoutMs: 10_000,
+    items: [
+      { id: "a", text: "first text", policy: "minimal-fixture", gold: [] },
+      { id: "b", text: "second text", policy: "minimal-fixture", gold: [] },
+      { id: "c", text: "third text", policy: "minimal-fixture", gold: [] },
+    ],
+  });
+
+  expect(records[0]!.tier2Stats?.failedClosed).toBe(1);
+  expect(records[1]!.error).toMatch(/exploded/);
+  expect(records[1]!.tier2Stats).toBeUndefined();
+  expect(records[1]!.degraded).toBeUndefined();
+  expect(records[2]!.tier2Stats?.failedClosed).toBe(1);
+  for (const record of records) expect(RunRecordSchema.safeParse(record).success).toBe(true);
+});
+
+test("emits a file that separates failing closed on 40% from finding nothing", async ({ page }) => {
+  // The comparison `DetectionResult.degraded` was added for, end to end and
+  // read off the FILE rather than off the objects runArm returned -- which is
+  // the only version that can fail, since zod strips what a schema does not
+  // declare.
+  //
+  // Both arms find nothing on every message, so recall, precision and every
+  // span-derived number are identical. The judge's counters are identical too:
+  // the same stand-in stats answer both arms, which is what leaves `degraded`
+  // as the only thing that can be carrying the difference.
+  const items = [1, 2, 3, 4, 5].map((n) => ({
+    id: `m${String(n)}`,
+    text: `message ${String(n)}`,
+    policy: "minimal-fixture",
+    gold: [],
+  }));
+  const spec = {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu" as const,
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW },
+    itemTimeoutMs: 10_000,
+    items,
+  };
+  const canned = { findings: [], timings: { tier0Ms: 1, tier2Ms: 3000 }, degraded: [] };
+
+  await installFakeSih(page, { "message 2": "failed-closed", "message 4": "failed-closed" }, canned);
+  const closed = await runArm(page, spec);
+  await installFakeSih(page, {}, canned);
+  const quiet = await runArm(page, spec);
+
+  /** Records as Plan 8 will hold them: written as JSONL and parsed back. */
+  const throughTheFile = (records: RunRecord[]): RunRecord[] =>
+    toJsonl(records)
+      .trim()
+      .split("\n")
+      .map((line) => RunRecordSchema.parse(JSON.parse(line)));
+
+  /**
+   * THE SCORER, per MESSAGE. `JudgeStats.failedClosed` counts SEGMENTS and
+   * cannot answer "on what fraction of messages", which is the number the
+   * bake-off table reports.
+   */
+  const failedClosedMessageRate = (records: RunRecord[]) => {
+    const scoreable = records.filter((r) => r.error === null);
+    return (
+      scoreable.filter((r) =>
+        (r.degraded ?? []).some((d) => d.tier === 2 && d.reason === "failed-closed"),
+      ).length / scoreable.length
+    );
+  };
+
+  const failing = throughTheFile(closed);
+  const finding = throughTheFile(quiet);
+
+  // Identical in every field the old projection copied. Timings are dropped
+  // from the comparison only because tier0Ms is a wall clock; nothing else is.
+  const withoutDegraded = (r: RunRecord) => {
+    const { degraded: _dropped, timings: _clock, ...rest } = r;
+    return rest;
+  };
+  expect(failing.map(withoutDegraded)).toEqual(finding.map(withoutDegraded));
+  expect(failing.every((r) => r.findings.length === 0)).toBe(true);
+  expect(finding.every((r) => r.findings.length === 0)).toBe(true);
+
+  // And two different results once `degraded` is read.
+  expect(failedClosedMessageRate(failing)).toBeCloseTo(0.4, 10);
+  expect(failedClosedMessageRate(finding)).toBe(0);
 });

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import type { TierConfig } from "@sih/core";
+import { UNCERTAIN_BELOW, type TierConfig } from "@sih/core";
 import type { Tier1Config } from "@sih/tier1";
 import type { CorpusItem } from "./corpus.js";
 import { RECORD_SCHEMA_VERSION, type RunRecord } from "./record.js";
@@ -149,6 +149,18 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
   // ONE object, built here and used for both the call and the record, so the two
   // cannot drift: whatever `detect` was given is literally what gets stamped.
   const config: TierConfig = { ...spec.config, backend: spec.backend };
+  // The escalation threshold RESOLVED rather than left to a default two packages
+  // away, and resolved into the object `detect` receives rather than only onto
+  // the record -- so the number stamped is the number `escalate.ts` compared
+  // against, not a claim about what the default is. `TierConfig` calls this an
+  // EXPERIMENT variable the bake-off varies per arm; a record that cannot say
+  // which value produced it cannot be compared with the row beside it.
+  //
+  // Only when tier 2 is on. On a tier-0 or tier-1 arm escalation never runs, and
+  // stamping a threshold there would be a record naming a knob that turned
+  // nothing -- the intent-as-fact defect, arriving through a field that happens
+  // to be available.
+  if (config.tier2) config.uncertainBelow = spec.config.uncertainBelow ?? UNCERTAIN_BELOW;
   // Deliberately does NOT navigate. Task 12 loads a tier-1 model into the page
   // before calling this, and a goto() here would discard it and silently
   // measure a tier-0 run under a tier-1 arm label. The caller owns page state.
@@ -211,6 +223,14 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
     // was recorded", never "instant".
     let timings: RunRecord["timings"] = { tier0Ms: 0 };
     let tier1Stats: RunRecord["tier1Stats"];
+    let tier2Stats: RunRecord["tier2Stats"];
+    // Absent on a thrown item, like the two stats fields and for a reason that
+    // is the same one stated the other way round: `detect` throws whole, so
+    // there is no result to read an account of degradation off. An empty array
+    // would be the positive claim that nothing was skipped -- which is what
+    // `DetectionResult.degraded` says `[]` means -- on an item that may never
+    // have finished.
+    let degraded: RunRecord["degraded"];
     let error: string | null = null;
     // Set for THIS item only; `abandonedWorkInFlight` is advanced from it after
     // the record is built, so the row that timed out is not itself flagged --
@@ -232,6 +252,12 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
             window.__sih!.detect(request).then((detection) => ({
               detection,
               tier1: request.config.tier1 ? window.__sih!.tier1Status()?.lastDetect : undefined,
+              // Read in the SAME evaluate as tier 1's and for the same two
+              // reasons: a second round trip per item would double this loop's
+              // cost over a 1,500-item corpus, and `lastDetect` is overwritten
+              // by the next `detect`, so anything reading it later would race
+              // the loop it belongs to.
+              tier2: request.config.tier2 ? window.__sih!.tier2Status()?.lastDetect : undefined,
             })),
           { text: item.text, provider: spec.provider, config },
         ),
@@ -249,6 +275,52 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
             overWideSpans: both.tier1.overWideSpans,
             unmappableSpans: both.tier1.unmappableSpans,
             nonFiniteScores: both.tier1.nonFiniteScores,
+          };
+        }
+        // `JudgeStats` WHOLE, projected field by field like tier 1's. These are
+        // already a DELTA -- `judgeDelta` in the page subtracts the snapshot it
+        // took before the call -- which is the part that has to stay true:
+        // `WebLlmJudge.stats` is CUMULATIVE across every message the judge has
+        // seen, so a record populated from the totals would inflate every row
+        // after the first with a fully green suite.
+        if (both.tier2 !== undefined) {
+          tier2Stats = {
+            rung1: both.tier2.rung1,
+            rung2: both.tier2.rung2,
+            unresolvedQuotes: both.tier2.unresolvedQuotes,
+            unknownPredicates: both.tier2.unknownPredicates,
+            duplicatesDropped: both.tier2.duplicatesDropped,
+            repairAttempts: both.tier2.repairAttempts,
+            failedClosed: both.tier2.failedClosed,
+            truncatedResponses: both.tier2.truncatedResponses,
+            abortedResponses: both.tier2.abortedResponses,
+            segmentsJudged: both.tier2.segmentsJudged,
+            segmentsSkipped: both.tier2.segmentsSkipped,
+            deadlineExpiries: both.tier2.deadlineExpiries,
+            callerAbortsMidGeneration: both.tier2.callerAbortsMidGeneration,
+            callerAbortsWhileQueued: both.tier2.callerAbortsWhileQueued,
+            // ROWS, kept as rows. A message makes one engine call per selected
+            // segment plus the one repair retry, so a single `finishReason`
+            // for the message would be a fact about one call presented as a
+            // fact about the message; see Tier2CallSchema for the whole
+            // argument, including why the bake-off's p95 TTFT gate cannot be
+            // computed from a per-message aggregate.
+            calls: both.tier2.calls.map((call) => ({
+              finishReason: call.finishReason,
+              promptTokens: call.promptTokens,
+              completionTokens: call.completionTokens,
+              // The one value that needs converting rather than copying.
+              // `JudgeCallRecord` leaves a non-finite time-to-first-token
+              // deliberately unguarded, because a NaN there is a fact about the
+              // call -- but MEASURED, `JSON.stringify(NaN)` is "null" and zod's
+              // `z.number()` rejects NaN, so copying it would write a file this
+              // module's own reader refuses. Null is that same fact spelled so
+              // it survives the round trip; `undefined` stays `undefined`,
+              // because "the engine reported none" and "the engine reported
+              // something that is not a number" are different facts.
+              ttftMs:
+                call.ttftMs === undefined || Number.isFinite(call.ttftMs) ? call.ttftMs : null,
+            })),
           };
         }
         return both.detection;
@@ -276,6 +348,22 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
         tier1Ms: result.timings.tier1Ms,
         tier2Ms: result.timings.tier2Ms,
       };
+      // The field this projection used to DROP, and the drop was invisible in
+      // both directions. MEASURED against the commit before this one:
+      // `grep -c degraded apps/eval/src/driver/run.ts` returns 0 and
+      // `tsc --noEmit` is clean, even though `DetectionResult.degraded` is
+      // REQUIRED -- a projection that names its fields cannot be told it has
+      // missed one. And nothing downstream noticed either, because
+      // `RunRecordSchema` had no field for it to be missing from.
+      //
+      // Projected entry by entry for the same reason `findings` is: the result
+      // crossed the evaluate boundary as plain JSON and nothing validates a
+      // record on this path.
+      degraded = result.degraded.map((notice) => ({
+        tier: notice.tier,
+        reason: notice.reason,
+        detail: notice.detail,
+      }));
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
       timedOut = cause instanceof DeadlineExpired;
@@ -324,6 +412,9 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       // record.ts, which couples the two and states why a row of zeros would be
       // a worse answer than no row at all.
       tier1Stats,
+      // The same, one tier up: the judge's rung distribution, its stop
+      // accounting and one row per engine call.
+      tier2Stats,
       // The message the offsets in `findings` and `gold` index into, and the
       // one detection actually ran on -- both read from the same `item.text`,
       // so a record cannot carry findings produced from a different string than
@@ -333,6 +424,11 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       findings,
       gold: item.gold,
       timings,
+      // Everything this result is short of a full three-tier run, straight from
+      // the orchestrator. Read per ENTRY: `degraded.length > 0` is not a
+      // cleanliness test, because an `absent` entry is filed for every tier the
+      // TierConfig switched off.
+      degraded,
       error,
       abandonedWorkInFlight,
     });

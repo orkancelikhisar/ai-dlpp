@@ -1,5 +1,7 @@
 import { z } from "zod";
+import type { DegradedNotice, DegradedReason, Tier } from "@sih/core";
 import { TIER1_BACKENDS, TIER1_LABEL_FORMS } from "@sih/tier1";
+import type { JudgeCallRecord, JudgeStats } from "@sih/tier2";
 import { GoldSpanSchema } from "./corpus.js";
 
 /**
@@ -28,8 +30,39 @@ import { GoldSpanSchema } from "./corpus.js";
  * test/matrix.spec.ts creates and abandons. Nothing durable exists for a
  * version 2 to be distinguished from. If that changes -- if a run is ever kept
  * -- this constant moves before the next field does.
+ *
+ * STILL 1 after the tier-2 evidence -- `degraded`, `tier2Stats` and
+ * `config.uncertainBelow` -- and the reasoning is the same one a third time,
+ * with one thing worth saying out loud because it is the closest call so far.
+ * All three are additions, and no existing field changed meaning. Two of them
+ * are REQUIRED under a condition, which makes them a tightening rather than a
+ * pure widening: a record written by an older producer would now be refused.
+ * That is a compatibility boundary in the direction that matters -- old files
+ * failing a new reader -- and it is still not a version bump, for the same
+ * reason as before and no other: no such file exists. Nothing durable has ever
+ * been written by any producer here.
  */
 export const RECORD_SCHEMA_VERSION = 1;
+
+/**
+ * Core's `Tier`, as one definition.
+ *
+ * Two things on a record carry a tier -- a finding and a degradation notice --
+ * and a second copy of the union would be free to drift from the first.
+ *
+ * The coupling to core is the `satisfies` on `TIER_MEMBERS` below rather than an
+ * import of a runtime value, because there is none: `Tier` is a type. That
+ * literal is checked in BOTH directions, which matters asymmetrically. A member
+ * this file has that core does not is harmless -- nothing would ever produce it.
+ * A member CORE has that this file is missing is the real hazard: a schema that
+ * compiles clean and rejects a real value at run time, which on this path means
+ * a whole arm's file refused after the GPU time has been spent.
+ */
+const TierSchema = z.union([z.literal(0), z.literal(1), z.literal(2)]);
+const TIER_MEMBERS: Record<Tier, true> = { 0: true, 1: true, 2: true } satisfies Record<
+  z.infer<typeof TierSchema>,
+  true
+>;
 
 /**
  * A finding as core produced it, validated against core's ACTUAL unions rather
@@ -71,7 +104,7 @@ export const RecordFindingSchema = z.object({
   entityType: z.string().min(1),
   severity: z.enum(["low", "medium", "high", "critical"]),
   /** Core's Tier: 0 rules, 1 span tagger, 2 semantic judge. */
-  tier: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  tier: TierSchema,
   /** Rule id (tier 0) or model identifier (tiers 1-2); never empty. */
   source: z.string().min(1),
   /** 0..1, per Finding.confidence. */
@@ -83,6 +116,224 @@ export const RecordFindingSchema = z.object({
    */
   action: z.enum(["allow", "pseudonymize", "redact", "block"]),
 });
+
+/**
+ * The reason words `DetectionResult.degraded` can carry, as VALUES.
+ *
+ * Built from a `satisfies Record<DegradedReason, true>` literal, which is the
+ * idiom core itself uses for `PREDICATE_SCOPES` and `ENGINE_DEGRADED_REASONS`,
+ * and for the same reason: the literal is checked in both directions at once.
+ * A word core adds is a compile error here rather than a value this schema
+ * silently starts rejecting at run time -- and rejecting one would mean an
+ * arm's whole file refused after its GPU time was spent.
+ *
+ * The cast is what `Object.keys` costs: it is typed `string[]`, and `z.enum`
+ * needs the union to infer anything narrower than `string`. It states what the
+ * `satisfies` above has just established, not something new.
+ */
+const DEGRADED_REASONS = Object.keys({
+  "failed-closed": true,
+  "call-budget-exhausted": true,
+  "budget-exhausted": true,
+  absent: true,
+  "scope-unjudged": true,
+} satisfies Record<DegradedReason, true>) as [DegradedReason, ...DegradedReason[]];
+
+/**
+ * One entry of `DetectionResult.degraded`, carried onto the record.
+ *
+ * WHY THE RECORD CARRIES IT. `runArm` projected `DetectionResult` field by
+ * field -- `findings` and `timings` -- so this array was DROPPED, silently.
+ * MEASURED against the commit before this one: `run.ts` never named `degraded`
+ * at all and `tsc --noEmit` was clean, even though the field is REQUIRED on
+ * `DetectionResult`, because a projection that names its fields cannot be told
+ * it has missed one -- and nothing downstream noticed, because this schema had
+ * no field for it to be missing from. Its own doc states what that costs, and
+ * it is the bake-off's central comparison: "a tier-2 arm that failed closed on
+ * 40% of its messages is distinguishable from one that found nothing". Not from
+ * the file, it was not.
+ *
+ * Counters are not a substitute, and the reason is not a matter of taste. Three
+ * of the five reason words have NO counter anywhere: `absent` and
+ * `scope-unjudged` are the orchestrator's own facts, which no judge is in a
+ * position to count, and the budget-spent-before-start form of
+ * `budget-exhausted` is filed on a path that makes no engine call at all, so
+ * there is nothing for `tier2Stats` to have counted. A fourth,
+ * `budget-exhausted` after a run, is taken from the orchestrator's TIMER and is
+ * filed even for a judge that ignored the abort and answered in full.
+ *
+ * READ IT PER ENTRY. `degraded.length > 0` is not a cleanliness test: an
+ * `absent` entry is filed for every tier the TierConfig switched off, so every
+ * tier-0 row in the matrix carries two of them and nothing went wrong on any of
+ * them.
+ *
+ * The `satisfies` pins the FIELD SET to core's own interface, so a field added
+ * to `DegradedNotice` fails to compile here instead of going missing from the
+ * file.
+ */
+const DegradedNoticeSchema = z.object({
+  /** Which tier contributed less than a full run would have. */
+  tier: TierSchema,
+  reason: z.enum(DEGRADED_REASONS),
+  /**
+   * Required and non-empty, matching `stampEngineNotice`, which throws on an
+   * empty one calling it "the entire human-readable payload of a notice". Never
+   * message text, a finding's text, or model output -- see EngineDegradedNotice.
+   */
+  detail: z.string().min(1),
+} satisfies Record<keyof DegradedNotice, z.ZodType>);
+
+/**
+ * `ChatCompletionFinishReason` as values, reached through `JudgeCallRecord`.
+ *
+ * apps/eval does not depend on @mlc-ai/web-llm and the union is a type with no
+ * runtime array behind it, so this is as close to the source as the compiler
+ * can get: `JudgeCallRecord.finishReason` is `ChatCompletionFinishReason |
+ * undefined`, and the `satisfies` below is exact in both directions. READ from
+ * the installed 0.2.84 declarations -- `lib/openai_api_protocols/
+ * chat_completion.d.ts` declares `ChatCompletionFinishReason` as exactly these
+ * four words -- rather than assumed from the OpenAI protocol they imitate,
+ * which also has `content_filter` and `function_call`.
+ */
+type Tier2FinishReason = NonNullable<JudgeCallRecord["finishReason"]>;
+const TIER2_FINISH_REASONS = Object.keys({
+  stop: true,
+  length: true,
+  tool_calls: true,
+  abort: true,
+} satisfies Record<Tier2FinishReason, true>) as [Tier2FinishReason, ...Tier2FinishReason[]];
+
+/**
+ * ONE ENGINE CALL, not one message.
+ *
+ * A message makes one call per selected segment, plus the pinned recipe's one
+ * repair retry, so `finishReason`, `promptTokens`, `completionTokens` and
+ * `ttftMs` are per-CALL quantities. The record carries the ROWS rather than an
+ * aggregate, and the choice is deliberate on three grounds:
+ *
+ * 1. `finishReason` does not aggregate at all. A message with one call that
+ *    stopped cleanly and one that hit the token ceiling produced a PARTIAL
+ *    judgement, and any single word for it -- the last call's, the first's,
+ *    the "worst" -- is a fact about one call presented as a fact about the
+ *    message. Task 6 kept rows for exactly this reason.
+ * 2. The bake-off's latency gate is a p95 of TTFT across CALLS at a stated
+ *    prompt size. Reducing each message to one number first would make that
+ *    quantity uncomputable from the file: a p95 over per-message means is a
+ *    different statistic, and it is not the one the gate names.
+ * 3. Rows still permit every aggregate. Token totals are a sum over `calls`,
+ *    which a scorer can take; the reverse -- recovering a distribution from a
+ *    sum -- is not available.
+ *
+ * The cost is size: `calls` is one small object per segment per message, and it
+ * is bounded. Task 9's measured distribution over the only corpus in this
+ * repository is pinned in test/segments.test.ts as
+ * `perItem: {p50: 1, p95: 3, max: 3, min: 1}` under tier-0 priors, so with the
+ * pinned recipe's one repair retry that is at most 6 rows on the worst message
+ * and 1 on the median one.
+ *
+ * All four fields are OPTIONAL because `JudgeCallRecord` types all four
+ * `| undefined`: `usage` is optional on a completion and `finish_reason` can be
+ * null, so a row that carried a fabricated 0 would be worse than a row that
+ * says nothing. `.optional()` and not `.nullable()` because JSON.stringify
+ * DROPS an undefined-valued key, so an absent key is what the file actually
+ * holds.
+ */
+const Tier2CallSchema = z.object({
+  /** `choices[0].finish_reason` for THIS call, never the message's. */
+  finishReason: z.enum(TIER2_FINISH_REASONS).optional(),
+  /** `usage.prompt_tokens`, verbatim. */
+  promptTokens: z.number().int().nonnegative().optional(),
+  /** `usage.completion_tokens`, verbatim. */
+  completionTokens: z.number().int().nonnegative().optional(),
+  /**
+   * `usage.extra.time_to_first_token_s` in milliseconds -- or `null` when the
+   * engine reported one that is not a finite number.
+   *
+   * The null is not decoration and this is the one field that needs it.
+   * `JudgeCallRecord` says the conversion is deliberately unguarded, because a
+   * NaN there is a fact about the call rather than a number to invent a
+   * replacement for. MEASURED with zod 4.4.3: `z.number()` rejects NaN and
+   * Infinity, and `JSON.stringify(NaN)` is the string "null". So a NaN copied
+   * straight onto a record produces a FILE ITS OWN READER REFUSES -- written as
+   * null, rejected on the way back in, after the run. `runArm` maps it here
+   * instead, where the value can be named: null means the engine reported a
+   * time-to-first-token that is not a number, and absent means it reported
+   * none.
+   *
+   * The three fields above are NOT nullable, deliberately: they come from
+   * `usage`, which is either present with real counts or absent altogether, so
+   * a null there would be a third state nothing produces.
+   */
+  ttftMs: z.number().nullable().optional(),
+} satisfies Record<keyof JudgeCallRecord, z.ZodType>);
+
+/** Every counter is a non-negative integer; deltas over counters that only rise. */
+const JUDGE_COUNTER = z.number().int().nonnegative();
+
+/**
+ * The tier-2 judge's own numbers for THIS item, as a DELTA over one `detect`.
+ *
+ * A DELTA, and that is the trap this field is most likely to be broken by.
+ * `WebLlmJudge.stats` is CUMULATIVE across every `judge()` call the judge has
+ * made -- its own docblock says so -- so a record populated from it directly
+ * carries the arm's running totals, every row after the first is inflated, and
+ * the suite stays green because nothing else knows what the numbers should be.
+ * The page already solves this the way tier 1 does: `judgeDelta` in
+ * apps/eval/src/page/main.ts subtracts the snapshot taken before the call, and
+ * `tier2Status().lastDetect` is what `runArm` reads.
+ *
+ * WHY THE RECORD CARRIES IT, in one line borrowed from `tier1Stats`: findings
+ * alone cannot separate "the model ran and found nothing" from "the model never
+ * ran", and for tier 2 neither can a timing -- `judge()` returns before it
+ * touches the engine when the IR declares no `semanticPredicates`, which takes
+ * microseconds and still sets `timings.tier2Ms`.
+ *
+ * The field set is `JudgeStats` WHOLE and the `satisfies` enforces it, so there
+ * is no judgement here about which counter matters: a counter added upstream
+ * fails to compile rather than going missing. That is worth stating because the
+ * plan's own snippet named eight counters, and `JudgeStats` carries fifteen
+ * fields -- Task 6 added the truncated/aborted response counts and the per-call
+ * rows, Task 7 added the segment accounting and split the two caller-abort
+ * counters, which `cancel.ts` refuses to merge because one message for both
+ * "would state a falsehood in two of them".
+ *
+ * Read `segmentsJudged` before reading any of the loss counters. Zero means no
+ * segment's answer was ever collected on this item -- an escalation that
+ * selected nothing does that legitimately -- in which case the loss counters
+ * are zero because there was nothing to lose, not because nothing was lost.
+ */
+const Tier2StatsSchema = z.object({
+  /** Findings whose quote resolved uniquely in FOLDED space; the strong case. */
+  rung1: JUDGE_COUNTER,
+  /** Findings whose quote only matched after the ladder peeled its tail. Weaker. */
+  rung2: JUDGE_COUNTER,
+  /** Quotes the ladder refused, for any of its four reasons. */
+  unresolvedQuotes: JUDGE_COUNTER,
+  /** Findings naming a predicate the IR does not declare. Models invent ids. */
+  unknownPredicates: JUDGE_COUNTER,
+  /** Findings resolving to a span this run had already emitted. */
+  duplicatesDropped: JUDGE_COUNTER,
+  /** Segments that got a second call because the first answer would not parse. */
+  repairAttempts: JUDGE_COUNTER,
+  /** Segments the engine ANSWERED that still yielded no judgement. */
+  failedClosed: JUDGE_COUNTER,
+  /** Completions the engine reported cut off, by finishReason "length". */
+  truncatedResponses: JUDGE_COUNTER,
+  /** Completions the engine reported as interrupted. */
+  abortedResponses: JUDGE_COUNTER,
+  /** Segments whose answer parsed and was collected -- the denominator for recall. */
+  segmentsJudged: JUDGE_COUNTER,
+  /** Segments a stop ended the run before reaching, plus the one whose call raised it. */
+  segmentsSkipped: JUDGE_COUNTER,
+  /** Runs stopped by a budget expiry; at most 1 per judge() call by construction. */
+  deadlineExpiries: JUDGE_COUNTER,
+  /** Caller aborts that really interrupted a generation. */
+  callerAbortsMidGeneration: JUDGE_COUNTER,
+  /** Caller aborts while the call was still queued: nothing ran, nothing was interrupted. */
+  callerAbortsWhileQueued: JUDGE_COUNTER,
+  /** One row per engine call that ANSWERED, in the order they were made. */
+  calls: z.array(Tier2CallSchema),
+} satisfies Record<keyof JudgeStats, z.ZodType>);
 
 export const RunRecordSchema = z
   .object({
@@ -173,6 +424,35 @@ export const RunRecordSchema = z
       t1Model: z.string().optional(),
       t2Model: z.string().optional(),
       backend: z.enum(["wasm", "webgpu"]).optional(),
+      /**
+       * Spec 4.1's escalation threshold: the confidence below which a tier-0/1
+       * finding sends its segment to tier 2.
+       *
+       * REQUIRED on a tier-2 record; on any other kind of arm this schema does
+       * not care either way, and the refine at the bottom says why that
+       * asymmetry is deliberate rather than an oversight. `TierConfig` calls
+       * this an EXPERIMENT variable rather than
+       * policy, and says the bake-off's whole job is varying it per arm; two
+       * tier-2 arms differing only in this value would otherwise emit records
+       * identical in every field a scorer can group by. Same disease as the
+       * three tier-1 ladder dimensions `TierConfig` has no room for, arriving
+       * through the one dimension it does.
+       *
+       * The value here is RESOLVED, never the partial one an arm asked for:
+       * `runArm` fills in `UNCERTAIN_BELOW` when the caller omits it and hands
+       * the same object to `detect`, so this is the number `escalate.ts`
+       * compared against and not a claim about a default.
+       *
+       * Bounds restate `uncertainSegmentStarts`' own: a finite number in
+       * [0, 1], which it throws outside of. Both ends are legal there -- 0
+       * switches the uncertainty branch off for an arm that escalates on
+       * predicates alone, 1 escalates everything short of total certainty. NaN
+       * is the value the bound is really for: `confidence < NaN` is false for
+       * every finding, so an unvalidated NaN turns the branch off silently and
+       * every message reports as having nothing uncertain. MEASURED with zod
+       * 4.4.3, `z.number()` rejects NaN and Infinity on its own.
+       */
+      uncertainBelow: z.number().min(0).max(1).optional(),
     }),
     /**
      * The FULLY RESOLVED `Tier1Config` the tagger in the page was constructed
@@ -252,6 +532,13 @@ export const RunRecordSchema = z
         nonFiniteScores: z.number().int().nonnegative(),
       })
       .optional(),
+    /**
+     * What the tier-2 judge did on THIS item, as a delta; see Tier2StatsSchema
+     * for the field set, why it is a delta, and why counters alone are not
+     * enough. Present exactly when tier 2 ran and returned -- the same coupling
+     * `tier1Stats` uses, and for the same reason `error` is part of it.
+     */
+    tier2Stats: Tier2StatsSchema.optional(),
     findings: z.array(RecordFindingSchema),
     /**
      * Copied from the corpus item so a record scores standalone, without a join.
@@ -265,6 +552,19 @@ export const RunRecordSchema = z
       tier1Ms: z.number().optional(),
       tier2Ms: z.number().optional(),
     }),
+    /**
+     * `DetectionResult.degraded` carried whole; see DegradedNoticeSchema for
+     * what each entry means and why no counter substitutes for it.
+     *
+     * Present exactly when `error` is null, and the asymmetry with core is
+     * deliberate. There the field is REQUIRED and its doc explains why -- "[]
+     * is a positive claim; undefined would be silence" -- and that reading is
+     * exactly what makes it wrong on a thrown item: `detect` throws whole, so
+     * there is no result to read an array off, and an empty one would be the
+     * positive claim that nothing was skipped on an item that may never have
+     * finished. Absent says the honest thing.
+     */
+    degraded: z.array(DegradedNoticeSchema).optional(),
     /**
      * Set when detection THREW for this item. The record is still written: an arm
      * that crashes on 5% of the corpus and one that scores 0 on it are different
@@ -357,7 +657,30 @@ export const RunRecordSchema = z
       r.config.t1Model === undefined ||
       r.config.t1Model === r.tier1Config.modelId,
     { message: "config.t1Model names a different rung than tier1Config.modelId" },
-  );
+  )
+  .refine((r) => (r.tier2Stats !== undefined) === (r.config.tier2 && r.error === null), {
+    // The tier-1 coupling verbatim, one tier up, including the `error` half:
+    // `tier2Status().lastDetect` is a DELTA over the judge's cumulative
+    // counters, so on a thrown or timed-out item that delta belongs to the
+    // PREVIOUS item and there is no per-item answer to give. A row of zeros
+    // would assert that nothing failed closed, nothing was truncated and no
+    // quote went unresolved on an item whose judge may never have returned.
+    message: "tier2Stats must be present exactly when config.tier2 is true and error is null",
+  })
+  .refine((r) => (r.degraded !== undefined) === (r.error === null), {
+    // Not coupled to any tier switch, unlike the two stats fields: every result
+    // has a degradation account, and a tier-0 arm's is the two `absent`
+    // entries that say which tiers its empty `findings` is silent about.
+    message: "degraded must be present exactly when error is null",
+  })
+  .refine((r) => !r.config.tier2 || r.config.uncertainBelow !== undefined, {
+    // One direction only. A tier-2 row without it cannot be compared with the
+    // row beside it, which is the failure being closed. The other direction is
+    // deliberately left open: a caller may hand `detect` a threshold on an arm
+    // that never reaches escalation, and the record's job is to state what
+    // detect received rather than to tidy it away.
+    message: "a tier-2 record must carry the escalation threshold that produced it",
+  });
 
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 export type RecordFinding = z.infer<typeof RecordFindingSchema>;

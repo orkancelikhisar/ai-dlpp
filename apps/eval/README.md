@@ -604,6 +604,63 @@ the page's `lastDetect` still holds the *previous* item's delta, so absent is th
 only honest answer and a row of zeros would be a false one. `gpuSubmits` is not
 carried: it counts the page's GPU submissions, not the tagger's work.
 
+### Telling "failed closed on 40% of messages" from "found nothing"
+
+The tier-2 version of the same question, and it needs **two** channels because
+neither one answers it alone.
+
+`RunRecordSchema.tier2Stats` carries `JudgeStats` **whole** as a per-item delta,
+present exactly when `config.tier2` is set *and* `error` is null — the same
+coupling `tier1Stats` uses and for the same reason. Read `segmentsJudged` first:
+`segmentsJudged + failedClosed + segmentsSkipped` is the number of segments the
+judge was handed, and it is the denominator every findings-per-segment or recall
+number needs. A **delta**, not the judge's totals: `WebLlmJudge.stats` is
+cumulative across every message an arm has processed, so a record built from it
+would inflate every row after the first with a fully green suite. The page's
+`judgeDelta` subtracts the snapshot it took before the call; `runArm` reads
+`tier2Status().lastDetect`.
+
+`RunRecordSchema.degraded` carries `DetectionResult.degraded` whole, present
+exactly when `error` is null. It was being **dropped**: `runArm` projected the
+detection result field by field — `findings` and `timings` — so adding the array
+to `DetectionResult` produced no type error and no change in the output.
+Counters cannot stand in for it, and not as a matter of taste: three of the five
+reason words have no counter anywhere. `absent` and `scope-unjudged` are the
+orchestrator's own facts, no judge is in a position to count them, and the
+budget-spent-before-start form of `budget-exhausted` is filed on a path that
+makes **no engine call at all**. Read it per entry — `degraded.length > 0` is
+not a cleanliness test, because an `absent` entry is filed for every tier the
+`TierConfig` switched off, so every tier-0 row carries two of them.
+
+**Per-call rows, not a per-message aggregate.** A message makes one engine call
+per selected segment, plus the pinned recipe's one repair retry, so
+`tier2Stats.calls` is one row per answered call in the order they were made:
+`finishReason`, `promptTokens`, `completionTokens`, `ttftMs`. A single
+`finishReason` for a message would be a fact about one call presented as a fact
+about the message — one call stopping cleanly while another hits the token
+ceiling means the judgement is *partial*, which no single value can say — and the
+bake-off's p95 TTFT gate is a quantile over **calls**, which a per-message mean
+cannot reconstruct. Sums remain available to a scorer; distributions would not
+have been. A `ttftMs` the engine reported as non-finite is written as `null`
+rather than as a `NaN`: measured, `JSON.stringify(NaN)` is `"null"` and zod's
+`z.number()` rejects `NaN`, so copying one through produces a file this module's
+own reader refuses.
+
+**And the escalation threshold travels with them.** `config.uncertainBelow` is
+required on a tier-2 record. `TierConfig` calls it an *experiment variable* the
+bake-off varies per arm, so two tier-2 arms differing only in it would otherwise
+emit records identical in every field a scorer can group by — the same disease as
+the three tier-1 ladder dimensions `TierConfig` has no room for. `runArm`
+resolves it (filling in `UNCERTAIN_BELOW` when the caller omits it) **into the
+object `detect` receives**, so the number recorded is the number `escalate.ts`
+compared against rather than a claim about what the default is. `runArm` does
+not stamp one on a tier-0 or tier-1 arm — escalation never runs there, and a
+threshold on such a row would name a knob that turned nothing — and the schema
+does not require one there either. It does not *forbid* one, deliberately: a
+caller may hand `detect` a threshold on an arm that never reaches escalation,
+and the record's job is to state what `detect` received rather than to tidy it
+away.
+
 ### `abandonedWorkInFlight`, and why a timeout does not abort the arm
 
 `page.evaluate` accepts no timeout and offers no cancellation channel, so when

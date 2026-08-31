@@ -1,11 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  UNCERTAIN_BELOW,
+  detect,
+  loadPolicyIr,
+  type DegradedNotice,
+  type DetectionResult,
+  type SemanticJudge,
+} from "@sih/core";
 import { resolveTier1Config } from "@sih/tier1";
 import { CorpusItemSchema, loadCorpus } from "../src/driver/corpus.js";
-import { RunRecordSchema, toJsonl } from "../src/driver/record.js";
+import { RunRecordSchema, toJsonl, type RunRecord } from "../src/driver/record.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "..", "..", "corpora", "fixtures");
+const IR_FIXTURE = join(import.meta.dirname, "..", "fixtures", "minimal-ir.json");
+
+/**
+ * The `absent` entries core files for every tier a `TierConfig` switched off,
+ * worded as `absentNotice` in packages/core/src/detect/orchestrator.ts words
+ * them.
+ *
+ * Every fixture below is a tier-0 record, so every one of them has two. Written
+ * out rather than left as `[]` because `[]` on a tier-0 record is not merely
+ * terse, it is FALSE -- `DetectionResult.degraded`'s own doc calls an `absent`
+ * entry a statement of coverage and says a tier-0 run legitimately carries two
+ * of them. A fixture that models the shape wrongly is how the shape gets built
+ * wrongly.
+ */
+const ABSENT_1_2: DegradedNotice[] = [
+  { tier: 1, reason: "absent", detail: "tier 1 was not enabled in this TierConfig, so nothing it detects was looked for" },
+  { tier: 2, reason: "absent", detail: "tier 2 was not enabled in this TierConfig, so nothing it detects was looked for" },
+];
 
 describe("corpus", () => {
   it("loads the smoke corpus, rejecting any malformed line by number", () => {
@@ -69,7 +95,8 @@ describe("RunRecordSchema", () => {
       gold: [{ start: 0, end: 5, text: "hello", entityType: "client-name", action: "block" }],
       timings: { tier0Ms: 0.4 },
       error: null,
-      abandonedWorkInFlight: false,
+      degraded: ABSENT_1_2,
+    abandonedWorkInFlight: false,
     };
     expect(RunRecordSchema.safeParse(record).success).toBe(true);
   });
@@ -85,7 +112,8 @@ describe("RunRecordSchema", () => {
       irHash: "0".repeat(64), policyHash: "1".repeat(64),
       arm: "t0", backend: "wasm", provider: "claude",
     config: { tier0: true, tier1: false, tier2: false }, text: "hello world", findings: [], gold: [],
-      timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
+      timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
+    abandonedWorkInFlight: false,
     };
     expect(RunRecordSchema.safeParse(complete).success).toBe(true);
     const { irHash: _noIrHash, ...withoutIrHash } = complete;
@@ -164,6 +192,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     gold: [],
     timings: { tier0Ms: 0 },
     error: null,
+    degraded: ABSENT_1_2,
     abandonedWorkInFlight: false,
   };
 
@@ -287,12 +316,15 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     // Threw: `detect` throws whole, so the page's `lastDetect` still holds the
     // PREVIOUS item's delta and there is no per-item answer. Absent says that;
     // a row of zeros would assert nothing was lost on an item that may never
-    // have finished.
+    // have finished. `degraded` goes absent on the same item and for the same
+    // reason -- there is no result to read one off -- so it is dropped here
+    // too rather than left standing as a clean-run claim on a crashed row.
     expect(
       RunRecordSchema.safeParse({
         ...record,
         config: t1,
         tier1Config: cfg,
+        degraded: undefined,
         error: "detector exploded",
       }).success,
     ).toBe(true);
@@ -302,6 +334,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
         config: t1,
         tier1Config: cfg,
         tier1Stats: STATS,
+        degraded: undefined,
         error: "detector exploded",
       }).success,
     ).toBe(false);
@@ -475,6 +508,7 @@ describe("findings are validated to core's unions, like gold", () => {
     gold: [],
     timings: { tier0Ms: 0 },
     error: null,
+    degraded: ABSENT_1_2,
     abandonedWorkInFlight: false,
   };
   const finding = {
@@ -543,7 +577,8 @@ describe("the record's own text makes the cross-check executable", () => {
     arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
-    timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
+    timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
+    abandonedWorkInFlight: false,
   };
 
   it("requires the message text, so a record can be verified without the corpus", () => {
@@ -590,7 +625,8 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
       arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
       text: "before after end", findings: [], gold: [],
-      timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
+      timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
+    abandonedWorkInFlight: false,
     };
     const jsonl = toJsonl([record]);
     expect(jsonl).not.toContain(" ");
@@ -628,7 +664,8 @@ describe("findings cannot carry a degenerate span", () => {
     arm: "t0", backend: "wasm" as const, provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
-    timings: { tier0Ms: 0 }, error: null, abandonedWorkInFlight: false,
+    timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
+    abandonedWorkInFlight: false,
   };
   const span = (start: number, end: number, text: string) => ({
     start, end, text, entityType: "in-pan",
@@ -688,5 +725,521 @@ describe("corpus composition the README makes claims about", () => {
     const examples = new Set(ir.entityTypes.flatMap((e) => e.examples));
     const contaminated = items.flatMap((i) => i.gold.filter((g) => examples.has(g.text)).map((g) => `${i.id}:${g.text}`));
     expect(contaminated).toEqual([]);
+  });
+});
+
+/**
+ * The tier-2 evidence the JSONL was missing.
+ *
+ * Three fields, each closing a way a complete, schema-valid, perfectly
+ * scoreable record describes a tier-2 run nobody can interpret:
+ *
+ * - `degraded` -- the orchestrator's own account of what this result is short
+ *   of. It was being DROPPED: `runArm` projects `DetectionResult` field by
+ *   field (`findings`, `timings`), so adding the array to `DetectionResult`
+ *   produced no type error and no output change.
+ * - `tier2Stats` -- the judge's counters for THIS item, as a delta, the tier-2
+ *   twin of `tier1Stats`.
+ * - `config.uncertainBelow` -- the escalation threshold. `TierConfig` calls it
+ *   an EXPERIMENT variable the bake-off varies per arm, and a row that cannot
+ *   say which value produced it cannot be compared with the row beside it.
+ */
+describe("the tier-2 evidence a record has to carry", () => {
+  const base = {
+    schemaVersion: 1 as const,
+    runId: "r1",
+    itemId: "a",
+    policy: "p-fin",
+    irHash: "0".repeat(64),
+    policyHash: "1".repeat(64),
+    arm: "t0+t2",
+    backend: "webgpu" as const,
+    provider: "claude",
+    text: "hello world",
+    findings: [],
+    gold: [],
+    timings: { tier0Ms: 0.4, tier2Ms: 812 },
+    error: null,
+    abandonedWorkInFlight: false,
+  };
+  const T2 = { tier0: false, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW };
+  /** One engine call's row, as `JudgeCallRecord` declares it. */
+  const CALL = { finishReason: "stop", promptTokens: 412, completionTokens: 96, ttftMs: 780 };
+  /**
+   * `JudgeStats` WHOLE, as a per-item delta. Written out rather than reduced to
+   * the plan's eight counters: Tasks 6 and 7 added the segment accounting and
+   * split the two caller-abort counters, and a record that carries a subset
+   * silently decides which of them a scorer is allowed to have.
+   */
+  const STATS = {
+    rung1: 3,
+    rung2: 1,
+    unresolvedQuotes: 2,
+    unknownPredicates: 0,
+    duplicatesDropped: 4,
+    repairAttempts: 1,
+    failedClosed: 0,
+    truncatedResponses: 0,
+    abortedResponses: 0,
+    segmentsJudged: 2,
+    segmentsSkipped: 0,
+    deadlineExpiries: 0,
+    callerAbortsMidGeneration: 0,
+    callerAbortsWhileQueued: 0,
+    calls: [CALL],
+  };
+  const t2 = (patch: Record<string, unknown> = {}) =>
+    RunRecordSchema.safeParse({
+      ...base,
+      config: T2,
+      degraded: [],
+      tier2Stats: STATS,
+      ...patch,
+    });
+
+  it("accepts a tier-2 record carrying all three, and strips none of it", () => {
+    const parsed = t2();
+    expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+    // Deep-equal rather than a spot check: zod DROPS what a schema does not
+    // declare, so a counter missing from the object would vanish from the file
+    // without a word and every assertion on the fields that survived would
+    // still pass.
+    expect(parsed.success && parsed.data.tier2Stats).toEqual(STATS);
+    expect(parsed.success && parsed.data.config.uncertainBelow).toBe(UNCERTAIN_BELOW);
+  });
+
+  it("couples tier2Stats to config.tier2 AND to error, in every direction", () => {
+    // The same coupling `tier1Stats` uses, and for the same reason: the page's
+    // `lastDetect` is a DELTA over the judge's cumulative counters, so on a
+    // thrown or timed-out item the delta belongs to the PREVIOUS item and
+    // absent is the only honest answer. A row of zeros would assert that
+    // nothing failed closed on an item whose judge may never have returned.
+    expect(t2().success).toBe(true);
+    expect(t2({ tier2Stats: undefined }).success).toBe(false);
+    expect(t2({ error: "the engine went away", tier2Stats: undefined, degraded: undefined }).success).toBe(true);
+    expect(t2({ error: "the engine went away", degraded: undefined }).success).toBe(false);
+    // Tier 2 off: counters describing a judge that never existed.
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        config: { tier0: true, tier1: false, tier2: false },
+        degraded: [],
+        tier2Stats: STATS,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a partial counter set, so a dropped counter cannot go unnoticed", () => {
+    // A delete-one-key sweep rather than fifteen named cases, so a counter
+    // added to `JudgeStats` and forwarded here is covered without editing this
+    // test -- and one dropped from the schema fails immediately.
+    for (const key of Object.keys(STATS)) {
+      const { [key]: _dropped, ...partial } = STATS as Record<string, unknown>;
+      expect(t2({ tier2Stats: partial }).success, `${key} was allowed to be missing`).toBe(false);
+    }
+  });
+
+  it("rejects a negative counter on every counter, not just the first one", () => {
+    for (const key of Object.keys(STATS).filter((k) => k !== "calls")) {
+      expect(t2({ tier2Stats: { ...STATS, [key]: -1 } }).success, `${key} accepted -1`).toBe(false);
+    }
+    // ... and a fractional one. These are event counts; 1.5 segments judged is
+    // a corrupted delta, not a measurement.
+    expect(t2({ tier2Stats: { ...STATS, segmentsJudged: 1.5 } }).success).toBe(false);
+  });
+
+  it("carries ONE ROW PER ENGINE CALL rather than one finishReason per message", () => {
+    // The aggregation decision, pinned. A message makes one call per selected
+    // segment (plus the one repair retry), and Task 6 kept per-call rows
+    // precisely because a single `finishReason` for a message would be a fact
+    // about one call presented as a fact about the message. Two rows that
+    // DISAGREE is the case a per-message field cannot express at all: this
+    // message had one call stop cleanly and one hit the token ceiling, so its
+    // judgement is partial, and a scorer that saw only "stop" would score it as
+    // complete.
+    const parsed = t2({
+      tier2Stats: {
+        ...STATS,
+        calls: [
+          CALL,
+          { finishReason: "length", promptTokens: 1180, completionTokens: 512, ttftMs: 940 },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.tier2Stats?.calls.map((c) => c.finishReason)).toEqual([
+      "stop",
+      "length",
+    ]);
+    // Order is the order the calls were made in, so a row can be attributed to
+    // the segment it came from by position; a Set or a count could not.
+    expect(parsed.success && parsed.data.tier2Stats?.calls[1]?.promptTokens).toBe(1180);
+  });
+
+  it("rejects a finishReason the pinned engine cannot report", () => {
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, finishReason: "banana" }] } }).success).toBe(false);
+    // Every word 0.2.84's ChatCompletionFinishReason actually has.
+    for (const reason of ["stop", "length", "tool_calls", "abort"]) {
+      expect(
+        t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, finishReason: reason }] } }).success,
+        `${reason} was refused`,
+      ).toBe(true);
+    }
+  });
+
+  it("accepts a call row the engine reported no usage for", () => {
+    // `JudgeCallRecord` types all four fields `| undefined`: `usage` is
+    // optional on the completion and `finish_reason` can be null. A schema that
+    // required them would refuse a real call rather than record what it knew.
+    expect(t2({ tier2Stats: { ...STATS, calls: [{}] } }).success).toBe(true);
+  });
+
+  it("carries a non-finite time-to-first-token as null, and refuses a raw NaN", () => {
+    // MEASURED with zod 4.4.3: `z.number()` rejects both NaN and Infinity, and
+    // `JSON.stringify(NaN)` is the string "null". So a NaN copied straight onto
+    // a record produces a FILE ITS OWN READER REFUSES -- written as null,
+    // rejected on the way back in. `ttftMs` is the field where that is live:
+    // `JudgeCallRecord` says the conversion out of
+    // `usage.extra.time_to_first_token_s` is deliberately unguarded, because a
+    // NaN there is a fact about the call. Null is that fact, spelled so it
+    // survives the round trip; `runArm` is what maps it.
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, ttftMs: null }] } }).success).toBe(true);
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, ttftMs: Number.NaN }] } }).success).toBe(false);
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, ttftMs: Infinity }] } }).success).toBe(false);
+    // Not nullable on the counts: `usage.prompt_tokens` is either a number the
+    // engine reported or absent, and null there would be a third state nothing
+    // produces.
+    expect(t2({ tier2Stats: { ...STATS, calls: [{ ...CALL, promptTokens: null }] } }).success).toBe(false);
+  });
+
+  it("couples degraded to error, so a thrown item cannot claim a clean run", () => {
+    // `DetectionResult.degraded` is REQUIRED there and its doc says why: "[] is
+    // a positive claim; undefined would be silence". The record keeps that,
+    // except on a thrown item -- `detect` throws whole, so there is no result
+    // to read an array off, and [] would be the positive claim that nothing was
+    // skipped on an item that never finished.
+    expect(t2({ degraded: undefined }).success).toBe(false);
+    expect(t2({ error: "boom", tier2Stats: undefined, degraded: undefined }).success).toBe(true);
+    expect(t2({ error: "boom", tier2Stats: undefined }).success).toBe(false);
+    // A tier-0 arm carries it too: `absent` entries are the only thing that
+    // says WHICH tiers a `tier0Ms` of 0 belongs to.
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        config: { tier0: true, tier1: false, tier2: false },
+        timings: { tier0Ms: 0.4 },
+        degraded: [
+          { tier: 1, reason: "absent", detail: "tier 1 was not enabled in this TierConfig" },
+          { tier: 2, reason: "absent", detail: "tier 2 was not enabled in this TierConfig" },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("carries every reason word core can emit, including the three no judge counts", () => {
+    // `absent`, `scope-unjudged` and the budget-spent-before-start form of
+    // `budget-exhausted` are the orchestrator's own facts. No judge counter
+    // corresponds to any of them, and the last one makes NO ENGINE CALL AT ALL,
+    // so there is nothing for `tier2Stats` to have counted. Without these words
+    // on the record they are unreachable from the file.
+    for (const reason of [
+      "failed-closed",
+      "call-budget-exhausted",
+      "budget-exhausted",
+      "absent",
+      "scope-unjudged",
+    ]) {
+      expect(
+        t2({ degraded: [{ tier: 2, reason, detail: "why" }] }).success,
+        `${reason} was refused`,
+      ).toBe(true);
+    }
+    expect(t2({ degraded: [{ tier: 2, reason: "vibes", detail: "why" }] }).success).toBe(false);
+  });
+
+  it("refuses a notice with no detail and one naming a tier outside core's union", () => {
+    // `stampEngineNotice` throws on an empty detail, calling it "the entire
+    // human-readable payload of a notice"; the record holds that line rather
+    // than accepting what core refuses to produce.
+    expect(t2({ degraded: [{ tier: 2, reason: "failed-closed", detail: "" }] }).success).toBe(false);
+    expect(t2({ degraded: [{ tier: 3, reason: "failed-closed", detail: "why" }] }).success).toBe(false);
+  });
+
+  it("requires the escalation threshold on a tier-2 record, and keeps the value given", () => {
+    // Two DIFFERENT values, because a test that only ever exercises the default
+    // cannot tell "carries the config" from "hardcodes UNCERTAIN_BELOW" -- the
+    // trap this plan has hit twice.
+    const { uncertainBelow: _dropped, ...noThreshold } = T2;
+    expect(t2({ config: noThreshold }).success).toBe(false);
+    for (const value of [0, 0.35, UNCERTAIN_BELOW, 1]) {
+      const parsed = t2({ config: { ...T2, uncertainBelow: value } });
+      expect(parsed.success, `${String(value)} was refused`).toBe(true);
+      expect(parsed.success && parsed.data.config.uncertainBelow).toBe(value);
+    }
+    // A tier-0 or tier-1 arm never reaches escalation, so it is not asked for
+    // one -- the same asymmetry `tier1Config` has.
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        config: { tier0: true, tier1: false, tier2: false },
+        timings: { tier0Ms: 0.4 },
+        degraded: [],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a threshold escalate.ts would throw on", () => {
+    // Restates `uncertainSegmentStarts`' own bound: a finite number in [0, 1].
+    // NaN is the value worth naming -- `confidence < NaN` is false for every
+    // finding, so an unvalidated NaN switches the uncertainty branch off and
+    // every message reports as having nothing uncertain, which is a wrong
+    // answer that looks like a right one.
+    for (const bad of [-0.1, 1.1, Number.NaN, Infinity]) {
+      expect(t2({ config: { ...T2, uncertainBelow: bad } }).success, `${String(bad)} accepted`).toBe(false);
+    }
+  });
+
+  it("survives the JSONL round trip with every tier-2 field intact", () => {
+    // The file is the deliverable, not the in-memory object. `undefined` inside
+    // a call row is dropped by JSON.stringify, so the row comes back with keys
+    // MISSING rather than present-and-undefined -- which is why the row fields
+    // are `.optional()` and not `.nullable()`.
+    const record = {
+      ...base,
+      config: { ...T2, uncertainBelow: 0.35 },
+      degraded: [{ tier: 2 as const, reason: "failed-closed" as const, detail: "unparseable after one repair retry" }],
+      tier2Stats: { ...STATS, calls: [CALL, { finishReason: "abort" }] },
+    } as RunRecord;
+    const [line] = toJsonl([record]).trim().split("\n");
+    const reparsed = RunRecordSchema.safeParse(JSON.parse(line!));
+    expect(reparsed.success, reparsed.success ? "" : JSON.stringify(reparsed.error.issues)).toBe(true);
+    expect(reparsed.success && reparsed.data.tier2Stats?.calls).toEqual([
+      CALL,
+      { finishReason: "abort" },
+    ]);
+    expect(reparsed.success && reparsed.data.degraded).toEqual(record.degraded);
+    expect(reparsed.success && reparsed.data.config.uncertainBelow).toBe(0.35);
+  });
+});
+
+/**
+ * The discrimination this whole channel exists for, demonstrated against the
+ * REAL orchestrator rather than against notices written by hand.
+ *
+ * `DetectionResult.degraded`'s own doc states the claim: "a tier-2 arm that
+ * failed closed on 40% of its messages is distinguishable from one that found
+ * nothing". Until this task the claim stopped at core's return value -- the
+ * record dropped the array, so the file Plan 8 scores could not make the
+ * distinction the type was added for. What follows is the scorer code, run.
+ */
+describe("a scorer separates 'failed closed on 40%' from 'found nothing'", () => {
+  const ir = loadPolicyIr(readFileSync(IR_FIXTURE, "utf8"));
+
+  /**
+   * Five messages, each carrying a tier-0 PAN.
+   *
+   * minimal-ir.json declares NO semanticPredicates, so the uncertainty half of
+   * `selectSegments` is the only thing that can put a judge in the loop, and it
+   * needs a prior finding under the threshold. `uncertainBelow: 1` -- "escalate
+   * everything short of total certainty", which `uncertainSegmentStarts`
+   * documents as legal -- is what makes tier 0's own findings qualify. The
+   * `judged` count asserted below is what proves this actually happened rather
+   * than the whole comparison passing vacuously with no judge call at all.
+   */
+  const MESSAGES = [
+    "Please file ABCPT1234H against the renewal.",
+    "The PAN on record is ABCPT1234H, confirm with finance.",
+    "Second reminder: ABCPT1234H is still unverified.",
+    "Attach ABCPT1234H to the onboarding packet.",
+    "ABCPT1234H was quoted in yesterday's thread.",
+  ];
+  const FAILED_ON = new Set([MESSAGES[1], MESSAGES[3]]);
+
+  /** A judge that finds nothing, and on some messages reports failing closed. */
+  function stubJudge(failsClosed: (text: string) => boolean): {
+    judge: SemanticJudge;
+    judged: () => number;
+  } {
+    let calls = 0;
+    return {
+      judged: () => calls,
+      judge: {
+        judge: (request) => {
+          calls += 1;
+          return Promise.resolve({
+            findings: [],
+            scopesJudged: [],
+            degraded: failsClosed(request.text)
+              ? [
+                  {
+                    reason: "failed-closed" as const,
+                    detail: "the response was still unparseable after one repair retry",
+                  },
+                ]
+              : [],
+          });
+        },
+      },
+    };
+  }
+
+  async function runArmOverMessages(
+    failsClosed: (text: string) => boolean,
+  ): Promise<{ results: DetectionResult[]; judged: number }> {
+    const stub = stubJudge(failsClosed);
+    const results: DetectionResult[] = [];
+    for (const text of MESSAGES) {
+      results.push(
+        await detect({
+          ir,
+          provider: "claude",
+          text,
+          config: { tier0: true, tier1: false, tier2: true, uncertainBelow: 1 },
+          engines: { tier2: stub.judge },
+        }),
+      );
+    }
+    return { results, judged: stub.judged() };
+  }
+
+  /**
+   * The same zeroed counters on BOTH arms, and that is the point rather than a
+   * convenience: it makes `tier2Stats` incapable of being what separates them,
+   * so whatever the scorer below reads has to be coming from `degraded`.
+   */
+  const ZEROED = {
+    rung1: 0, rung2: 0, unresolvedQuotes: 0, unknownPredicates: 0, duplicatesDropped: 0,
+    repairAttempts: 0, failedClosed: 0, truncatedResponses: 0, abortedResponses: 0,
+    segmentsJudged: 0, segmentsSkipped: 0, deadlineExpiries: 0,
+    callerAbortsMidGeneration: 0, callerAbortsWhileQueued: 0, calls: [],
+  };
+
+  const asRecords = (results: DetectionResult[]): RunRecord[] =>
+    results.map(
+      (result, i) =>
+        ({
+          schemaVersion: 1,
+          runId: "demo",
+          itemId: `m${String(i)}`,
+          policy: "minimal-fixture",
+          irHash: "0".repeat(64),
+          policyHash: "test-hash",
+          arm: "t0+t2",
+          backend: "webgpu",
+          provider: "claude",
+          config: { tier0: true, tier1: false, tier2: true, backend: "webgpu", uncertainBelow: 1 },
+          text: MESSAGES[i]!,
+          findings: result.findings.map((f) => ({
+            start: f.start, end: f.end, text: f.text, entityType: f.entityType,
+            severity: f.severity, tier: f.tier, source: f.source,
+            confidence: f.confidence, action: f.action,
+          })),
+          gold: [],
+          timings: result.timings,
+          degraded: result.degraded,
+          tier2Stats: ZEROED,
+          error: null,
+          abandonedWorkInFlight: false,
+        }) as RunRecord,
+    );
+
+  /**
+   * THE SCORER. Per MESSAGE, not per segment -- `JudgeStats.failedClosed`
+   * counts segments and cannot answer "on what fraction of messages", which is
+   * the number the bake-off table reports.
+   */
+  /** Records as Plan 8 will hold them: written as JSONL and parsed back. */
+  const throughTheFile = (results: DetectionResult[]): RunRecord[] =>
+    toJsonl(asRecords(results))
+      .trim()
+      .split("\n")
+      .map((line) => RunRecordSchema.parse(JSON.parse(line)));
+
+  const failedClosedMessageRate = (records: readonly RunRecord[]): number => {
+    const scoreable = records.filter((r) => r.error === null);
+    const closed = scoreable.filter((r) =>
+      (r.degraded ?? []).some((d) => d.tier === 2 && d.reason === "failed-closed"),
+    );
+    return closed.length / scoreable.length;
+  };
+
+  it("reads 0.4 and 0 off two arms that are otherwise the same file", async () => {
+    const closed = await runArmOverMessages((text) => FAILED_ON.has(text));
+    const quiet = await runArmOverMessages(() => false);
+
+    // The judge really was in the loop on every message of both arms. Without
+    // this the two arms could agree because neither ever reached tier 2.
+    expect(closed.judged).toBe(MESSAGES.length);
+    expect(quiet.judged).toBe(MESSAGES.length);
+
+    // Scored off the FILE, not off the objects built above -- which is the only
+    // version of this test that can fail. zod strips what a schema does not
+    // declare, so a scorer reading `degraded` off a hand-built record reads it
+    // whether or not the schema carries it, and this whole comparison passes
+    // against the very schema the task exists to fix. MEASURED: before
+    // `degraded` was declared, scoring the objects gave 0.4 and 0 exactly as
+    // below, while the round trip below gives an empty array on both arms.
+    const failing = throughTheFile(closed.results);
+    const finding = throughTheFile(quiet.results);
+
+    // Neither arm found anything: `findings` is identical, so recall, precision
+    // and every span-derived number are identical too.
+    expect(failing.every((r) => r.findings.length === finding[0]!.findings.length)).toBe(true);
+
+    // And EVERY OTHER FIELD is identical as well. `timings` is normalised
+    // because tier2Ms is a wall clock and differs by microseconds between two
+    // runs of the same code; nothing else is touched. This is the defect
+    // restated as an assertion: strip `degraded` -- which is exactly what
+    // `runArm` used to do by projecting `findings` and `timings` alone -- and
+    // the two arms are the same file.
+    const withoutDegraded = (r: RunRecord) => {
+      const { degraded: _dropped, timings: _clock, ...rest } = r;
+      return rest;
+    };
+    expect(failing.map(withoutDegraded)).toEqual(finding.map(withoutDegraded));
+
+    // With it, they are two different results.
+    expect(failedClosedMessageRate(failing)).toBeCloseTo(0.4, 10);
+    expect(failedClosedMessageRate(finding)).toBe(0);
+  });
+
+  it("says a message blew its latency budget, which no judge counter reports", async () => {
+    // The word with no counter behind it anywhere. The orchestrator records
+    // `budget-exhausted` FROM ITS OWN TIMER, not from what the judge returned:
+    // a judge that ignores the abort signal and answers in full still ran past
+    // the budget. Both arms below run the SAME verdict through the SAME code,
+    // so a judge's counters would be identical to the field; only `degraded`
+    // separates them.
+    const tight = loadPolicyIr(
+      JSON.stringify({ ...JSON.parse(readFileSync(IR_FIXTURE, "utf8")), latencyBudgetMs: 100 }),
+    );
+    const verdict = { findings: [], scopesJudged: [] };
+    const answerAfter = (ms: number): SemanticJudge => ({
+      judge: async () => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+        return verdict;
+      },
+    });
+    const run = (judge: SemanticJudge) =>
+      detect({
+        ir: tight,
+        provider: "claude",
+        text: MESSAGES[0]!,
+        config: { tier0: true, tier1: false, tier2: true, uncertainBelow: 1 },
+        engines: { tier2: judge },
+      });
+
+    const slow = await run(answerAfter(400));
+    const fast = await run(answerAfter(0));
+
+    expect(slow.findings).toEqual(fast.findings);
+    expect(slow.degraded.filter((d) => d.reason === "budget-exhausted")).toHaveLength(1);
+    expect(fast.degraded.filter((d) => d.reason === "budget-exhausted")).toHaveLength(0);
+    // And the word survives to the FILE, which is where a scorer meets it.
+    const [written] = throughTheFile([slow]);
+    expect(written!.degraded?.map((d) => d.reason)).toContain("budget-exhausted");
+    expect(throughTheFile([fast])[0]!.degraded?.map((d) => d.reason)).not.toContain(
+      "budget-exhausted",
+    );
   });
 });
