@@ -5,6 +5,15 @@ export {
   type Interruptible,
 } from "./cancel.js";
 export {
+  WebLlmEngine,
+  buildCallParams,
+  createWebLlmEngine,
+  type CompleteOptions,
+  type CreateEngineFn,
+  type Tier2CallParams,
+  type Tier2Completion,
+} from "./engine.js";
+export {
   DEFAULT_TIER2_CONFIG,
   TIER2_MODELS,
   resolveTier2Config,
