@@ -1089,7 +1089,14 @@ Write `packages/tier2/test/helpers.ts` in this task: `predicateIr(options)` retu
 3. Call through `runWithDeadline`. On `DeadlineExpired`, count it and return what has been collected — the spec says an over-budget tier-2 run degrades to the lower tiers' findings.
 4. Parse with `parseJudgeResponse`, **passing the engine's `finish_reason` as its second argument**. Task 2 established this is not optional politeness: `finish_reason: "length"` is recorded on every truncation in the probe corpus, so threading it turns a heuristic into a fact. Without it the parser must infer truncation from the thrown `JSON.parse` message, and Task 2 measured that inference misclassifying 6 of 16 truncation boundaries. On failure, **one** repair retry appending the parse error; on a second failure, count `failedClosed` and emit nothing for that segment.
 5. For each returned finding: reject an unknown `predicateId`; resolve the quote with `resolveQuote` against the **segment** text; drop and count an unresolved one; then offset into the message by `segment.start`.
-6. Emit `entityType: shadowIdFor(predicateId)`, `tier: 2`, `source: engine.loadedModelId`, `confidence` clamped to a finite `[0,1]` — core's merge assumes finite confidence and a NaN destroys its ordering.
+6. Emit `entityType: shadowIdFor(predicateId)`, `tier: 2`, `source:` **the completion's `model` field**, `confidence` clamped to a finite `[0,1]` — core's merge assumes finite confidence and a NaN destroys its ordering.
+
+**Four things Task 5's reviews established that this task must not rediscover:**
+
+- **Do NOT use `engine.loadedModelId` for `source`.** It is `undefined` until the engine has answered at least once, and `Finding.source` is `string` (`packages/core/src/detect/types.ts:14`) — so it is a type error, and the tempting repair (`?? requestedModelId`) restores the intent-as-fact defect this project has shipped twice. `Tier2Completion.model` is typed `string`, is per-call, and is the channel Task 5 built for exactly this.
+- **Handle `finish_reason: "abort"` explicitly.** The union is `"stop" | "length" | "tool_calls" | "abort"` plus `undefined`. `parseJudgeResponse` branches on `"length"` and nothing else, so a poisoned engine's empty body is currently filed as **truncation** — which points at the wrong fix ("raise `max_tokens`") and corrupts the per-arm truncation count the bake-off depends on. An `"abort"` is a cancelled call, not a long answer.
+- **`WebLlmEngine` cannot be faked structurally.** Its `#private` fields make TypeScript type it *nominally*, so a plain object literal is not assignable and `as never` is the only escape — which is the tautology trap this plan already fell into once. Task 5 must export an interface seam (the way `cancel.ts` exports `Interruptible`) and this task must take it as a parameter.
+- **The library enforces message order.** `postInitAndCheckFields` requires system messages only at index 0 and the **last message to be `user` or `tool`**, and it indexes `messages[length - 1]` with no length check. Build the prompt accordingly or get a `MessageOrderError` — or a bare `TypeError` on an empty list.
 
 **Before you can call `shadowIdFor`, it has to move.** It currently lives in `packages/compiler/src/stages/predicates.ts`, and `packages/compiler` is **Node-only** — importing it from a browser-only package would drag Node dependencies into the page. `SHADOW_PREFIX` and `shadowIdFor` are a *contract* between the compiler that mints shadow entityTypes and the tier-2 engine that must name them, so the contract belongs in `packages/core`, which both already depend on and which is DOM- and Node-free by design.
 
@@ -1411,8 +1418,16 @@ test("loads a tier-2 model in real Chrome and reports what actually loaded", asy
   test.skip(!available, "WebGPU unavailable; tier 2 is ABSENT on this machine, not degraded");
 
   const report = await page.evaluate(() => window.__sih!.loadTier2({ modelId: "Qwen3.5-2B-q4f16_1-MLC" }));
-  // The model the engine reports, never the one requested -- the same
-  // intent-vs-fact distinction Plan 4 had to fix twice.
+  // MEASURED by Task 5's review: this assertion CANNOT pass as written.
+  // 0.2.84 exposes no accessor for the loaded model -- the only channel is
+  // ChatCompletion.model -- so `loadedModelId` is undefined until the engine
+  // has answered at least once, and `loadTier2` has not asked it anything.
+  //
+  // Do NOT repair this by seeding the field from the requested id: that is
+  // the intent-as-fact defect Plan 4 had to fix twice, and it would leave the
+  // comment above standing there green and false. Either run one throwaway
+  // completion as part of the load report and assert what the engine then
+  // reports, or record `requestedModelId` under a name that says so.
   expect(report.loadedModelId).toBe("Qwen3.5-2B-q4f16_1-MLC");
   expect(report.contextWindowSize).toBe(8192);
 });
