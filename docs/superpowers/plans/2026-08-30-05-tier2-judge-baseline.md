@@ -1441,6 +1441,101 @@ git add -A && git commit -m "feat(tier2): Approach-B baseline and the B-plus-tie
 
 ---
 
+**What Task 8 established, and six places this plan was wrong.**
+
+*Corrections:*
+
+1. **Every Step-1 snippet passes `config: {tier0: false, tier1: false, tier2: false}`, and that
+   contradicts Task 11.** Task 11 couples `tier2Stats` on the record to `config.tier2 && error
+   === null`, so a B row recorded under `tier2: false` either carries no stats at all or is
+   rejected by the schema — and the counters this whole arm exists to produce would have nowhere
+   to go. B now **requires `tier2: true`**, and the word means "a model read this message", not
+   "the compiled tier-2 judge ran": every `Finding` B emits carries `tier: 2` because
+   `Finding.tier` is `0 | 1 | 2` and a model produced it. Which arm ran is the record's arm
+   field. Both factories also refuse a config that disagrees with what they do (`tier1` at all,
+   `tier0` for the wrong factory), because the harness records the config it passed and a row
+   claiming coverage the arm never had is the records-state-intent defect in the one place
+   nothing downstream could catch it.
+
+2. **The `"emits an entityType the IR declares"` test is vacuous as written.** Its fake emits
+   `predicateId: "confidential"`, which `minimalIr()` does not declare, so B drops it, `r.findings`
+   is empty, and the `for` loop asserts nothing at all. Rewritten to assert a non-empty
+   `findings` first, with the drop-and-count path as its own test.
+
+3. **`createBaselineB({engine, policyText, budgetMs})` cannot perform the fit check the same task
+   asks it to perform.** Nothing on the `Tier2Engine` seam exposes the context window or
+   `max_tokens`, and 0.2.84 exposes no accessor for reading either off a loaded engine. The
+   signature is `{engine, config, policyText, budgetMs}` where `config` is the `Tier2Config` the
+   engine was loaded under, and the constructor refuses an engine whose `requestedModelId`
+   disagrees with `config.modelId` — the same guard `createWebLlmEngine` performs, for the same
+   reason. `entityTypeFor?` was dropped: nothing needs it.
+
+4. **`createBaselineBPlusTier0({..., ir})` takes an IR that `DetectInput` already carries.** Two
+   IRs in one call is how an arm runs tier 0 against one policy while the record names another.
+   Dropped; the caller's is the only one.
+
+5. **"the same JSON schema" for both arms is not achievable and should not be.** B names an
+   entity class, and a wire field called `predicateId` holding an entityType id is the
+   field-says-one-thing-holds-another defect one layer down. `BASELINE_B_SCHEMA` is
+   `JUDGE_SCHEMA` with exactly one property renamed — same keyword set, same
+   `additionalProperties: false`, same `[0,1]` bounds — asserted structurally in
+   `schema.test.ts`, and reaches the pinned request through a new
+   `CompleteOptions.responseSchemaJson` that replaces `response_format.schema` and nothing else.
+   `parseJudgeResponse` and `parseBaselineResponse` are two entry points onto one private core,
+   so the arms cannot get different failure *classification*.
+
+6. **The Step-1 snippets do not compile against the shipped helpers.** `fakeEngine` has `onCall`,
+   not `onPrompt`; `minimalIr` is core's test fixture and is not reachable from
+   `packages/tier2/test/helpers.js`; and `r.baselineStats` is the field Step 3 already corrects
+   to `detector.stats` without updating the snippet.
+
+*Established:*
+
+7. **The remaining asymmetry, unfixed and documented rather than hidden: B has one message's
+   worth of completion budget where the judge has one per segment.** `max_tokens` is fixed on the
+   engine, so a five-segment message gives the compiled arm five times B's output allowance for
+   the same input, and Plan 5 already recorded truncation as the dominant parse failure at a
+   budget larger than the pinned 512. B cannot correct it without trading one asymmetry for
+   another, so `BaselineStats.truncatedResponses` plus per-call `finishReason` and
+   `completionTokens` are what make a budget-killed arm distinguishable from an incapable one.
+   Task 12 owns the decision.
+
+8. **`finishReason: "length"` has two causes, and neither arm can separate them.** READ from the
+   shipped 0.2.84 bundle: "Stop condition 4" sets `finishReason = "length"` when
+   `filledKVCacheLength` reaches `contextWindowSize`, which is byte-for-byte the signal
+   `max_tokens` produces. Only the PREFILL side is loud (`ContextWindowSizeExceededError`, on
+   `numPromptTokens + filledKVCacheLength > contextWindowSize`). So a prompt that fits at prefill
+   and exhausts the window mid-answer is indistinguishable from a verbose model — which is why
+   B's fit check reserves `config.maxTokens` up front, and why `truncatedResponses` must not be
+   read as "raise max_tokens" alone. `judge.ts`'s counter doc said `max_tokens` and has been
+   corrected.
+
+9. **Two functions moved onto core's package index**, because `detect` is no longer the only
+   orchestrator. `resolveFindings(ir, provider, text, raw)` is the extracted tail of `detect` —
+   normalize, cluster, merge, cluster-strictest action — and `detect` now calls it, so there is
+   one implementation rather than one per arm; a bespoke union in B would have made the
+   head-to-head measure action resolution. `remainingBudgetMs` is exported for the same reason:
+   B must arm the spec-5.3 message budget itself, and a second copy would drift on the `> 0`
+   boundary and the `MAX_TIMER_DELAY_MS` clamp.
+
+10. **Mutation testing found one defect the whole suite could not see, and it is the exact
+    failure this task exists to prevent.** With `WebLlmEngine.complete` dropping
+    `opts.responseSchemaJson`, all 251 tests stayed green — every Approach-B test drives a FAKE
+    engine that never reaches `buildCallParams`. In real Chrome that arm would be
+    grammar-constrained to `predicateId` while its prompt asked for `entityType`, so every B
+    response would fail the schema and B would fail closed on every message. Fixed by an
+    `engine.test.ts` test that drives a real `WebLlmEngine` through the `createEngine` seam and
+    reads the request off the wire. A second survivor is documented rather than fixed: replacing
+    `severity: entity.severity` in B's `collect` with a literal leaves the suite green, because
+    `resolveFindings` re-derives severity afterwards — the assignment is belt and braces and no
+    test can distinguish it, and the test that claimed to pin it now says so.
+
+11. **The standing brief's baseline test counts are stale.** Before this task: core 341 (not
+    308), tier2 193 (not 190), compiler 133, tier1 218, eval 42 — 927 vitest, not 891 — plus 54
+    Playwright.
+
+---
+
 ### Task 9: Measure the segment-size distribution — BEFORE the bake-off
 
 **Files:**
