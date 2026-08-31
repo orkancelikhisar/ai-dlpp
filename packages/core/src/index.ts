@@ -2,6 +2,10 @@ export const CORE_VERSION = "0.0.1";
 
 export type * from "./policy/types.js";
 export { PolicyIrSchema } from "./policy/schema.js";
+// The naming contract between the compiler that mints a shadow entityType per
+// semantic predicate and the browser-side tier-2 judge that must name one. Here
+// and not in `@sih/compiler` because that package is Node-only; see the module.
+export { SHADOW_PREFIX, shadowIdFor } from "./policy/predicates.js";
 export { loadPolicyIr, PolicyLoadError, PolicyVersionError, SUPPORTED_IR_VERSION } from "./policy/load.js";
 export { resolveAction } from "./policy/resolve.js";
 export { segmentText, type Segment, type SegmentKind } from "./segment/segment.js";

@@ -1,3 +1,4 @@
+import { shadowIdFor } from "@sih/core";
 import type { Action, EntityType, Severity } from "@sih/core";
 
 /**
@@ -36,17 +37,16 @@ import type { Action, EntityType, Severity } from "@sih/core";
  */
 
 /**
- * Namespace for minted ids. A prefix rather than a suffix so a shadow is
- * recognizable at a glance in a redaction marker and in the IR, and `:` because
- * the extraction prompt constrains authored ids to lowercase kebab-case — an
- * authored id cannot contain a colon, so the two spaces cannot overlap even
- * before the explicit collision check below.
+ * Re-exported, not defined here. The naming contract now lives in
+ * `@sih/core` (`src/policy/predicates.ts`) because the OTHER end of it is the
+ * tier-2 judge, which runs in a browser page and cannot import this Node-only
+ * package to reach two string operations. The re-export keeps every existing
+ * `from "./predicates.js"` importer in this package working, and there is still
+ * exactly one definition — two copies of the prefix would be free to drift, and
+ * the failure when they did would be `normalizeFindings` throwing on every
+ * tier-2 finding.
  */
-export const SHADOW_PREFIX = "pred:";
-
-export function shadowIdFor(predicateId: string): string {
-  return `${SHADOW_PREFIX}${predicateId}`;
-}
+export { SHADOW_PREFIX, shadowIdFor } from "@sih/core";
 
 /** A predicate as the extract stage produces it; `sourceQuote` is not read here. */
 export interface PredicateInput {

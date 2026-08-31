@@ -22,6 +22,11 @@ export {
   type WebLlmEngine,
 } from "./engine.js";
 export {
+  WebLlmJudge,
+  type JudgeStats,
+  type WebLlmJudgeOptions,
+} from "./judge.js";
+export {
   DEFAULT_TIER2_CONFIG,
   TIER2_MODELS,
   resolveTier2Config,

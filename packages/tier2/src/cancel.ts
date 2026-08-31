@@ -121,8 +121,13 @@ const inFlight = new WeakMap<Interruptible, Promise<void>>();
  * The largest delay `setTimeout` stores without overflowing its 32-bit field.
  * Anything above it, and several values below it, are silently REINTERPRETED
  * rather than rejected -- see `runWithDeadline`.
+ *
+ * Exported from this MODULE, and deliberately not from the package index, so
+ * `judge.ts` can refuse a bad budget at CONSTRUCTION rather than many segments
+ * later on its first engine call. A second copy of the literal there would be
+ * free to drift from the bound actually enforced below.
  */
-const MAX_BUDGET_MS = 2_147_483_647;
+export const MAX_BUDGET_MS = 2_147_483_647;
 
 /**
  * Run one engine call under a deadline, interrupting AND DRAINING on expiry.
