@@ -129,6 +129,16 @@ function rec(overrides: Partial<RunRecord> = {}): RunRecord {
     backend: "webgpu",
     provider: "claude",
     config: { tier0: false, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW },
+    // Required exactly when `config.tier2` is set, and the values are what a
+    // page loaded with no overrides reports back: `DEFAULT_TIER2_CONFIG` plus
+    // the page's default per-call budget.
+    tier2Config: {
+      modelId: MODEL,
+      contextWindowSize: 8192,
+      temperature: 0,
+      maxTokens: 512,
+      callBudgetMs: 60_000,
+    },
     text: "hello world",
     findings: [],
     gold: [],
@@ -160,8 +170,25 @@ const call = (over: Partial<Call> = {}): Call => ({
 
 const SEGMENTS = segmentSizeDistribution(ITEMS, { hasPredicates: true });
 
+/**
+ * The three settings no record carries, as `runBakeoff` would pass them for a
+ * run of the shipped corpus against `semantic-ir.json`.
+ */
+const RUN_CONTEXT = {
+  corpus: CORPUS,
+  itemTimeoutMs: 250_000,
+  latencyBudgetMs: SEMANTIC_IR.latencyBudgetMs,
+} as const;
+
 function report(records: readonly RunRecord[], family: ArmFamily = "compiled") {
-  return gateReport({ arm: "tier2-" + MODEL, family, modelId: MODEL, records, segments: SEGMENTS });
+  return gateReport({
+    arm: "tier2-" + MODEL,
+    family,
+    modelId: MODEL,
+    records,
+    segments: SEGMENTS,
+    ...RUN_CONTEXT,
+  });
 }
 
 const outcome = (r: ReturnType<typeof report>, gate: string) => {
@@ -355,7 +382,9 @@ describe("the p95 time-to-first-token gate", () => {
   });
 
   it("reports the prompt size the TTFT was measured at, over the same calls", () => {
-    // `maxP95TtftMs: 1500` was derived at a WHOLE PROMPT of ~1.2 kB, so a TTFT
+    // `maxP95TtftMs: 1500` was derived at a WHOLE PROMPT of ~1.1 kB -- 1,031
+    // characters at this corpus's median segment, 1,122 at its largest, measured
+    // through the real `buildMessages` with the IR this driver must run -- so a TTFT
     // taken against a materially bigger prompt is not measuring this gate. The
     // driver cannot enforce that -- it does not hold the prompt -- but it must
     // put the size beside the number so an arm is not killed on a measurement
@@ -366,7 +395,7 @@ describe("the p95 time-to-first-token gate", () => {
     // over a different set of calls could not be checked against it.
     expect(outcome(r, "p95-ttft").sample).toBe(2);
     // And the segment sizes the arm actually ran over, which ARE in characters
-    // and so are directly comparable to the ~1.2 kB the threshold was derived at.
+    // and so are directly comparable to the ~1.1 kB the threshold was derived at.
     expect(r.segmentChars).toEqual(SEGMENTS.chars);
   });
 
@@ -464,10 +493,60 @@ describe("the semantic gates", () => {
     expect(outcome(bad, "resolvable-rate").verdict).toBe("fail");
   });
 
+  it("counts a dropped duplicate as a quote that RESOLVED, in both halves", () => {
+    // READ from `WebLlmJudge.#collect`: `resolveQuote` runs BEFORE the
+    // duplicate check, so an unresolved quote is dropped first and a duplicate
+    // is by definition a quote the ladder DID place. Leaving duplicates out
+    // omitted them from the numerator and the denominator at once, which is how
+    // an arm whose ladder works was reported as one whose quotes do not resolve.
+    //
+    // The fixture is the shape Plan 5 says to expect on this hardware: a model
+    // that finds one thing and restates it. 8 quotes resolved (1 first
+    // occurrence + 7 restatements) out of 10 given to the ladder is 0.8, and
+    // the OLD arithmetic reported "1 of 3 ... 0.333" and killed the arm.
+    const r = report([judged([call()], { rung1: 1, duplicatesDropped: 7, unresolvedQuotes: 2 })]);
+    expect(outcome(r, "resolvable-rate").sample).toBe(10);
+    expect(outcome(r, "resolvable-rate").observed).toBeCloseTo(0.8, 10);
+    expect(outcome(r, "resolvable-rate").verdict).toBe("pass");
+    // And the detail says where the 8 came from, so a reader can check it
+    // against `ladder` without re-deriving the rule.
+    expect(outcome(r, "resolvable-rate").detail).toContain("8 of 10 quote(s) resolved");
+    expect(outcome(r, "resolvable-rate").detail).toContain("duplicate");
+    // The gate can still fail, and on the thing it is named for: quotes the
+    // ladder refused. Same 8 resolutions, more refusals.
+    const unresolvable = report([judged([call()], { rung1: 1, duplicatesDropped: 7, unresolvedQuotes: 6 })]);
+    expect(outcome(unresolvable, "resolvable-rate").observed).toBeCloseTo(8 / 14, 10);
+    expect(outcome(unresolvable, "resolvable-rate").verdict).toBe("fail");
+  });
+
   it("scores duplicates against every finding that resolved to a span", () => {
     const r = report([judged([call()], { rung1: 4, rung2: 0, duplicatesDropped: 6 })]);
     expect(outcome(r, "duplicate-rate").observed).toBeCloseTo(0.6, 10);
-    expect(outcome(r, "duplicate-rate").verdict).toBe("fail");
+    // 0.6 PASSES, and that is the correction: the ceiling was 0.5, which is
+    // under the 0.667 Plan 5 measured for the arm it recommends as primary.
+    expect(outcome(r, "duplicate-rate").verdict).toBe("pass");
+  });
+
+  it("does not kill the restatement behaviour Plan 5 told the bake-off to expect", () => {
+    // Plan 5's measurement of the recommended primary arm, verbatim:
+    // Qwen3.5-2B "found only the AWS key, three times over" -- one distinct
+    // span and two restatements, a rate of 0.667 -- with the instruction
+    // "expect duplicates, expect misses, and do not tune the corpus to hide
+    // either". A ceiling that kills that kills the primary arm for the
+    // behaviour the plan predicted, which the 0.5 ceiling did.
+    const primary = report([judged([call()], { rung1: 1, duplicatesDropped: 2 })]);
+    expect(outcome(primary, "duplicate-rate").observed).toBeCloseTo(2 / 3, 10);
+    expect(outcome(primary, "duplicate-rate").verdict).toBe("pass");
+    expect(primary.killed).toBe(false);
+
+    // ... and it still kills the pathology it is for: Plan 5 measured
+    // Phi-4-mini looping `"quote": "Halcyon"` about nineteen times until the
+    // token budget ran out mid-string. One distinct span and eighteen
+    // restatements is 0.947, an answer that is nothing but one thing said again.
+    const looping = report([judged([call()], { rung1: 1, duplicatesDropped: 18 })]);
+    expect(outcome(looping, "duplicate-rate").observed).toBeCloseTo(18 / 19, 10);
+    expect(outcome(looping, "duplicate-rate").verdict).toBe("fail");
+    expect(looping.killed).toBe(true);
   });
 
   it("is not measured on an arm that emitted no finding at all", () => {
@@ -492,6 +571,56 @@ describe("the engine-poisoning assertion", () => {
     ]);
     expect(outcome(r, "non-empty-after-stop").verdict).toBe("fail");
     expect(r.killed).toBe(true);
+  });
+
+  it("flags a poisoned call on EITHER term, not only on both at once", () => {
+    // The gate is `finishReason === "abort" || completionTokens === 0`, and the
+    // only fixture that used to reach it set BOTH -- so dropping either half
+    // left the whole suite green. The review that found this measured both:
+    // removing the token term survived 133 tests, and so did removing the abort
+    // term.
+    //
+    // The zero-token half is the one that matters most, and it is not
+    // hypothetical: this repository's own reproduction of a real interrupted
+    // call (`packages/tier2/test/judge.test.ts`, "passes a poisoned usage
+    // number through") has `completion_tokens` 0 with the fake's DEFAULT finish
+    // reason -- i.e. not "abort". A gate simplified to the abort half alone
+    // would report that engine as `non-empty-after-stop: pass`.
+    const stop = judged([], { deadlineExpiries: 1, segmentsSkipped: 1 });
+
+    const abortOnly = report([
+      judged([call()]),
+      stop,
+      // "abort" with real tokens behind it: the engine says an interrupt cut
+      // the answer off, which is the event, whatever the token count says.
+      judged([call({ finishReason: "abort", completionTokens: 7 })], { abortedResponses: 1 }),
+    ]);
+    expect(outcome(abortOnly, "non-empty-after-stop").verdict).toBe("fail");
+    expect(outcome(abortOnly, "non-empty-after-stop").detail).toContain('finishReason "abort"');
+
+    const emptyOnly = report([
+      judged([call()]),
+      stop,
+      // An empty body under an ordinary finish reason -- the shape judge.test.ts
+      // reproduces. The judge reads an empty body as "no findings".
+      judged([call({ finishReason: "stop", completionTokens: 0 })], { failedClosed: 1 }),
+    ]);
+    expect(outcome(emptyOnly, "non-empty-after-stop").verdict).toBe("fail");
+    expect(outcome(emptyOnly, "non-empty-after-stop").detail).toContain("0 completion token(s)");
+  });
+
+  it("does not flag a call the engine reported no usage for", () => {
+    // The control that keeps the token term from being "anything but a
+    // positive number": `completionTokens` undefined means the engine reported
+    // no `usage` at all, which is a different fact from an empty body and not
+    // evidence of a latched engine. Without this, `!call.completionTokens`
+    // would pass every test above.
+    const r = report([
+      judged([call()]),
+      judged([], { deadlineExpiries: 1, segmentsSkipped: 1 }),
+      judged([call({ finishReason: "stop", completionTokens: undefined })], { rung1: 1 }),
+    ]);
+    expect(outcome(r, "non-empty-after-stop").verdict).toBe("pass");
   });
 
   it("passes when the call after the stop answered normally", () => {
@@ -575,6 +704,59 @@ describe("what a gate report says about the run itself", () => {
     expect(r.itemsAbandonedWorkInFlight).toBe(1);
   });
 
+  it("states the settings the numbers were produced under", () => {
+    // WHY. Neither output file used to record its own configuration: this
+    // report had no runId, no IR, no corpus and no budgets, and a record
+    // carried `config.t2Model` and nothing else about tier 2. Two runs at
+    // different context windows or per-call budgets were byte-identical in
+    // every field a scorer can group by, and the gates file could not be joined
+    // to the IR it ran against at all. Plan 5's own fallback for a model that
+    // cannot take 8,192 -- "run that arm at 4,096 and report the asymmetry" --
+    // was unexpressible in the output.
+    const r = report([rec(), rec({ itemId: "item-2" })]);
+    expect(r.run).toEqual({
+      runId: "bake",
+      // The basename, not the path: the path is machine-specific and is not
+      // evidence about the run.
+      corpus: "smoke.jsonl",
+      irHash: "a".repeat(64),
+      policyHash: "test-hash",
+      recordSchemaVersion: RECORD_SCHEMA_VERSION,
+      itemTimeoutMs: 250_000,
+      latencyBudgetMs: SEMANTIC_IR.latencyBudgetMs,
+      uncertainBelow: UNCERTAIN_BELOW,
+      tier2Config: {
+        modelId: MODEL,
+        contextWindowSize: 8192,
+        temperature: 0,
+        maxTokens: 512,
+        callBudgetMs: 60_000,
+      },
+    });
+    // And it comes off the ROWS rather than off anything the caller asserted:
+    // an arm run at the smaller window says so here, which is what makes a
+    // deliberately asymmetric run distinguishable from a symmetric one.
+    const narrow = report([
+      rec({ tier2Config: { modelId: MODEL, contextWindowSize: 4096, temperature: 0, maxTokens: 512, callBudgetMs: 30_000 } }),
+    ]);
+    expect(narrow.run.tier2Config?.contextWindowSize).toBe(4096);
+    expect(narrow.run.tier2Config?.callBudgetMs).toBe(30_000);
+  });
+
+  it("refuses records that disagree about the settings they ran under", () => {
+    // The same refusal the foreign-arm check makes, applied to the
+    // configuration: a gates row summarising rows written under two windows, or
+    // two IRs, or two run ids, would be a confident number describing neither
+    // -- and every field of it would look well-formed.
+    const wrongWindow = rec({
+      itemId: "item-2",
+      tier2Config: { modelId: MODEL, contextWindowSize: 4096, temperature: 0, maxTokens: 512, callBudgetMs: 60_000 },
+    });
+    expect(() => report([rec(), wrongWindow])).toThrow(/tier2Config/);
+    expect(() => report([rec(), rec({ itemId: "item-2", irHash: "b".repeat(64) })])).toThrow(/irHash/);
+    expect(() => report([rec(), rec({ itemId: "item-2", runId: "other" })])).toThrow(/runId/);
+  });
+
   it("refuses records that disagree about which arm they belong to", () => {
     // A report summing two arms' rows would be a confident number describing no
     // run at all, and nothing downstream could see it.
@@ -585,6 +767,7 @@ describe("what a gate report says about the run itself", () => {
         modelId: MODEL,
         records: [rec(), rec({ arm: "someone-else" })],
         segments: SEGMENTS,
+        ...RUN_CONTEXT,
       }),
     ).toThrow(/someone-else/);
   });
@@ -785,11 +968,53 @@ describe("numbers that reach a setTimeout", () => {
     expect(() => itemDeadlineBound({ ...base, callBudgetMs: "60000" as unknown as number })).toThrow(/callBudgetMs/);
   });
 
+  it("refuses a zero budget, which is a deadline that fires immediately", () => {
+    // The spelling the check used to ACCEPT, and the comment above it already
+    // named: `>= 0` let `callBudgetMs: 0` and `latencyBudgetMs: 0` through
+    // planning, and a 0 budget was then refused only by `WebLlmJudge`'s
+    // constructor INSIDE THE BROWSER -- i.e. after the model load that
+    // `planBakeoff` exists to happen before. `cancel.ts` refuses both with
+    // `x > 0 && x <= MAX_BUDGET_MS`, and this now matches it.
+    const base = { latencyBudgetMs: 5_000, callBudgetMs: 60_000, maxCallsPerItem: 4, lowerTierAllowanceMs: 0 };
+    expect(() => itemDeadlineBound({ ...base, latencyBudgetMs: 0 })).toThrow(/latencyBudgetMs/);
+    expect(() => itemDeadlineBound({ ...base, callBudgetMs: 0 })).toThrow(/callBudgetMs/);
+    // The allowance is the one number that MAY be 0, and the asymmetry is
+    // deliberate: it is a caller saying "give the deterministic tiers no
+    // headroom", not a timer set to fire at once. The `base` above already
+    // exercises that, so this is only making it explicit.
+    expect(itemDeadlineBound({ ...base, lowerTierAllowanceMs: 0 }).boundMs).toBe(5_020);
+  });
+
+  it("refuses a budget above what setTimeout can hold", () => {
+    // MEASURED on Node v26.0.0: `setTimeout(fn, 6_000_002_040)` prints
+    // "TimeoutOverflowWarning: ... Timeout duration was set to 1" and fired
+    // after 5 ms. The old check accepted these -- `Number.isFinite(3e9)` is
+    // true -- so a `lowerTierAllowanceMs` or an `ir.latencyBudgetMs` above
+    // 2^31-1 (core's schema is `z.number().int().positive()` with no upper
+    // bound) derived a ceiling `run.ts` fires in ~1 ms on every item, turning
+    // the whole arm into errored rows and stamping every later row
+    // `abandonedWorkInFlight`.
+    const base = { latencyBudgetMs: 5_000, callBudgetMs: 60_000, maxCallsPerItem: 4, lowerTierAllowanceMs: 0 };
+    const over = 2_147_483_648;
+    expect(() => itemDeadlineBound({ ...base, latencyBudgetMs: over })).toThrow(/latencyBudgetMs/);
+    expect(() => itemDeadlineBound({ ...base, callBudgetMs: over })).toThrow(/callBudgetMs/);
+    expect(() => itemDeadlineBound({ ...base, lowerTierAllowanceMs: over })).toThrow(/lowerTierAllowanceMs/);
+    // Exactly on the bound is accepted, so the refusal is a ceiling and not an
+    // off-by-one that also rejects the largest legal value.
+    expect(() => itemDeadlineBound({ ...base, lowerTierAllowanceMs: 2_147_483_647 })).not.toThrow();
+  });
+
   it("refuses a ceiling that is not a duration at all", () => {
     const bound = itemDeadlineBound({ latencyBudgetMs: 5_000, callBudgetMs: 1_000, maxCallsPerItem: 2, lowerTierAllowanceMs: 0 });
     expect(() => planBakeoff({ options: options({ itemTimeoutMs: Infinity }), ir: SEMANTIC_IR, items: ITEMS })).toThrow(
       /itemTimeoutMs/,
     );
+    // And a ceiling `setTimeout` cannot hold, for the reason above: this number
+    // reaches a real timer in `run.ts`, so one over 2^31-1 fires in ~1 ms
+    // rather than never -- which errors every item instead of catching a wedge.
+    expect(() =>
+      planBakeoff({ options: options({ itemTimeoutMs: 2_147_483_648 }), ir: SEMANTIC_IR, items: ITEMS }),
+    ).toThrow(/itemTimeoutMs/);
     expect(bound.boundMs).toBeGreaterThan(0);
   });
 });

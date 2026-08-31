@@ -22,11 +22,18 @@ import {
   WebLlmJudge,
   createWebLlmEngine,
   resolveTier2Config,
-  type JudgeCallRecord,
   type JudgeStats,
   type Tier2Config,
   type WebLlmEngine,
 } from "@sih/tier2";
+// Both extracted from this file so they can be exercised under vitest: this
+// module is a Vite entry point, so anything declared inside it is reachable
+// only through the browser suite -- and that suite cannot separate a delta from
+// a total (one detect per page) nor an adapter below web-llm's floor from one
+// above it (one machine). Each module's docblock carries the mutation that
+// proved it.
+import { judgeDelta, type Tier2DetectStats } from "./judge-delta.js";
+import { meetsWebLlmAdapterFloor } from "./webgpu-floor.js";
 // Copied from packages/core/test/fixtures/minimal-ir.ts and owned by this app:
 // core's test fixture is a TypeScript module, and importing it would both make
 // a test-only artifact a runtime dependency of the harness and bypass the thing
@@ -45,12 +52,16 @@ import minimalIrJson from "../../fixtures/minimal-ir.json?raw";
 // declares three, in a fixed order, so the stride is exercised in Chrome.
 import multiclassIrJson from "../../fixtures/multiclass-ir.json?raw";
 // The THIRD fixture, and the only one tier 2 can do anything with. Both of the
-// others declare `semanticPredicates: []`, and `WebLlmJudge.judge` returns
-// `{findings: [], scopesJudged: []}` on such an IR BEFORE it touches the engine
-// -- so a tier-2 spec run against them measures a function that returns in
-// microseconds, sets `timings.tier2Ms`, and never loads a prompt. This one
-// declares one predicate and the shadow entityType the compiler would mint for
-// it, which is what makes an engine call happen at all.
+// others declare `semanticPredicates: []`, and on the config every tier-2 spec
+// runs (`{tier0: false, tier1: false, tier2: true}`) that is enough to keep the
+// judge out of the run entirely: `selectSegments` keeps a segment only when
+// something below marked it uncertain or the IR HAS predicates, and with the
+// lower tiers off neither holds -- so escalation selects nothing, the
+// orchestrator never calls `judge()`, and `timings.tier2Ms` is never set.
+// (VERIFIED against escalate.ts and orchestrator.ts, whose own test pins
+// `tier2Ms` undefined on that path.) This file declares one predicate and the
+// shadow entityType the compiler would mint for it, which is what makes an
+// engine call happen at all.
 //
 // `latencyBudgetMs` is 120,000 here against 5,000 in the other two, and that is
 // a deliberate difference rather than a copy that drifted. The orchestrator
@@ -243,11 +254,9 @@ export interface Tier2LoadReport {
   readonly storageQuotaBytes: number;
 }
 
-/** What one `detect` call cost tier 2, as deltas over the judge's running counters. */
-export interface Tier2DetectStats extends Omit<JudgeStats, "calls"> {
-  /** The call rows THIS detect appended, not the judge's whole history. */
-  readonly calls: readonly JudgeCallRecord[];
-}
+// Declared in `judge-delta.ts` beside the function that builds one, and
+// re-exported here because this file is the page's public shape.
+export type { Tier2DetectStats };
 
 export interface Tier2Status {
   readonly load: Tier2LoadReport;
@@ -256,10 +265,18 @@ export interface Tier2Status {
   /**
    * The most recent `detect` that ran tier 2, as deltas. `undefined` until one
    * has. Same job as `Tier1Status.lastDetect`: findings alone cannot separate
-   * "the model ran and found nothing" from "the model never ran", and for tier
-   * 2 neither can a timing -- `WebLlmJudge.judge` returns before it touches the
-   * engine when the IR declares no `semanticPredicates`, which takes
-   * microseconds and still sets `timings.tier2Ms`.
+   * "the model ran and found nothing" from "the model never ran".
+   *
+   * A timing narrows that but does not settle it, and the difference is why
+   * this field exists. `orchestrator.ts` sets `timings.tier2Ms` only on the
+   * branch that CALLS the judge, so an absent one does say the judge never ran
+   * -- but a present one says the JUDGE ran, not that the ENGINE was asked
+   * anything. Two live paths set it without a model call: an IR declaring no
+   * `semanticPredicates` whose segments escalation still selected (a lower
+   * tier left one uncertain), where `WebLlmJudge.judge` returns an empty
+   * verdict before touching the engine; and a first call the caller had
+   * already aborted, which the judge counts and files without a call row.
+   * `calls` is what separates those from a model that answered.
    */
   readonly lastDetect: Tier2DetectStats | undefined;
 }
@@ -954,53 +971,30 @@ async function loadTier1(options: Tier1LoadOptions): Promise<Tier1LoadReport> {
 const DEFAULT_TIER2_CALL_BUDGET_MS = 60_000;
 
 /**
- * The adapter limits web-llm refuses to start below.
- *
- * READ HERE from the installed 0.2.84 bundle's `detectGPUDevice`, which is the
- * only place that decides: the first two are demanded outright with NO fallback
- * (the source itself notes the WebGPU default for the buffer COUNT is 8, i.e.
- * the library asks for more than the spec guarantees), while `maxBufferSize`
- * and `maxStorageBufferBindingSize` are each requested at 1<<30, fall back once
- * to the values below, and are refused under those.
- *
- * MEASURED on this machine through the same Chrome-for-Testing build the specs
- * use: maxComputeWorkgroupStorageSize 32768 and maxStorageBuffersPerShaderStage
- * 10 -- EXACTLY the minimums, with no headroom -- against maxBufferSize and
- * maxStorageBufferBindingSize of 4,294,967,292 each. So on this machine the two
- * that can fail are the two with no fallback.
- */
-const WEBLLM_ADAPTER_FLOOR: Readonly<Record<string, number>> = Object.freeze({
-  maxComputeWorkgroupStorageSize: 32 << 10,
-  maxStorageBuffersPerShaderStage: 10,
-  maxBufferSize: 1 << 28,
-  maxStorageBufferBindingSize: 1 << 27,
-});
-
-/**
  * Whether a tier-2 engine can start here, asked of the adapter's LIMITS.
  *
- * Not the same question as `backendAvailable("webgpu")`, and the difference is
- * why this is a second function rather than a call to that one. Both libraries
- * are handed the same adapter and treat a weak one oppositely: onnxruntime-web
- * falls back to wasm SILENTLY (Task 1 measured that), while web-llm THROWS at
- * init -- so where tier 1 degrades, tier 2 is ABSENT, which is the
- * orchestrator's own word for a tier that did not run.
+ * The limits half lives in `webgpu-floor.ts`, where both directions of the
+ * comparison can be driven from synthetic limit objects; this function is the
+ * browser half that has to exist here -- getting an adapter, and treating a
+ * null one as absent. `test/tier2.spec.ts` asserts the two agree on the real
+ * adapter, which is the wiring a Node test cannot reach.
  *
  * The consequence for a spec is the whole point: `test.skip(!webgpuAvailable())`
- * must skip on exactly the machines where a load would throw. Using the tier-1
- * check instead would let a machine that clears `requestAdapter()` but sits
- * below web-llm's floor RUN the tier-2 specs, which would then fail on a load
- * throw -- reporting a missing GPU capability as a broken harness.
+ * must skip on exactly the machines where a load would throw. Using
+ * `backendAvailable("webgpu")` instead would let a machine that clears
+ * `requestAdapter()` but sits below web-llm's floor RUN the tier-2 specs, which
+ * would then fail on a load throw -- reporting a missing GPU capability as a
+ * broken harness.
  */
 async function webgpuAvailable(): Promise<boolean> {
   const { gpu } = navigator as Navigator & MaybeWebGpu;
   if (gpu === undefined) return false;
   const adapter = await gpu.requestAdapter();
   if (adapter === null) return false;
-  return Object.entries(WEBLLM_ADAPTER_FLOOR).every(([limit, floor]) => {
-    const value = adapter.limits[limit];
-    return value !== undefined && value >= floor;
-  });
+  // `GPUSupportedLimits` is an interface, not an index signature, so its
+  // members are read through the same string keys the floor table is written
+  // in. The cast names that rather than widening the adapter type.
+  return meetsWebLlmAdapterFloor(adapter.limits as unknown as Record<string, number | undefined>);
 }
 
 /**
@@ -1041,36 +1035,6 @@ interface Tier2State {
 
 let tier2: Tier2State | undefined;
 let lastTier2Detect: Tier2DetectStats | undefined;
-
-/**
- * One `detect`'s worth of judge activity, as deltas.
- *
- * Every counter is listed rather than derived with a loop, for the same reason
- * `statsDelta` lists tier 1's: a counter added to `JudgeStats` upstream then
- * fails to compile here instead of silently going unreported.
- *
- * `calls` is a SUFFIX, not a difference: `WebLlmJudge` only ever appends rows,
- * so everything past the old length is this call's.
- */
-function judgeDelta(before: JudgeStats, after: JudgeStats): Tier2DetectStats {
-  return {
-    rung1: after.rung1 - before.rung1,
-    rung2: after.rung2 - before.rung2,
-    unresolvedQuotes: after.unresolvedQuotes - before.unresolvedQuotes,
-    unknownPredicates: after.unknownPredicates - before.unknownPredicates,
-    duplicatesDropped: after.duplicatesDropped - before.duplicatesDropped,
-    repairAttempts: after.repairAttempts - before.repairAttempts,
-    failedClosed: after.failedClosed - before.failedClosed,
-    truncatedResponses: after.truncatedResponses - before.truncatedResponses,
-    abortedResponses: after.abortedResponses - before.abortedResponses,
-    segmentsJudged: after.segmentsJudged - before.segmentsJudged,
-    segmentsSkipped: after.segmentsSkipped - before.segmentsSkipped,
-    deadlineExpiries: after.deadlineExpiries - before.deadlineExpiries,
-    callerAbortsMidGeneration: after.callerAbortsMidGeneration - before.callerAbortsMidGeneration,
-    callerAbortsWhileQueued: after.callerAbortsWhileQueued - before.callerAbortsWhileQueued,
-    calls: after.calls.slice(before.calls.length),
-  };
-}
 
 /**
  * Load one tier-2 model into this page and make `detect` use it.

@@ -78,22 +78,33 @@ export const GATES = {
    *
    * Task 9 measured that size over `corpora/fixtures/smoke.jsonl`, the only
    * corpus in this repository, keeping the 17 of 19 segments the escalation
-   * policy selects: p50 62 characters, max 153, and 9 words at the median. Plan
-   * 5 then reports -- ITS measurement, not one taken here, and not reproducible
-   * from this package because `buildMessages` is private to `judge.ts` -- that
-   * assembling those through the judge's prompt gives a WHOLE PROMPT of 1,105
-   * characters at the median segment and 1,196 at the largest. So a TTFT
-   * measured against a prompt materially bigger than ~1.2 kB is not measuring
-   * this gate, and an arm must not be killed on a number taken at a different
-   * prompt size.
+   * policy selects: p50 62 characters, max 153, and 9 words at the median.
    *
-   * MEASURED HERE, through `test/bakeoff.spec.ts` on Qwen3.5-2B over a two-item
-   * slice of that corpus: the engine reported 245-256 prompt TOKENS for segments
-   * of 28-48 characters. At ~4.5 characters per token that is a prompt of
-   * roughly 1.1 kB, which is consistent with Plan 5's figure -- and it shows
-   * where the size comes from: the prompt is dominated by the fixed instructions
-   * and the predicate, not by the segment, so a 48-character segment and a
-   * 153-character one differ by far less than 3x.
+   * MEASURED HERE for the whole prompt, by driving the real `WebLlmJudge` over
+   * those two segments with a capturing engine and adding up what
+   * `buildMessages` produced: against `apps/eval/fixtures/semantic-ir.json` the
+   * WHOLE PROMPT is **1,031 characters at the median segment and 1,122 at the
+   * largest**, of which 776 is the fixed system turn. So a TTFT measured
+   * against a prompt materially bigger than ~1.1 kB is not measuring this gate,
+   * and an arm must not be killed on a number taken at a different prompt size.
+   *
+   * Plan 5's figures for the same two segments are 1,105 and 1,196, and the
+   * difference is not drift: Plan 5 states them "with the one semantic
+   * predicate the repo's compiled extraction fixture carries", whose id and
+   * `nlPredicate` are 74 characters longer than `semantic-ir.json`'s. The same
+   * measurement reproduces both numbers exactly, one predicate each. This
+   * driver is hard-required to run `semantic-ir.json` -- `planBakeoff` throws on
+   * any IR with no `semanticPredicates` and its own error names that file as
+   * the only one here that has one -- so 1,105/1,196 describe work no arm of
+   * this bake-off can perform.
+   *
+   * MEASURED HERE too, through `test/bakeoff.spec.ts` on Qwen3.5-2B over a
+   * two-item slice of that corpus: the engine reported 245-256 prompt TOKENS for
+   * segments of 28-48 characters. At ~4.5 characters per token that is a prompt
+   * of roughly 1.1 kB, which agrees with the character count above -- and it
+   * shows where the size comes from: the prompt is dominated by the fixed
+   * instructions and the predicate, not by the segment, so a 48-character
+   * segment and a 153-character one differ by far less than 3x.
    *
    * This module cannot enforce that comparison and does not pretend to: the
    * prompt is assembled inside the browser and a record carries no copy of it.
@@ -101,16 +112,66 @@ export const GATES = {
    * `ArmGateReport.promptTokens` is the engine's own prompt-token count over
    * exactly the calls the p95 was taken over, and `ArmGateReport.segmentChars`
    * is the character-size distribution of the segments the arm ran, which is the
-   * unit the 1.2 kB above is quoted in. A reader who finds either one out of
+   * unit the 1.1 kB above is quoted in. A reader who finds either one out of
    * line with the derivation knows the gate was applied to different work.
    */
   maxP95TtftMs: 1500,
-  /** Sustained decode rate. Latency here is dominated by output length. */
+  /**
+   * Sustained decode rate. Latency here is dominated by output length.
+   *
+   * DERIVED from the hardware, unlike the two below: `manifest.ts` records a
+   * measured decode rate per arm on this machine, and 25 is the third of the
+   * four -- Qwen3.5-2B 40, Ministral-3-3B 30, Qwen3-4B 25 (exactly on the
+   * line), Phi-4-mini 24. So this floor is a statement about what the slowest
+   * measured arm does, and it is worth knowing that it kills Phi-4-mini on the
+   * manifest's own number before the arm runs.
+   */
   minDecodeTokPerSec: 25,
-  /** Semantic correctness: fraction of findings resolving at rung <= 2. */
+  /**
+   * Semantic correctness: fraction of the quotes a model produced that the span
+   * ladder could place, at rung 1 or rung 2.
+   *
+   * A CHOSEN floor, not a measured one, and this comment says so rather than
+   * inventing a derivation. Spec 4.2 asks for "spans resolvable at rung <= 2"
+   * and gives no number; no run in this repository has produced a distribution
+   * of resolvable rates to set one from, because the bake-off that would is the
+   * thing this file is for. 0.8 is a defensible starting point and nothing more.
+   *
+   * What to do with that: the raw counts are in `ArmGateReport.ladder`
+   * (`rung1`, `rung2`, `duplicatesDropped`, `unresolvedQuotes`), so a reader who
+   * disagrees with the number can recompute the rate. Revisit this constant
+   * against the first real four-arm run rather than treating a kill on it as
+   * settled.
+   */
   minResolvableRate: 0.8,
-  /** An arm returning only duplicates has found nothing. */
-  maxDuplicateRate: 0.5,
+  /**
+   * Ceiling on the share of resolved findings that were a restatement of a span
+   * this run had already emitted.
+   *
+   * Spec 4.2's words are "no duplicate-ONLY output", which is not a rate, and
+   * taken literally as a rate of 1.0 it is unreachable: the first occurrence of
+   * a span always counts as `rung1`/`rung2` and only later ones count as
+   * duplicates, so `duplicatesDropped` is positive only when the numerator's
+   * partner is too. A number is therefore a judgement call, and this one is
+   * bracketed by the two duplicate behaviours Plan 5 measured -- THEIR
+   * measurements, not ones taken here:
+   *
+   *   - Qwen3.5-2B, the recommended primary arm, "found only the AWS key,
+   *     three times over": 1 distinct span and 2 restatements, a rate of 0.667.
+   *     Plan 5 tells the bake-off to EXPECT that ("expect duplicates, expect
+   *     misses, and do not tune the corpus to hide either"), so a ceiling under
+   *     it kills the primary arm for the behaviour the plan predicted.
+   *   - Phi-4-mini's duplicate LOOP, `"quote": "Halcyon"` about nineteen times
+   *     until the token budget ran out mid-string: 1 distinct span and ~18
+   *     restatements, a rate of about 0.95. That is the pathology worth killing
+   *     an arm over -- it spends the whole answer saying one thing again.
+   *
+   * 0.9 sits between them. It was 0.5 before, which is under the first of those
+   * and would have killed the arm Plan 5 recommends. Two points on one message
+   * each are not a distribution, and this number should move when a real run
+   * produces one; `ArmGateReport.ladder` carries the counts either way.
+   */
+  maxDuplicateRate: 0.9,
   /** A killed arm is a result and stays in the output. */
   recordKilledArms: true,
   /**
@@ -156,6 +217,36 @@ export const INTERRUPT_DRAIN_OVERSHOOT_MS = 20;
  * free either and which the per-item deadline also bounds.
  */
 export const DEFAULT_LOWER_TIER_ALLOWANCE_MS = 1_000;
+
+/**
+ * The largest delay `setTimeout` holds without reinterpreting it.
+ *
+ * A LOCAL copy on purpose, and this is the third one in the repository rather
+ * than a shared constant, because each sits beside the timer it guards.
+ * `orchestrator.ts` has one for core's message deadline and CLAMPS to it;
+ * `cancel.ts` has one for the per-call deadline and REFUSES above it, and its
+ * own comment says it is kept off @sih/tier2's index so a consumer cannot hold
+ * the bound without holding the guard that enforces it. This one guards
+ * `run.ts`'s `withDeadline`, which is a third timer that neither clamps nor
+ * refuses.
+ *
+ * MEASURED HERE on Node v26.0.0 rather than taken from either of them:
+ * `setTimeout(fn, 6_000_002_040)` prints `TimeoutOverflowWarning: 6000002040
+ * does not fit into a 32-bit signed integer. Timeout duration was set to 1` and
+ * fired after 5 ms. So an over-large ceiling is not a long deadline, it is an
+ * immediate one -- every item errored and every later row stamped
+ * `abandonedWorkInFlight`, which is the exact failure the ceiling exists to
+ * avoid.
+ *
+ * What the summands do downstream, so the reader knows which of them this bound
+ * is really for. `ir.latencyBudgetMs` reaches core, which CLAMPS it in
+ * `remainingBudgetMs` -- so core is safe from an over-large one on its own.
+ * `callBudgetMs` reaches `runWithDeadline`, which refuses one -- but inside the
+ * browser, on the first engine call, i.e. after the model load this module
+ * exists to plan before. Neither protects the number DERIVED from them here,
+ * which is the one that reaches `run.ts`.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 // ---------------------------------------------------------------------------
 // Arm families
@@ -360,20 +451,44 @@ export interface ItemDeadlineBound {
  */
 export function itemDeadlineBound(input: ItemDeadlineInput): ItemDeadlineBound {
   const { latencyBudgetMs, callBudgetMs, maxCallsPerItem, lowerTierAllowanceMs } = input;
-  for (const [what, value] of [
-    ["latencyBudgetMs", latencyBudgetMs],
-    ["callBudgetMs", callBudgetMs],
-    ["lowerTierAllowanceMs", lowerTierAllowanceMs],
+  // Each of these is a summand of a ceiling that reaches `setTimeout` in
+  // `run.ts`, so all five dangerous spellings have to be refused: `Infinity` --
+  // the natural spelling of "no budget" -- and NaN, negative, 0 and anything
+  // above 2^31-1 each produce a ~1 ms timeout rather than no timeout. The
+  // previous check here was `Number.isFinite(value) && value >= 0`, which
+  // caught two of the five and accepted the other three while a comment above
+  // it named all five. `cancel.ts` refuses the same set with
+  // `Number.isFinite(x) && x > 0 && x <= MAX_BUDGET_MS`; see
+  // MAX_TIMER_DELAY_MS above for why that bound is restated here rather than
+  // imported, and for what each summand does downstream on its own.
+  //
+  // The DERIVED ceiling is the one that matters most, because nothing else
+  // guards it: an `ir.latencyBudgetMs` above 2^31-1 is reachable (core's schema
+  // is `z.number().int().positive()` with no upper bound) and core itself
+  // clamps it, but the item ceiling built from it here does not -- it would
+  // fire in ~1 ms on every item, turning the whole arm into errored rows and
+  // stamping every later row `abandonedWorkInFlight`, which is the exact
+  // failure this ceiling exists to avoid. `assertItemTimeoutMs` bounds the
+  // result for that reason; these three bound the inputs so the refusal names
+  // the number the caller got wrong.
+  //
+  // The two BUDGETS must be positive and the ALLOWANCE may be 0, and the split
+  // is deliberate rather than sloppy. A 0 latency or per-call budget is a
+  // deadline that fires immediately -- `callBudgetMs: 0` used to pass planning
+  // here and be refused only by `WebLlmJudge`'s constructor inside the browser,
+  // i.e. after the model load. A 0 lower-tier allowance is a caller saying
+  // "give the deterministic tiers no headroom", which is a choice and reaches
+  // no timer of its own.
+  for (const [what, value, floor] of [
+    ["latencyBudgetMs", latencyBudgetMs, 1],
+    ["callBudgetMs", callBudgetMs, 1],
+    ["lowerTierAllowanceMs", lowerTierAllowanceMs, 0],
   ] as const) {
-    // Every one of these reaches a `setTimeout` somewhere downstream, directly
-    // or as a summand of the ceiling that does. `manifest.ts` and `cancel.ts`
-    // both validate their timer numbers for the measured reason: `Infinity` --
-    // the natural spelling of "no budget" -- produces a ~1 ms timeout rather
-    // than an infinite one, and NaN, 0, negative and > 2^31 all do the same.
-    if (!(Number.isFinite(value) && value >= 0)) {
+    if (!(Number.isFinite(value) && value >= floor && value <= MAX_TIMER_DELAY_MS)) {
       throw new Error(
-        `${what} must be a finite non-negative number of milliseconds, got ${String(value)} ` +
-          `(${typeof value}); a non-finite one becomes a ~1 ms deadline rather than no deadline`,
+        `${what} must be a finite number of milliseconds in [${floor}, ${MAX_TIMER_DELAY_MS}], got ` +
+          `${String(value)} (${typeof value}); every spelling outside that range -- Infinity, ` +
+          `NaN, 0, negative, or above 2^31-1 -- becomes a ~1 ms deadline rather than no deadline`,
       );
     }
   }
@@ -408,10 +523,12 @@ export function deriveItemTimeoutMs(input: ItemDeadlineInput): number {
 
 /** Refuses a ceiling that cannot sit above the longest legitimate item. */
 export function assertItemTimeoutMs(itemTimeoutMs: number, bound: ItemDeadlineBound): void {
-  if (!(Number.isFinite(itemTimeoutMs) && itemTimeoutMs > 0)) {
+  if (!(Number.isFinite(itemTimeoutMs) && itemTimeoutMs > 0 && itemTimeoutMs <= MAX_TIMER_DELAY_MS)) {
     throw new Error(
-      `itemTimeoutMs must be a finite positive number of milliseconds, got ` +
-        `${String(itemTimeoutMs)} (${typeof itemTimeoutMs})`,
+      `itemTimeoutMs must be a finite number of milliseconds in (0, ${MAX_TIMER_DELAY_MS}], got ` +
+        `${String(itemTimeoutMs)} (${typeof itemTimeoutMs}); this number reaches setTimeout in ` +
+        `run.ts, and one above 2^31-1 fires in ~1 ms rather than never -- which errors every ` +
+        `item of the arm instead of catching a wedge`,
     );
   }
   if (itemTimeoutMs <= bound.boundMs) {
@@ -777,14 +894,76 @@ export interface GateOutcome {
   readonly detail: string;
 }
 
+/**
+ * The settings an arm's numbers were produced under, so a gates file can be
+ * joined to the run that made it.
+ *
+ * WHY THIS EXISTS. Without it neither output file records its own
+ * configuration: `ArmGateReport` had no runId, no IR, no corpus and no budgets,
+ * and `RunRecordSchema` carried `config.t2Model` and nothing else about tier 2.
+ * Two runs at different context windows or per-call budgets were byte-identical
+ * in every field a scorer can group by, the gates file could not be joined to
+ * the IR it ran against at all, and Plan 5's own fallback for a model that
+ * cannot take 8,192 -- "run that arm at 4,096 and report the asymmetry" -- was
+ * unexpressible in the output. That is the same disease `tier1Config` was added
+ * to `RunRecordSchema` to cure, one tier up.
+ *
+ * Every field here is READ BACK OFF THE RECORDS the gate was computed from,
+ * except the three that no record carries (`corpus`, `itemTimeoutMs`,
+ * `latencyBudgetMs`), which the caller supplies. That is deliberate: a report
+ * that copied the PLAN's intentions would state what the bake-off meant to run,
+ * and this file's whole subject is what it did run. `gateReport` refuses a set
+ * of records that disagree with each other on any of them.
+ */
+export interface ArmRunContext {
+  readonly runId: string;
+  /** The corpus file's basename; the path is machine-specific and not evidence. */
+  readonly corpus: string;
+  /** sha256 of the IR artifact the PAGE loaded, as every record carries it. */
+  readonly irHash: string;
+  /** The IR's own `policyHash` field: the compiler's hash of the source document. */
+  readonly policyHash: string;
+  readonly recordSchemaVersion: number;
+  /** The per-item wall-clock ceiling `runArm` was given. */
+  readonly itemTimeoutMs: number;
+  /** `ir.latencyBudgetMs`: the message deadline the orchestrator armed. */
+  readonly latencyBudgetMs: number;
+  /**
+   * Spec 4.1's escalation threshold, resolved, as every record carries it.
+   *
+   * `undefined` only on a set of records that carry none, which the schema
+   * makes impossible for a tier-2 arm -- and left undefined rather than filled
+   * with a placeholder, because `JSON.stringify` drops the key and an absent
+   * one is the honest answer where a NaN would serialise as `null` and read as
+   * a threshold of zero.
+   */
+  readonly uncertainBelow: number | undefined;
+  /** The engine settings the page reported after resolving them. */
+  readonly tier2Config: RunRecord["tier2Config"];
+}
+
 export interface ArmGateReport {
   readonly arm: string;
   readonly family: ArmFamily;
   readonly modelId: string;
+  /** What this arm ran under; see ArmRunContext for why it is on the gates file. */
+  readonly run: ArmRunContext;
   readonly items: number;
   /** Items whose detection THREW. Their counters are absent, not zero. */
   readonly itemsErrored: number;
-  /** Items measured while an earlier item's abandoned work was still running. */
+  /**
+   * Items measured while an earlier item's abandoned work was still running.
+   *
+   * COUNTED, never excluded: nothing in this function filters a record out. A
+   * nonzero here invalidates more than the arm's latencies, and `record.ts`
+   * carries the measurements -- the orchestrator arms a wall-clock deadline
+   * from `ir.latencyBudgetMs`, so contention truncates the FINDINGS too, and
+   * `tier2Stats` is a delta taken around a shared judge, so an abandoned item's
+   * calls land inside the next item's window. So `ladder`, `ttftMs`,
+   * `promptTokens` and every gate computed from them include rows whose
+   * counters may belong to two items. Treat a nonzero here as a reason to
+   * distrust the arm's tier-2 aggregates, not just its clock.
+   */
   readonly itemsAbandonedWorkInFlight: number;
   /** Engine calls that ANSWERED, across the arm. */
   readonly answeredCalls: number;
@@ -795,7 +974,7 @@ export interface ArmGateReport {
    * Prompt size over exactly the calls in the latency sample.
    *
    * The evidence for `GATES.maxP95TtftMs`'s comparability clause. The engine's
-   * own `usage.prompt_tokens`, so it is a token count and not the ~1.2 kB
+   * own `usage.prompt_tokens`, so it is a token count and not the ~1.1 kB
    * CHARACTER figure the threshold was derived at -- see `segmentChars` for a
    * number in that unit. Restricted to the latency sample deliberately: a
    * prompt column taken over a different set of calls cannot be checked against
@@ -857,6 +1036,42 @@ export interface GateReportInput {
   readonly modelId: string;
   readonly records: readonly RunRecord[];
   readonly segments: SegmentSizeDistribution;
+  /**
+   * The three settings no record carries. Everything else on `ArmRunContext` is
+   * read back off the records themselves, so these are the only numbers a
+   * caller can get wrong here -- and each of them is a number this driver
+   * chose rather than one the page reported.
+   */
+  readonly corpus: string;
+  readonly itemTimeoutMs: number;
+  readonly latencyBudgetMs: number;
+}
+
+/**
+ * One value every record in an arm must agree on, or the report describes no
+ * single run.
+ *
+ * The same refusal `gateReport` makes for a foreign `arm`, applied to the
+ * settings: a gates row summarising rows written under two different IRs, run
+ * ids or context windows would be a confident number describing neither, and
+ * every field of it would look well-formed.
+ */
+function uniform<T>(
+  records: readonly RunRecord[],
+  what: string,
+  read: (r: RunRecord) => T,
+): T {
+  const first = read(records[0]!);
+  const key = (value: T): string => JSON.stringify(value ?? null);
+  const odd = records.find((r) => key(read(r)) !== key(first));
+  if (odd !== undefined) {
+    throw new Error(
+      `gateReport was given records that disagree on ${what}: item "${records[0]!.itemId}" says ` +
+        `${key(first)} and item "${odd.itemId}" says ${key(read(odd))}; a gate computed over ` +
+        `rows from two configurations describes neither`,
+    );
+  }
+  return first;
 }
 
 const DEGRADED_REASONS: readonly DegradedReason[] = [
@@ -880,6 +1095,12 @@ const zeroReasons = (): Record<DegradedReason, number> =>
  */
 export function gateReport(input: GateReportInput): ArmGateReport {
   const { arm, family, modelId, records, segments } = input;
+  if (records.length === 0) {
+    // Not a defensive flourish: every field of `ArmRunContext` is read off the
+    // rows, so a zero-row report would have to invent them -- and `runBakeoff`
+    // already refuses an arm that measured nothing, one layer up.
+    throw new Error(`gateReport was given no records for arm "${arm}"; there is nothing to report`);
+  }
   const foreign = records.find((r) => r.arm !== arm);
   if (foreign !== undefined) {
     // A report summing two arms' rows would be a confident number describing no
@@ -889,6 +1110,20 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         `a gate computed over two arms' rows describes neither`,
     );
   }
+  // Read off the ROWS, never off the plan: the subject of this file is what the
+  // arm did, and the plan states what it meant to do. `uniform` refuses a set
+  // that disagrees rather than reporting the first row's value for all of them.
+  const run: ArmRunContext = {
+    runId: uniform(records, "runId", (r) => r.runId),
+    corpus: basename(input.corpus),
+    irHash: uniform(records, "irHash", (r) => r.irHash),
+    policyHash: uniform(records, "policyHash", (r) => r.policyHash),
+    recordSchemaVersion: uniform(records, "schemaVersion", (r) => r.schemaVersion),
+    itemTimeoutMs: input.itemTimeoutMs,
+    latencyBudgetMs: input.latencyBudgetMs,
+    uncertainBelow: uniform(records, "config.uncertainBelow", (r) => r.config.uncertainBelow),
+    tier2Config: uniform(records, "tier2Config", (r) => r.tier2Config),
+  };
 
   const ttft: number[] = [];
   const promptTokens: number[] = [];
@@ -996,8 +1231,25 @@ export function gateReport(input: GateReportInput): ArmGateReport {
   }
 
   const sustainedDecodeTokPerSec = decodeSeconds > 0 ? decodedTokens / decodeSeconds : undefined;
-  const resolvableDenominator = ladder.rung1 + ladder.rung2 + ladder.unresolvedQuotes;
-  const duplicateDenominator = ladder.rung1 + ladder.rung2 + ladder.duplicatesDropped;
+  // EVERY quote the ladder was handed, which is the population both of these
+  // rates are named over -- and `duplicatesDropped` belongs in it. READ from
+  // `WebLlmJudge.#collect`, which runs `resolveQuote` BEFORE the duplicate
+  // check: a quote that did not resolve `continue`s at the unresolved counter,
+  // a duplicate `continue`s after it, and only the survivors reach `rung1` or
+  // `rung2`. So a duplicate is a quote that DID resolve, and leaving it out of
+  // the resolvable rate omitted it from both halves.
+  //
+  // What that cost, by arithmetic on the old expression: an arm on the shape
+  // Plan 5 says to expect -- one distinct span, seven restatements of it, two
+  // quotes the ladder refused, so 8 of 10 quotes placed -- reported
+  // `(1 + 0) / (1 + 0 + 2)`, a rate of 0.333, and was killed. An arm whose span
+  // ladder works but whose model restates itself was being reported as an arm
+  // whose quotes do not resolve. Those are different diagnoses: a model that
+  // restates itself is what `duplicate-rate` is for, and a span-recovery
+  // failure is what this gate is for.
+  const quotesResolved = ladder.rung1 + ladder.rung2 + ladder.duplicatesDropped;
+  const resolvableDenominator = quotesResolved + ladder.unresolvedQuotes;
+  const duplicateDenominator = quotesResolved;
 
   const gates: GateOutcome[] = [
     numericGate({
@@ -1012,7 +1264,7 @@ export function gateReport(input: GateReportInput): ArmGateReport {
       measured: (observed) =>
         `p95 time-to-first-token over ${ttft.length} answered call(s) was ${observed.toFixed(0)}ms ` +
         `against a ${GATES.maxP95TtftMs}ms ceiling; read it beside promptTokens and segmentChars, ` +
-        `because the ceiling was derived at a ~1.2 kB prompt`,
+        `because the ceiling was derived at a ~1.1 kB prompt`,
     }),
     numericGate({
       gate: "decode-rate",
@@ -1033,15 +1285,13 @@ export function gateReport(input: GateReportInput): ArmGateReport {
       gate: "resolvable-rate",
       threshold: GATES.minResolvableRate,
       sample: resolvableDenominator,
-      observed:
-        resolvableDenominator === 0
-          ? undefined
-          : (ladder.rung1 + ladder.rung2) / resolvableDenominator,
+      observed: resolvableDenominator === 0 ? undefined : quotesResolved / resolvableDenominator,
       passes: (observed) => observed >= GATES.minResolvableRate,
       notMeasured: "this arm produced no quote for the span ladder to place, resolvable or not",
       measured: (observed) =>
-        `${ladder.rung1 + ladder.rung2} of ${resolvableDenominator} quote(s) resolved to a span ` +
-        `(rung 1: ${ladder.rung1}, rung 2: ${ladder.rung2}), a rate of ${observed.toFixed(3)} ` +
+        `${quotesResolved} of ${resolvableDenominator} quote(s) resolved to a span ` +
+        `(rung 1: ${ladder.rung1}, rung 2: ${ladder.rung2}, dropped as a duplicate of a span ` +
+        `already emitted: ${ladder.duplicatesDropped}), a rate of ${observed.toFixed(3)} ` +
         `against a floor of ${GATES.minResolvableRate}`,
     }),
     numericGate({
@@ -1063,6 +1313,7 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     arm,
     family,
     modelId,
+    run,
     items: records.length,
     itemsErrored,
     itemsAbandonedWorkInFlight: itemsAbandoned,
@@ -1374,6 +1625,19 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
       backend: "webgpu",
       provider: options.provider,
       config: arm.config,
+      // Taken from the PAGE's load report, not from `arm`, and the three checks
+      // above are what make that safe: the model id came off a real completion
+      // and the window and budget were compared with what this driver asked
+      // for. So every row states the settings the engine was actually built
+      // with rather than the settings this process intended -- which is the
+      // whole difference `Tier2RunConfigSchema` exists for.
+      tier2Config: {
+        modelId: load.config.modelId,
+        contextWindowSize: load.config.contextWindowSize,
+        temperature: load.config.temperature,
+        maxTokens: load.config.maxTokens,
+        callBudgetMs: load.callBudgetMs,
+      },
       itemTimeoutMs: plan.itemTimeoutMs,
       items,
     });
@@ -1430,6 +1694,9 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
         modelId: arm.modelId,
         records,
         segments: arm.segments,
+        corpus: options.corpus,
+        itemTimeoutMs: plan.itemTimeoutMs,
+        latencyBudgetMs: plan.ir.latencyBudgetMs,
       }),
     );
   }

@@ -1,4 +1,5 @@
 import { DEFAULT_TIER2_CONFIG } from "@sih/tier2";
+import { WEBLLM_ADAPTER_FLOOR, meetsWebLlmAdapterFloor } from "../src/page/webgpu-floor.js";
 import { BASE_URL, expect, openHarness, test, tier2ProfileDir } from "./tier2-profile.js";
 
 /**
@@ -25,6 +26,20 @@ const MODEL = DEFAULT_TIER2_CONFIG.modelId;
  */
 const MESSAGE = "Please review the Northwind Traders renewal before Friday.";
 
+/**
+ * The same subject in TWO segments, so a second `detect` on one arm's judge
+ * costs a different amount of work than the first.
+ *
+ * `segmentText` splits a kv line run from a prose line run, and escalation
+ * keeps both (neither is code), so this message selects two segments where
+ * `MESSAGE` selects one -- VERIFIED against core's own `segmentText`, which
+ * returns `[kv 0..27, prose 27..67]` for exactly this string. That asymmetry is
+ * the whole point: a projection that reported the judge's running TOTAL, or a
+ * constant, agrees with the delta on a fixture where every message costs the
+ * same.
+ */
+const TWO_SEGMENT_MESSAGE = "Account: Northwind Traders\nPlease review the renewal before Friday.";
+
 const TIER2_ONLY = { tier0: false, tier1: false, tier2: true } as const;
 
 test("the browser profile has room for the pinned arms", async ({ page }) => {
@@ -45,6 +60,53 @@ test("the browser profile has room for the pinned arms", async ({ page }) => {
   // those and the 10,737 MB an empty persistent profile reports, so neither
   // side of it is a rounding error.
   expect(estimate.quota).toBeGreaterThan(8e9);
+});
+
+test("webgpuAvailable answers this adapter's real limits, and says which one refused", async ({
+  page,
+}) => {
+  // The one tier-2 test that must NEVER skip, because it is about the check
+  // every other tier-2 test skips on. `test.skip(!webgpuAvailable())` turns any
+  // error in that check into a green run of zero tests. The review that found
+  // this measured that: raising one floor constant made all nine tier-2 tests
+  // skip at exit 0 while the suite still reported 54 Playwright tests.
+  //
+  // `webgpu-floor.test.ts` owns the comparison itself -- both directions, from
+  // synthetic limit objects, since no single machine can supply both. What is
+  // left is the WIRING, which only a browser can answer: that the page asks the
+  // real adapter, and that its answer is the one the tested function gives for
+  // those limits. The expectation is computed from the ADAPTER's own numbers,
+  // so it is not a restatement of the page's answer.
+  await openHarness(page);
+  const observed = await page.evaluate(async (floorKeys: readonly string[]) => {
+    const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<null | { limits: Record<string, number | undefined> }> } }).gpu;
+    const available = await window.__sih!.webgpuAvailable();
+    if (gpu === undefined) return { available, limits: undefined };
+    const adapter = await gpu.requestAdapter();
+    if (adapter === null) return { available, limits: undefined };
+    // Copied key by key: `GPUSupportedLimits` members are on the prototype, so
+    // structuredClone of the object itself crosses the boundary empty.
+    const limits: Record<string, number | undefined> = {};
+    for (const key of floorKeys) limits[key] = adapter.limits[key];
+    return { available, limits };
+  }, Object.keys(WEBLLM_ADAPTER_FLOOR));
+
+  console.log(`[tier2] adapter limits ${JSON.stringify(observed.limits)} -> available ${String(observed.available)}`);
+
+  if (observed.limits === undefined) {
+    // No `navigator.gpu`, or a null adapter. web-llm throws on both, so the
+    // only honest answer is false -- and a page that returned true here would
+    // send every later spec into a load that cannot start.
+    expect(observed.available).toBe(false);
+    return;
+  }
+  expect(observed.available).toBe(meetsWebLlmAdapterFloor(observed.limits));
+  // Every limit the floor names was reported by this adapter. Without this the
+  // line above is satisfied by an evaluate that returned an empty object and a
+  // page that returned false: two wrongs agreeing.
+  for (const limit of Object.keys(WEBLLM_ADAPTER_FLOOR)) {
+    expect(typeof observed.limits[limit], `adapter did not report ${limit}`).toBe("number");
+  }
 });
 
 test("loads a tier-2 model in real Chrome and reports what the engine answered", async ({
@@ -96,6 +158,8 @@ test("loads a tier-2 model in real Chrome and reports what the engine answered",
   expect(report.warmupFinishReason).toBe("stop");
   expect(report.loadMs).toBeGreaterThan(0);
   expect(report.warmupMs).toBeGreaterThan(0);
+  // The page's own default, which is what a caller naming no budget gets.
+  expect(report.callBudgetMs).toBe(60_000);
 
   const status = await page.evaluate(() => window.__sih!.tier2Status());
   expect(status?.load.servedModelId).toBe(MODEL);
@@ -105,6 +169,31 @@ test("loads a tier-2 model in real Chrome and reports what the engine answered",
   expect(status?.totals.calls).toHaveLength(0);
   expect(status?.totals.segmentsJudged).toBe(0);
   expect(status?.lastDetect).toBeUndefined();
+
+  // ... and the SECOND load, whose only job is to exercise `callBudgetMs` at a
+  // value that is not the default. `bakeoff.ts` passes one explicitly and then
+  // refuses an arm whose page reports back a different number -- but that check
+  // compares 60,000 with 60,000, because `bakeoff.ts` carries its own copy of
+  // the same default. So a `loadTier2` that dropped `options.callBudgetMs` and
+  // always used the module constant would satisfy every check in this
+  // repository, and the review that found this measured that it did: the
+  // mutation survived the whole tier-2 suite and the bake-off spec. A test that
+  // only ever exercises the default
+  // cannot tell "reads the option" from "hardcodes the default", the trap this
+  // plan has already sprung twice.
+  //
+  // What this proves and what it does not: `loadTier2` resolves the budget into
+  // ONE `const` and uses that same binding both to construct the judge and to
+  // fill this field, so a wrong number here is a wrong number in the judge --
+  // but this assertion reads the field, not the judge. `detectWithBudget` at
+  // 50 ms in the wedge test below is what shows a per-call budget being
+  // ENFORCED, on the path that takes one explicitly.
+  const rebudgeted = await page.evaluate(
+    async (modelId: string) => window.__sih!.loadTier2({ modelId, callBudgetMs: 45_000 }),
+    MODEL,
+  );
+  expect(rebudgeted.callBudgetMs).toBe(45_000);
+  expect(rebudgeted.servedModelId).toBe(MODEL);
 });
 
 test("the requested context window is the one the engine enforces", async ({ page }) => {
@@ -185,11 +274,14 @@ test("a judged message produces findings whose spans core accepts", async ({ pag
 
   const run = await page.evaluate(
     async ([modelId, text]) => {
-      // The semantic fixture, and the whole test turns on it: the other two IRs
-      // declare `semanticPredicates: []`, and `WebLlmJudge.judge` returns an
-      // empty verdict on such an IR BEFORE it touches the engine. Against them
-      // this test would pass with an empty findings array, a tier2Ms of a few
-      // microseconds, and no model call at all.
+      // The semantic fixture, and the whole test turns on it: the other two
+      // IRs declare `semanticPredicates: []`, and on this config -- tier 0 and
+      // tier 1 both off -- nothing is left uncertain either, so
+      // `selectSegments` keeps no segment, the orchestrator never calls
+      // `judge()`, and `timings.tier2Ms` is never set. Against them this test
+      // would FAIL, at the `tier2Ms` assertion below, on an undefined; the
+      // hazard is that it would fail reading like a broken harness rather than
+      // like an IR with no clause for tier 2 to judge.
       await window.__sih!.useIr("semantic");
       await window.__sih!.loadTier2({ modelId });
       const result = await window.__sih!.detect({
@@ -235,6 +327,87 @@ test("a judged message produces findings whose spans core accepts", async ({ pag
   // latched before the test started.
   expect(stats!.abortedResponses).toBe(0);
   expect(stats!.deadlineExpiries).toBe(0);
+});
+
+test("a second detect on one arm reports its own work, not the arm's running total", async ({
+  page,
+}) => {
+  test.setTimeout(LOAD_TIMEOUT_MS);
+  await openHarness(page);
+  test.skip(
+    !(await page.evaluate(() => window.__sih!.webgpuAvailable())),
+    "WebGPU unavailable; tier 2 is ABSENT on this machine, not degraded",
+  );
+
+  // The shape no other test in this file has, and the reason it is worth a
+  // second model call: every other tier-2 test loads a fresh page, loads an arm
+  // (which builds a fresh judge) and does exactly ONE `detect`. On that fixture
+  // `before` is all-zero, so a projection that returned the judge's cumulative
+  // TOTAL, or the whole call history, or a literal, is indistinguishable from
+  // the delta -- the review that found this measured all three surviving the
+  // suite as it stood.
+  //
+  // `judge-delta.test.ts` pins the arithmetic itself under vitest, where a
+  // nonzero `before` is one object literal. What is left is the WIRING, which
+  // only the browser can answer: that the page snapshots the arm's judge around
+  // each `detect` and hands `runArm` the difference. The two messages are
+  // deliberately different SIZES -- one selected segment against two -- so an
+  // arm where every message costs the same cannot hide a total behind a delta.
+  const run = await page.evaluate(
+    async ([modelId, one, two]) => {
+      await window.__sih!.useIr("semantic");
+      await window.__sih!.loadTier2({ modelId });
+      const config = { tier0: false, tier1: false, tier2: true } as const;
+      await window.__sih!.detect({ text: one, provider: "claude", config });
+      const first = window.__sih!.tier2Status()!.lastDetect;
+      await window.__sih!.detect({ text: two, provider: "claude", config });
+      const status = window.__sih!.tier2Status()!;
+      return { first, second: status.lastDetect, totals: status.totals };
+    },
+    [MODEL, MESSAGE, TWO_SEGMENT_MESSAGE] as const,
+  );
+
+  console.log(
+    `[tier2] delta1 ${JSON.stringify(run.first)}\n[tier2] delta2 ${JSON.stringify(run.second)}` +
+      `\n[tier2] totals ${JSON.stringify(run.totals)}`,
+  );
+
+  const first = run.first!;
+  const second = run.second!;
+  // The segment counts, which are properties of the MESSAGES and not of the
+  // model: the judge's own invariant is that judged + failed-closed + skipped
+  // covers every segment it was handed, and core's segmentation gives these two
+  // strings one segment and two. This is the pair a constant cannot satisfy.
+  expect(first.segmentsJudged + first.failedClosed + first.segmentsSkipped).toBe(1);
+  expect(second.segmentsJudged + second.failedClosed + second.segmentsSkipped).toBe(2);
+
+  // The SUFFIX rule, which is the half a total would break most visibly: the
+  // second message's rows are its own, so the judge's history is the two deltas
+  // end to end. Reporting the whole history as the second delta would make
+  // `bakeoff.ts` count the first message's calls again under the second item --
+  // and on a 17-item corpus that over-count is quadratic in the p95 TTFT, the
+  // decode rate and the truncation accounting, all of which read these rows.
+  expect(first.calls.length).toBeGreaterThan(0);
+  expect(second.calls.length).toBeGreaterThan(0);
+  expect(run.totals.calls).toHaveLength(first.calls.length + second.calls.length);
+  // Not merely the same count: the second delta must be the TAIL of the
+  // history, so the rows themselves have to line up.
+  expect(second.calls).toEqual(run.totals.calls.slice(first.calls.length));
+
+  // And every counter, mechanically, so a slot this fixture happens to leave at
+  // zero is still covered by the arithmetic rather than by nothing. Stated
+  // narrowly on purpose: this says the two deltas partition the totals, which a
+  // literal 0 satisfies for any counter neither message moved. The counters
+  // this fixture does move are asserted above; `judge-delta.test.ts` is where
+  // every slot is driven at a distinct nonzero value.
+  const counters = Object.keys(run.totals).filter((k) => k !== "calls") as (keyof typeof run.totals)[];
+  expect(counters).toHaveLength(14);
+  for (const counter of counters) {
+    expect(
+      (first[counter] as number) + (second[counter] as number),
+      `${counter}: the two deltas do not sum to the arm's total`,
+    ).toBe(run.totals[counter] as number);
+  }
 });
 
 test("the engine survives a deadline expiry", async ({ page }) => {

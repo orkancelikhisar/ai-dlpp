@@ -2018,3 +2018,51 @@ A local instruct LLM runs in a real browser as tier 2, judging the semantic pred
 ## Deviations log
 
 Append an entry per task: what the plan said, what you did instead, and why. Several claims in this plan are measurements from a specific machine on a specific day; if one fails to reproduce, that is a finding and it belongs here.
+
+### Tasks 10-12 review round: three of this plan's own numbers were wrong
+
+**`GATES.maxDuplicateRate` is 0.9, not the 0.5 in this plan's Task 12 snippet.**
+0.5 has no derivation anywhere -- not in the snippet, not in spec 4.2, which
+asks for "no duplicate-**only** output" and gives no number. Applied to this
+plan's own measurement of the arm it recommends as primary -- Qwen3.5-2B "found
+only the AWS key, three times over", i.e. one distinct span and two restatements
+-- the observed rate is 0.667 and a 0.5 ceiling **kills that arm**, for exactly
+the behaviour this plan tells the bake-off to expect ("expect duplicates, expect
+misses, and do not tune the corpus to hide either"). The new ceiling is
+bracketed by the two duplicate behaviours this plan measured: above 0.667, below
+the ~0.95 of Phi-4-mini's `"quote": "Halcyon"` loop. Two points on one message
+each are not a distribution and the constant says so.
+
+`minResolvableRate` stays at 0.8 and is now documented as a **chosen** floor
+rather than a derived one, because no run in this repository has produced a
+distribution of resolvable rates to derive it from. That is a gap against this
+plan's done criterion "gates derived from what the hardware actually does": two
+of the four numeric gates are derived (`minDecodeTokPerSec` from `manifest.ts`'s
+per-arm rates; `maxP95TtftMs` from the measured prompt size), and two are not.
+
+**The `resolvable-rate` gate was computed over the wrong population.** Read from
+`WebLlmJudge.#collect`: `resolveQuote` runs BEFORE the duplicate check, so a
+dropped duplicate is a quote the ladder DID place. The denominator omitted it
+from both halves, so an arm whose ladder works but whose model restates itself
+was reported as an arm whose quotes do not resolve -- a different diagnosis, and
+one `duplicate-rate` already covers.
+
+**The prompt size the p95 TTFT gate is derived at is 1,031/1,122 characters,
+not the 1,105/1,196 this plan states.** Re-measured here by driving the real
+`WebLlmJudge` over this corpus's median and largest segments with a capturing
+engine: the plan's figures are correct *under its own stated condition* ("with
+the one semantic predicate the repo's compiled extraction fixture carries"),
+whose predicate line is 74 characters longer than `semantic-ir.json`'s. The
+bake-off is hard-required to run `semantic-ir.json` -- `planBakeoff` throws on
+any IR with no `semanticPredicates` -- so 1,105/1,196 describe work no arm of
+this bake-off can perform. The same measurement reproduces both pairs exactly,
+one predicate each; the fixed system turn is 776 characters, matching the plan.
+
+**`RunRecordSchema` gained `tier2Config`,** which Task 11 did not specify. The
+record carried `config.t2Model` and nothing else about tier 2, so two arms
+differing only in context window, token ceiling, temperature or per-call budget
+emitted rows byte-identical in every field a scorer can group by -- and this
+plan's own fallback for a model that cannot take 8,192 ("run that arm at 4,096
+and report the asymmetry") was unexpressible in the output. `ArmGateReport`
+gained the matching `run` block for the same reason: the gates file could not be
+joined to the IR, the corpus or the run id it came from.

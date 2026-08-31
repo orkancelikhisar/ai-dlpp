@@ -197,10 +197,10 @@ gate on the producing path: `test/run.spec.ts` runs it over a real arm on every
 suite run, but a writer that persists records must run it too rather than assume
 it already happened. `runMatrix` does, on every record, before writing.
 
-### `config` is core's, `tier1Config` is the rung
+### `config` is core's, `tier1Config` and `tier2Config` are the rungs
 
-A record carries two configuration objects because one of them cannot hold the
-other's fields. `config` is the `TierConfig` `detect` received — three booleans,
+A record carries three configuration objects because one of them cannot hold the
+others' fields. `config` is the `TierConfig` `detect` received — three booleans,
 two model names, a backend. The tier-1 ladder has **six** dimensions (modelId,
 precision, backend, threshold, maxWidth, labelForm) and three of them appear
 nowhere in `TierConfig`, so two arms differing only in `threshold`, `maxWidth` or
@@ -214,6 +214,24 @@ enforces both directions of that, plus that `backend`, `config.backend` and
 `tier1Config.backend` are one answer and that `config.t1Model` names the same
 rung as `tier1Config.modelId`. Each of those is a way a complete, valid,
 scoreable file can describe a run that did not happen.
+
+`tier2Config` is the same idea one tier up, and it exists for the same reason:
+`TierConfig` carries `t2Model` and nothing else about tier 2, so two arms
+differing only in their **context window**, **token ceiling**, **temperature** or
+**per-call budget** were byte-identical in every field a scorer can group by —
+and Plan 5's own fallback for a model that cannot take 8,192 ("run that arm at
+4,096 and report the asymmetry") had nowhere to be recorded. It is the resolved
+config the page reports back after `loadTier2`, plus that load's `callBudgetMs`,
+and it is present **exactly when `config.tier2` is true**. `callBudgetMs` is
+there because it is the number `deadlineExpiries` on that row is counted
+*against*: a `call-budget-exhausted` notice means the call did not answer within
+that many milliseconds, and a row that does not say how many describes an expiry
+nobody can size.
+
+One thing `tier2Config` is *not*: an observation of the window in force. 0.2.84
+exposes no accessor for it, so `contextWindowSize` is what the engine was asked
+for. `probeContextWindow` in the page is the only channel that measures it, and
+`test/tier2.spec.ts` pays for that once.
 
 Carrying the message costs roughly +23% at this corpus's ~93 B mean message and
 +112% at a 500 B mean; the projected worst case for a full Plan 7/8 run
@@ -635,7 +653,12 @@ not a cleanliness test, because an `absent` entry is filed for every tier the
 **Per-call rows, not a per-message aggregate.** A message makes one engine call
 per selected segment, plus the pinned recipe's one repair retry, so
 `tier2Stats.calls` is one row per answered call in the order they were made:
-`finishReason`, `promptTokens`, `completionTokens`, `ttftMs`. A single
+`finishReason`, `promptTokens`, `completionTokens`, `ttftMs` and
+`decodeTokPerSec`. That last one is the only source for the bake-off's
+`minDecodeTokPerSec` gate — a record carries `timings.tier2Ms` for the whole
+message and no per-call elapsed time, so every rate derivable from the rest of
+the file charges the judge's prompt assembly, JSON parse and span ladder to the
+model. A single
 `finishReason` for a message would be a fact about one call presented as a fact
 about the message — one call stopping cleanly while another hits the token
 ceiling means the judgement is *partial*, which no single value can say — and the
@@ -730,9 +753,21 @@ Qwen3.5-2B and roughly 2–2.3 GB for each of the other three.
 The profile lives at `~/.cache/sih-eval/chrome-profile`
 (`SIH_EVAL_PROFILE_DIR` overrides it) — deliberately **outside the repository**,
 because a `git add -A` near a multi-gigabyte directory has burned this project
-before. Cost, measured on this machine at ~40 MB/s: cold, the four arm loads took
-2.1 s, 53.7 s, 56.7 s and 63.4 s; warm, the whole `tier2-arms.spec.ts` file runs
-in about 17–20 s and the two tier-2 spec files add roughly 45 s to a suite run.
+before.
+
+**Cost.** One run of `tier2-arms.spec.ts` recorded arm loads of 2.1 s, 53.7 s,
+56.7 s and 63.4 s, in `TIER2_MODELS` order. Only the last three of those are
+cold loads: they sit at 36–40 MB/s against the sizes above, which is the
+transfer rate this machine sees. **The 2.1 s is a warm cache read mislabelled**
+— Qwen3.5-2B is 1.08 GB, which at that rate is about 27 s, and the profile is
+persistent, so whichever arm was already in it from an earlier session reads
+back instead of downloading. Budget the first run at **roughly three minutes of
+download** for the whole slate, not the 175.9 s those four numbers add up to.
+Cold loads also vary run to run: `packages/tier2/src/manifest.ts` records
+Phi-4-mini at 73.6 s where the run above saw 63.4 s.
+
+Warm, the whole `tier2-arms.spec.ts` file runs in about 17–20 s and the two
+tier-2 spec files add roughly 45 s to a suite run.
 
 ### `launchPersistentContext` is correctness, not convenience
 

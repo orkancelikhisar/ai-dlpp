@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DegradedNotice, DegradedReason, Tier } from "@sih/core";
 import { TIER1_BACKENDS, TIER1_LABEL_FORMS } from "@sih/tier1";
-import type { JudgeCallRecord, JudgeStats } from "@sih/tier2";
+import type { JudgeCallRecord, JudgeStats, Tier2Config } from "@sih/tier2";
 import { GoldSpanSchema } from "./corpus.js";
 
 /**
@@ -41,6 +41,14 @@ import { GoldSpanSchema } from "./corpus.js";
  * failing a new reader -- and it is still not a version bump, for the same
  * reason as before and no other: no such file exists. Nothing durable has ever
  * been written by any producer here.
+ *
+ * STILL 1 after `tier2Config`, which is a fourth addition and a fifth
+ * conditional requirement, on the same reasoning and no other. It is worth
+ * naming why it was added rather than only that it was: the record carried
+ * `config.t2Model` and nothing else about tier 2, so two arms differing only in
+ * their context window or their per-call budget emitted rows byte-identical in
+ * every field a scorer can group by -- the disease `tier1Config` cured one tier
+ * down. If a run is ever kept, this constant moves before the next field does.
  */
 export const RECORD_SCHEMA_VERSION = 1;
 
@@ -207,9 +215,10 @@ const TIER2_FINISH_REASONS = Object.keys({
  * ONE ENGINE CALL, not one message.
  *
  * A message makes one call per selected segment, plus the pinned recipe's one
- * repair retry, so `finishReason`, `promptTokens`, `completionTokens` and
- * `ttftMs` are per-CALL quantities. The record carries the ROWS rather than an
- * aggregate, and the choice is deliberate on three grounds:
+ * repair retry, so all five of `finishReason`, `promptTokens`,
+ * `completionTokens`, `ttftMs` and `decodeTokPerSec` are per-CALL quantities.
+ * The record carries the ROWS rather than an aggregate, and the choice is
+ * deliberate on three grounds:
  *
  * 1. `finishReason` does not aggregate at all. A message with one call that
  *    stopped cleanly and one that hit the token ceiling produced a PARTIAL
@@ -225,18 +234,40 @@ const TIER2_FINISH_REASONS = Object.keys({
  *    sum -- is not available.
  *
  * The cost is size: `calls` is one small object per segment per message, and it
- * is bounded. Task 9's measured distribution over the only corpus in this
- * repository is pinned in test/segments.test.ts as
- * `perItem: {p50: 1, p95: 3, max: 3, min: 1}` under tier-0 priors, so with the
- * pinned recipe's one repair retry that is at most 6 rows on the worst message
- * and 1 on the median one.
+ * is bounded. Task 9 measured the segments-per-message distribution over the
+ * only corpus in this repository under TWO conditions, and the one that applies
+ * to a tier-2 bake-off here is the no-priors one, pinned in
+ * test/segments.test.ts as `perItem: {p50: 1, p95: 2, max: 2, min: 1}`. So with
+ * the pinned recipe's one repair retry that is at most 4 rows on the worst
+ * message and at most 2 on the median one.
  *
- * All four fields are OPTIONAL because `JudgeCallRecord` types all four
- * `| undefined`: `usage` is optional on a completion and `finish_reason` can be
- * null, so a row that carried a fabricated 0 would be worse than a row that
- * says nothing. `.optional()` and not `.nullable()` because JSON.stringify
- * DROPS an undefined-valued key, so an absent key is what the file actually
- * holds.
+ * The OTHER condition -- `{p50: 1, p95: 3, max: 3}` "under tier-0 priors" --
+ * is the one an earlier version of this comment quoted, and it belongs to a
+ * different policy: Task 9 measured it against `minimal-ir.json`, whose
+ * `entropy-rule` fires on this corpus's code fence at confidence 0.7 and
+ * re-admits that fence to escalation. `semantic-ir.json` -- the only IR a
+ * tier-2 arm can run here, and `planBakeoff` throws on any other -- declares
+ * `rules: []`, so tier 0 finds nothing, no segment is uncertain, and a tier-0
+ * arm's distribution is identical to a tier-2-only arm's. `bakeoff.ts` says the
+ * same thing beside `PlannedArm.segments`.
+ *
+ * All five fields are OPTIONAL because `JudgeCallRecord` types all five
+ * `| undefined`, so a row that carried a fabricated 0 would be worse than a row
+ * that says nothing. `usage` is optional on a completion, which is where four
+ * of them come from. `finishReason` needs its own reason, and it is NOT that
+ * `finish_reason` can be null: READ from the installed 0.2.84 declarations, the
+ * non-streaming `ChatCompletion.Choice.finish_reason` is required and
+ * non-nullable, and the nullable declaration is on
+ * `ChatCompletionChunk.Choice`, which the pinned recipe never requests ("No
+ * `stream`", engine.ts). The real reason is that the DECLARED type is narrower
+ * than the bundle's behaviour: `engine.ts` traced the field to
+ * `LLMChatPipeline.getFinishReason()`, declared `ChatCompletionFinishReason |
+ * undefined`, so undefined reaches a caller through a field TypeScript says is
+ * always present. (A null could not be recorded here in any case: MEASURED with
+ * zod 4.4.3, `.optional()` REJECTS null.)
+ *
+ * `.optional()` and not `.nullable()` because JSON.stringify DROPS an
+ * undefined-valued key, so an absent key is what the file actually holds.
  */
 const Tier2CallSchema = z.object({
   /** `choices[0].finish_reason` for THIS call, never the message's. */
@@ -291,6 +322,52 @@ const Tier2CallSchema = z.object({
   decodeTokPerSec: z.number().nonnegative().nullable().optional(),
 } satisfies Record<keyof JudgeCallRecord, z.ZodType>);
 
+/**
+ * The FULLY RESOLVED tier-2 settings the engine in the page was loaded with,
+ * plus the per-call budget the judge over it was constructed with. Present
+ * exactly when tier 2 ran.
+ *
+ * The tier-1 twin of this field exists because `TierConfig` has room for three
+ * of tier 1's six ladder dimensions, and "two arms differing only in
+ * `threshold`, `maxWidth` or `labelForm` used to emit records that were
+ * byte-identical in every field a scorer can group by". Tier 2 had the same
+ * disease and no field for it: `TierConfig` carries `t2Model` and nothing else,
+ * so an arm run at a 4,096-token window and one run at 8,192 -- which is
+ * exactly the fallback Plan 5 names for a model that cannot take 8,192, "run
+ * that arm at 4,096 and report the asymmetry" -- were indistinguishable in the
+ * output, and so were two arms at different per-call budgets.
+ *
+ * `callBudgetMs` is here rather than only on the load report because it is the
+ * number `deadlineExpiries` on this row is counted AGAINST: a
+ * `call-budget-exhausted` notice means the call did not answer within this
+ * many milliseconds, and a row that does not say how many describes an
+ * expiry nobody can size.
+ *
+ * What lands here is what the PAGE reported back after resolving -- the object
+ * `createWebLlmEngine` was handed, after `resolveTier2Config` filled in and
+ * validated every field -- and never the partial object an arm asked for. Same
+ * distinction `backend` is a warning about: intent is not evidence of what ran.
+ * It is still a REQUEST in one respect the record cannot fix, and the load
+ * report says so: 0.2.84 exposes no accessor for the window an engine is
+ * enforcing, so `contextWindowSize` is what the engine was asked for.
+ * `probeContextWindow` in the page is the only channel that measures it.
+ */
+const Tier2RunConfigSchema = z.object({
+  modelId: z.string().min(1),
+  /** Restates resolveTier2Config's own bound: a positive integer. */
+  contextWindowSize: z.number().int().positive(),
+  /** 0 on every arm this repo can run -- resolveTier2Config refuses any other. */
+  temperature: z.number().min(0),
+  maxTokens: z.number().int().positive(),
+  /**
+   * The judge's per-CALL budget, not `ir.latencyBudgetMs`. Bounded above by
+   * `MAX_BUDGET_MS`, which is what `WebLlmJudge`'s constructor enforces: a
+   * larger number becomes a ~1 ms deadline in `setTimeout` rather than a longer
+   * one.
+   */
+  callBudgetMs: z.number().positive().max(2_147_483_647),
+} satisfies Record<keyof Tier2Config | "callBudgetMs", z.ZodType>);
+
 /** Every counter is a non-negative integer; deltas over counters that only rise. */
 const JUDGE_COUNTER = z.number().int().nonnegative();
 
@@ -308,9 +385,14 @@ const JUDGE_COUNTER = z.number().int().nonnegative();
  *
  * WHY THE RECORD CARRIES IT, in one line borrowed from `tier1Stats`: findings
  * alone cannot separate "the model ran and found nothing" from "the model never
- * ran", and for tier 2 neither can a timing -- `judge()` returns before it
- * touches the engine when the IR declares no `semanticPredicates`, which takes
- * microseconds and still sets `timings.tier2Ms`.
+ * ran". A timing narrows that and does not settle it. `orchestrator.ts` sets
+ * `timings.tier2Ms` only on the branch that CALLS the judge -- so an absent one
+ * really does mean no judge ran -- but a present one says the JUDGE ran, not
+ * that the ENGINE was asked anything: `WebLlmJudge.judge` returns an empty
+ * verdict before touching the engine when the IR declares no
+ * `semanticPredicates`, and a first call the caller had already aborted is
+ * counted and filed with no call row. `calls` is what separates either from a
+ * model that answered.
  *
  * The field set is `JudgeStats` WHOLE and the `satisfies` enforces it, so there
  * is no judgement here about which counter matters: a counter added upstream
@@ -563,6 +645,15 @@ export const RunRecordSchema = z
      * `tier1Stats` uses, and for the same reason `error` is part of it.
      */
     tier2Stats: Tier2StatsSchema.optional(),
+    /**
+     * The resolved tier-2 settings this arm ran under; see
+     * Tier2RunConfigSchema. Present exactly when tier 2 ran, and coupled to
+     * `config.tier2` alone rather than also to `error` -- the same asymmetry
+     * `tier1Config` has, and for the same reason: this describes the engine the
+     * page HOLDS, which is known before the item runs and stays true whatever
+     * the item does, while `tier2Stats` describes what the judge DID on it.
+     */
+    tier2Config: Tier2RunConfigSchema.optional(),
     findings: z.array(RecordFindingSchema),
     /**
      * Copied from the corpus item so a record scores standalone, without a join.
@@ -608,10 +699,33 @@ export const RunRecordSchema = z
      * aggregate over `error === null` rows silently includes them. This flag is
      * what lets that aggregate exclude them.
      *
-     * FINDINGS ON A FLAGGED ROW ARE STILL GOOD. Contention moves the clock, not
-     * the spans: `detect` is deterministic given the message, the IR and the
-     * config, all three of which are on the row. So this is a filter for
-     * `timings`, not a reason to drop the row from a recall or precision count.
+     * WHAT ELSE A FLAGGED ROW IS SHORT OF, and the earlier version of this
+     * paragraph had it backwards. It claimed the findings on a flagged row are
+     * still good because "`detect` is deterministic given the message, the IR
+     * and the config". On a tier-0 or tier-1 arm that holds. On a TIER-2 arm
+     * neither half does, and both were MEASURED against the real orchestrator:
+     *
+     *   1. THE FINDINGS MOVE. The orchestrator arms one wall-clock deadline
+     *      over the whole `judge()` call from `ir.latencyBudgetMs`, so the same
+     *      message, IR and config yield FEWER findings when the clock is
+     *      slower. Measured with an engine whose only difference was 5 ms
+     *      against 100 ms per call: two tier-2 findings became one, and the
+     *      result gained a `budget-exhausted` notice and two skipped segments.
+     *      Contention is exactly a slower clock.
+     *   2. THE COUNTERS MAY NOT BE THIS ROW'S. `tier2Stats` and `tier1Stats`
+     *      are DELTAS taken in the page around a `detect` on a SHARED judge and
+     *      a shared tagger. An abandoned item is still running on that judge,
+     *      so its calls and counters land inside the next item's delta window.
+     *      Measured: an item that makes 3 calls of its own reported 6.
+     *
+     * So a flagged row is not merely a row with a bad timing. Read `degraded`
+     * on it before scoring it: a `budget-exhausted` or `call-budget-exhausted`
+     * notice says the judgement was cut short, and `tier2Stats` on the row
+     * after an abandoned one may hold two items' work. `bakeoff.ts` counts
+     * flagged rows in `itemsAbandonedWorkInFlight` and does NOT exclude them
+     * from its ladder or its latency sample -- that module filters nothing --
+     * so a nonzero count there is a reason to distrust the whole arm's tier-2
+     * aggregates, not just its latencies.
      *
      * A FLAG RATHER THAN ABORTING THE ARM, and the choice is not obvious.
      * Aborting is defensible -- a wedged item means the arm's latencies are not
@@ -691,6 +805,21 @@ export const RunRecordSchema = z
     // quote went unresolved on an item whose judge may never have returned.
     message: "tier2Stats must be present exactly when config.tier2 is true and error is null",
   })
+  .refine((r) => r.config.tier2 === (r.tier2Config !== undefined), {
+    // Both directions, exactly as `tier1Config`. Tier 2 on with no config is an
+    // arm whose window, token ceiling and per-call budget went unrecorded --
+    // and a run that deliberately puts one arm at a 4,096-token window would be
+    // indistinguishable from a symmetric one. A config with tier 2 off is a
+    // lower-tier run wearing a tier-2 label.
+    message: "tier2Config must be present exactly when config.tier2 is true",
+  })
+  .refine(
+    (r) =>
+      r.tier2Config === undefined ||
+      r.config.t2Model === undefined ||
+      r.config.t2Model === r.tier2Config.modelId,
+    { message: "config.t2Model names a different model than tier2Config.modelId" },
+  )
   .refine((r) => (r.degraded !== undefined) === (r.error === null), {
     // Not coupled to any tier switch, unlike the two stats fields: every result
     // has a degradation account, and a tier-0 arm's is the two `absent`
@@ -707,6 +836,8 @@ export const RunRecordSchema = z
   });
 
 export type RunRecord = z.infer<typeof RunRecordSchema>;
+/** The resolved tier-2 settings a record states, as `runArm` receives them. */
+export type Tier2RunConfig = z.infer<typeof Tier2RunConfigSchema>;
 export type RecordFinding = z.infer<typeof RecordFindingSchema>;
 
 /**

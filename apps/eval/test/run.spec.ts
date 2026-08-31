@@ -129,6 +129,23 @@ const FAKE_TIER2_STATS = {
 };
 
 /**
+ * The resolved tier-2 settings a record must carry when tier 2 ran.
+ *
+ * `RunRecordSchema` requires it exactly when `config.tier2` is set -- the same
+ * coupling `tier1Config` has -- so a tier-2 arm here without one would produce
+ * records the schema refuses for a reason unrelated to what is under test.
+ * These are `DEFAULT_TIER2_CONFIG`'s values plus the page's default per-call
+ * budget, which is what an arm run with no overrides is loaded under.
+ */
+const FAKE_TIER2_CONFIG = {
+  modelId: "Qwen3.5-2B-q4f16_1-MLC",
+  contextWindowSize: 8192,
+  temperature: 0,
+  maxTokens: 512,
+  callBudgetMs: 60_000,
+} as const;
+
+/**
  * The tier-2 notice a `failed-closed` verdict adds, worded as
  * `WebLlmJudge` words its own: a body still unparseable after the one repair
  * retry. The stand-in does NOT model core's `absent` entries -- it is not core,
@@ -980,6 +997,7 @@ test("carries the judge's counters and its per-call rows onto every record", asy
     backend: "webgpu",
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: true, t2Model: "Qwen3.5-2B-q4f16_1-MLC" },
+    tier2Config: FAKE_TIER2_CONFIG,
     itemTimeoutMs: 10_000,
     // TWO items, not one, and the second is what this spec turns on. The stand-in
     // answers a CUMULATIVE `totals` beside the per-item `lastDetect`, exactly as
@@ -1019,7 +1037,101 @@ test("carries the judge's counters and its per-call rows onto every record", asy
   expect(watched.calls()).toBe(records.length + 2);
 });
 
-test("writes a non-finite time-to-first-token as null instead of a NaN", async ({ page }) => {
+test("keeps a call row silent about what the engine did not report", async ({ page }) => {
+  // The producer half of `Tier2CallSchema`'s optional fields, and the half no
+  // fixture in this file used to reach: every other call row here supplies all
+  // five values, so the `| undefined` branch of the projection was never
+  // exercised HERE -- and `record.test.ts` pinning `calls: [{}]` tests the
+  // SCHEMA, which by construction cannot see a producer that filled the blanks
+  // in before the schema ever ran. The review that found this measured
+  // `finishReason ?? "stop"`, `promptTokens ?? 0` and a `ttftMs` mapping that
+  // turns undefined into null each surviving the whole Node suite and all 23
+  // tests this file then had.
+  //
+  // Why the defaults would be wrong rather than merely tidy: 0.2.84 types
+  // `ChatCompletion.usage` optional and assigns `finish_reason` from
+  // `getFinishReason()`, declared `| undefined`, so both absences are real.
+  // `"stop"` would record "we do not know why this stopped" as "it finished
+  // normally" -- and `bakeoff.ts` reads truncation accounting straight off this
+  // column -- while a 0-token row would enter the decode-rate arithmetic as a
+  // call that decoded nothing.
+  await installFakeSih(
+    page,
+    {},
+    { findings: [], timings: { tier0Ms: 1, tier2Ms: 60 }, degraded: [] },
+    undefined,
+    {
+      ...FAKE_TIER2_STATS,
+      segmentsJudged: 1,
+      // An engine that answered and reported nothing about the answer. The
+      // second row is the same call with a decoration on it, which is what
+      // makes the projection's field list load-bearing one level below
+      // `findings`: `run.ts` says naming the fields is what keeps the emitted
+      // shape a property of that module, and nothing tested that for a CALL.
+      calls: [{}, { debugNote: "should not reach the file" }],
+    },
+  );
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0+t2",
+    backend: "webgpu",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: true },
+    tier2Config: FAKE_TIER2_CONFIG,
+    itemTimeoutMs: 10_000,
+    items: [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }],
+  });
+
+  // Asserted on the SERIALIZED row, which is what Plan 8 reads: an invented
+  // `finishReason` or a 0 token count shows up here as a key that should not
+  // exist, and `JSON.stringify` drops the undefined-valued keys the projection
+  // does set. Both rows, so the decoration is covered too.
+  const [line] = toJsonl(records).trim().split("\n");
+  const written = JSON.parse(line!) as { tier2Stats: { calls: Record<string, unknown>[] } };
+  expect(written.tier2Stats.calls).toEqual([{}, {}]);
+  // And in memory, where `undefined` and "absent" are still distinguishable:
+  // `toEqual` treats an undefined-valued key as absent, which is exactly the
+  // equivalence `JSON.stringify` makes, so a null would fail both.
+  expect(records[0]!.tier2Stats!.calls).toEqual([{}, {}]);
+  expect(RunRecordSchema.safeParse(JSON.parse(line!)).success).toBe(true);
+});
+
+test("projects a degradation notice field by field, like a finding", async ({ page }) => {
+  // The `degraded` half of the same projection guarantee. `run.ts` argues for
+  // it in as many words -- "nothing validates a record on this path, so a
+  // producer that decorates ... would have them ride into the JSONL unchecked"
+  // -- and that claim was pinned for `findings` and for the tier2Stats OBJECT
+  // and for nothing else. The review that found this measured a cast in place of
+  // the notice projection surviving the whole suite, and a spread over the call
+  // rows surviving it too.
+  //
+  // That the extra key really would reach the file: `runMatrix` validates with
+  // `safeParse` but writes the RAW records, and zod is not strict here, so a
+  // decorated notice is written and then accepted on the way back in.
+  await installFakeSih(page, {}, {
+    findings: [],
+    timings: { tier0Ms: 1 },
+    degraded: [{ tier: 1, reason: "absent", detail: "tier 1 was switched off", debugNote: "x" }],
+  });
+
+  const records = await runArm(page, {
+    runId: "test-run",
+    arm: "t0",
+    backend: "wasm",
+    provider: "claude",
+    config: { tier0: true, tier1: false, tier2: false },
+    itemTimeoutMs: 10_000,
+    items: [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }],
+  });
+
+  expect(records[0]!.degraded).toEqual([
+    { tier: 1, reason: "absent", detail: "tier 1 was switched off" },
+  ]);
+  expect(Object.keys(records[0]!.degraded![0]!).sort()).toEqual(["detail", "reason", "tier"]);
+});
+
+test("writes a non-finite time-to-first-token or decode rate as null instead of a NaN", async ({ page }) => {
   // MEASURED with zod 4.4.3: `z.number()` rejects NaN, and `JSON.stringify(NaN)`
   // is the string "null". So a NaN copied straight through produces a file its
   // own reader refuses -- written as null, rejected on the way back in, after
@@ -1041,7 +1153,24 @@ test("writes a non-finite time-to-first-token as null instead of a NaN", async (
     {
       ...FAKE_TIER2_STATS,
       segmentsJudged: 1,
-      calls: [{ finishReason: "stop", promptTokens: 1105, completionTokens: 20, ttftMs: Number.NaN }],
+      // BOTH mappings, and `decodeTokPerSec` is the one that is more reachable:
+      // the library computes it as `completion_tokens / decode_time` with no
+      // zero guard, and `judge.test.ts` asserts the 0/0 a call interrupted
+      // before its first token produces. The plan says most messages on this
+      // corpus expire mid-run, so a NaN reaching the record is the ordinary
+      // case rather than the exotic one -- and it would make
+      // `RunRecordSchema.safeParse` reject the row, which `runBakeoff` turns
+      // into "produced an invalid record at row N" AFTER the arm's GPU time is
+      // spent and BEFORE the file is written.
+      calls: [
+        {
+          finishReason: "stop",
+          promptTokens: 1105,
+          completionTokens: 20,
+          ttftMs: Number.NaN,
+          decodeTokPerSec: Number.NaN,
+        },
+      ],
     },
   );
 
@@ -1051,11 +1180,13 @@ test("writes a non-finite time-to-first-token as null instead of a NaN", async (
     backend: "webgpu",
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: true },
+    tier2Config: FAKE_TIER2_CONFIG,
     itemTimeoutMs: 10_000,
     items: [{ id: "a", text: "one", policy: "minimal-fixture", gold: [] }],
   });
 
   expect(records[0]!.tier2Stats!.calls[0]!.ttftMs).toBeNull();
+  expect(records[0]!.tier2Stats!.calls[0]!.decodeTokPerSec).toBeNull();
   // The whole point: it survives the round trip Plan 8 makes.
   const [line] = toJsonl(records).trim().split("\n");
   expect(RunRecordSchema.safeParse(JSON.parse(line!)).success).toBe(true);
@@ -1084,12 +1215,14 @@ test("resolves the escalation threshold and hands detect the value it records", 
   const explicit = await runArm(page, {
     ...spec,
     config: { tier0: true, tier1: false, tier2: true, uncertainBelow: 0.35 },
+    tier2Config: FAKE_TIER2_CONFIG,
   });
   expect(explicit[0]!.config.uncertainBelow).toBe(0.35);
 
   const defaulted = await runArm(page, {
     ...spec,
     config: { tier0: true, tier1: false, tier2: true },
+    tier2Config: FAKE_TIER2_CONFIG,
   });
   // RESOLVED, not left absent. A record that says nothing is a record whose
   // threshold has to be reconstructed from a constant in another package, and
@@ -1136,6 +1269,7 @@ test("leaves the tier-2 evidence off an item that threw, rather than the previou
     backend: "webgpu",
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: true },
+    tier2Config: FAKE_TIER2_CONFIG,
     itemTimeoutMs: 10_000,
     items: [
       { id: "a", text: "first text", policy: "minimal-fixture", gold: [] },
@@ -1174,6 +1308,7 @@ test("emits a file that separates failing closed on 40% from finding nothing", a
     backend: "webgpu" as const,
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW },
+    tier2Config: FAKE_TIER2_CONFIG,
     itemTimeoutMs: 10_000,
     items,
   };

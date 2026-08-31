@@ -2,7 +2,7 @@ import type { Page } from "@playwright/test";
 import { UNCERTAIN_BELOW, type TierConfig } from "@sih/core";
 import type { Tier1Config } from "@sih/tier1";
 import type { CorpusItem } from "./corpus.js";
-import { RECORD_SCHEMA_VERSION, type RunRecord } from "./record.js";
+import { RECORD_SCHEMA_VERSION, type RunRecord, type Tier2RunConfig } from "./record.js";
 
 export interface ArmSpec {
   runId: string;
@@ -55,6 +55,23 @@ export interface ArmSpec {
    * this off `loadTier1`'s report and validates every record before writing.
    */
   tier1Config?: Tier1Config;
+  /**
+   * The resolved tier-2 settings the engine in the page was loaded with, plus
+   * the per-call budget the judge over it holds. Required by RunRecordSchema
+   * exactly when `config.tier2` is set, for the reason `tier1Config` is
+   * required one tier down: `TierConfig` carries `t2Model` and nothing else, so
+   * two arms differing only in their context window or their per-call budget
+   * are otherwise byte-identical in every field a scorer can group by -- and
+   * running one arm at 4,096 while the others run at 8,192 is the fallback
+   * Plan 5 names for a model that cannot take the larger window.
+   *
+   * `runArm` does not check the coupling and cannot: it never loads a model, so
+   * it has no way to know whether this describes the engine the page holds. The
+   * caller that loaded it does -- see `runBakeoff` in driver/bakeoff.ts, which
+   * reads this off `loadTier2`'s report and refuses an arm whose page resolved
+   * different numbers than it asked for.
+   */
+  tier2Config?: Tier2RunConfig;
   /**
    * Per-item deadline, in milliseconds. Required rather than defaulted: the
    * right budget for a tier-0 regex pass and for a tier-1 ONNX model on a cold
@@ -419,6 +436,13 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       // produces records the schema refuses, which is where runMatrix catches a
       // rung that was never recorded.
       tier1Config: spec.tier1Config,
+      // What `TierConfig` has no room for one tier up: the window, the token
+      // ceiling, the temperature and the per-call budget. Absent on any arm
+      // that did not run tier 2, which is what RunRecordSchema requires; a
+      // tier-2 arm reaching here without it produces records the schema
+      // refuses, which is where `runBakeoff` catches a rung that went
+      // unrecorded -- before the file is written.
+      tier2Config: spec.tier2Config,
       // What the tagger did on THIS item, absent when detection threw -- see
       // record.ts, which couples the two and states why a row of zeros would be
       // a worse answer than no row at all.

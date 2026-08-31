@@ -788,12 +788,26 @@ describe("the tier-2 evidence a record has to carry", () => {
     callerAbortsWhileQueued: 0,
     calls: [CALL],
   };
+  /**
+   * The resolved engine settings a tier-2 record must carry, which the schema
+   * couples to `config.tier2` the way `tier1Config` is coupled to
+   * `config.tier1`. `DEFAULT_TIER2_CONFIG`'s four fields plus the page's
+   * default per-call budget: what an arm loaded with no overrides runs under.
+   */
+  const T2_CONFIG = {
+    modelId: "Qwen3.5-2B-q4f16_1-MLC",
+    contextWindowSize: 8192,
+    temperature: 0,
+    maxTokens: 512,
+    callBudgetMs: 60_000,
+  };
   const t2 = (patch: Record<string, unknown> = {}) =>
     RunRecordSchema.safeParse({
       ...base,
       config: T2,
       degraded: [],
       tier2Stats: STATS,
+      tier2Config: T2_CONFIG,
       ...patch,
     });
 
@@ -888,9 +902,18 @@ describe("the tier-2 evidence a record has to carry", () => {
   });
 
   it("accepts a call row the engine reported no usage for", () => {
-    // `JudgeCallRecord` types all four fields `| undefined`: `usage` is
-    // optional on the completion and `finish_reason` can be null. A schema that
+    // `JudgeCallRecord` types all FIVE fields `| undefined`, so a schema that
     // required them would refuse a real call rather than record what it knew.
+    // `usage` is optional on the completion, which covers four of them;
+    // `finishReason` is undefined-able for a different reason, and NOT because
+    // the field can be null -- 0.2.84 declares the non-streaming
+    // `ChatCompletion.Choice.finish_reason` required and non-nullable, and the
+    // bundle assigns it from `getFinishReason()`, which is declared
+    // `| undefined`. See Tier2CallSchema.
+    //
+    // This is a SCHEMA test and it cannot see the other half: a producer that
+    // filled the blanks in before the schema ran would pass it unchanged.
+    // test/run.spec.ts pins that half against `runArm`.
     expect(t2({ tier2Stats: { ...STATS, calls: [{}] } }).success).toBe(true);
   });
 
@@ -1008,6 +1031,23 @@ describe("the tier-2 evidence a record has to carry", () => {
         degraded: [],
       }).success,
     ).toBe(true);
+    // ... and it is not FORBIDDEN one either, which is the direction the refine
+    // deliberately leaves open and the direction nothing used to exercise.
+    // The review that found this measured a tightening of the refine to a
+    // two-way coupling (`(uncertainBelow !== undefined) === config.tier2`)
+    // passing the whole suite. It is reachable -- `runArm` builds `{...spec.config, backend}`, so
+    // a caller who puts a threshold in a tier-0 arm's TierConfig gets it onto
+    // the record -- and under the tightened rule `runBakeoff` would throw on
+    // row 1 and discard the arm's whole file AFTER its GPU time was spent. The
+    // record's job is to state what `detect` received, not to tidy it away.
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        config: { tier0: true, tier1: false, tier2: false, uncertainBelow: 0.35 },
+        timings: { tier0Ms: 0.4 },
+        degraded: [],
+      }).success,
+    ).toBe(true);
   });
 
   it("rejects a threshold escalate.ts would throw on", () => {
@@ -1021,6 +1061,55 @@ describe("the tier-2 evidence a record has to carry", () => {
     }
   });
 
+  it("couples tier2Config to config.tier2 in both directions", () => {
+    // WHY THE FIELD EXISTS. `TierConfig` carries `t2Model` and nothing else
+    // about tier 2, so two arms differing only in their context window, their
+    // token ceiling or their per-call budget used to emit records that were
+    // byte-identical in every field a scorer can group by -- the same disease
+    // `tier1Config` was added to cure one tier down, and the reason Plan 5's
+    // own fallback for a model that cannot take 8,192 ("run that arm at 4,096
+    // and report the asymmetry") was unexpressible in the output.
+    //
+    // Both directions, exactly as `tier1Config`: tier 2 on with no config is an
+    // arm whose settings went unrecorded, and a config with tier 2 off is a
+    // lower-tier run wearing a tier-2 label.
+    expect(t2({ tier2Config: undefined }).success).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        config: { tier0: true, tier1: false, tier2: false },
+        degraded: [],
+        tier2Config: T2_CONFIG,
+      }).success,
+    ).toBe(false);
+    // Unlike `tier2Stats`, it is NOT coupled to `error`: this describes the
+    // engine the page HOLDS, which is known before the item runs and stays true
+    // whatever the item does.
+    expect(t2({ error: "detector exploded", tier2Stats: undefined, degraded: undefined }).success).toBe(true);
+    // And it must name the same model `config.t2Model` does, when both are
+    // present -- the `t1Model`/`tier1Config` check one tier up.
+    expect(
+      t2({ config: { ...T2, t2Model: "Phi-4-mini-instruct-q4f16_1-MLC" } }).success,
+    ).toBe(false);
+    expect(t2({ config: { ...T2, t2Model: T2_CONFIG.modelId } }).success).toBe(true);
+  });
+
+  it("refuses tier-2 settings that could not have run", () => {
+    // Each bound restates the validator that would have refused the value
+    // upstream, so a record cannot state a configuration `resolveTier2Config`
+    // or `WebLlmJudge`'s constructor would have thrown on.
+    expect(t2({ tier2Config: { ...T2_CONFIG, contextWindowSize: 0 } }).success).toBe(false);
+    expect(t2({ tier2Config: { ...T2_CONFIG, contextWindowSize: 8192.5 } }).success).toBe(false);
+    expect(t2({ tier2Config: { ...T2_CONFIG, maxTokens: 0 } }).success).toBe(false);
+    // A per-call budget of 0 is a deadline that fires immediately, and one
+    // above 2^31-1 becomes a ~1 ms one in `setTimeout` rather than a longer
+    // one; `cancel.ts` refuses both with the same bound.
+    expect(t2({ tier2Config: { ...T2_CONFIG, callBudgetMs: 0 } }).success).toBe(false);
+    expect(t2({ tier2Config: { ...T2_CONFIG, callBudgetMs: 2_147_483_648 } }).success).toBe(false);
+    expect(t2({ tier2Config: { ...T2_CONFIG, callBudgetMs: 2_147_483_647 } }).success).toBe(true);
+    expect(t2({ tier2Config: { ...T2_CONFIG, modelId: "" } }).success).toBe(false);
+  });
+
   it("survives the JSONL round trip with every tier-2 field intact", () => {
     // The file is the deliverable, not the in-memory object. `undefined` inside
     // a call row is dropped by JSON.stringify, so the row comes back with keys
@@ -1031,6 +1120,11 @@ describe("the tier-2 evidence a record has to carry", () => {
       config: { ...T2, uncertainBelow: 0.35 },
       degraded: [{ tier: 2 as const, reason: "failed-closed" as const, detail: "unparseable after one repair retry" }],
       tier2Stats: { ...STATS, calls: [CALL, { finishReason: "abort" }] },
+      // A NON-DEFAULT window and budget, deliberately: this is the field that
+      // makes "run that arm at 4,096 and report the asymmetry" expressible, and
+      // a fixture carrying only the defaults could not tell a record that
+      // states its settings from one that restates a constant.
+      tier2Config: { ...T2_CONFIG, contextWindowSize: 4096, callBudgetMs: 30_000 },
     } as RunRecord;
     const [line] = toJsonl([record]).trim().split("\n");
     const reparsed = RunRecordSchema.safeParse(JSON.parse(line!));
@@ -1041,6 +1135,13 @@ describe("the tier-2 evidence a record has to carry", () => {
     ]);
     expect(reparsed.success && reparsed.data.degraded).toEqual(record.degraded);
     expect(reparsed.success && reparsed.data.config.uncertainBelow).toBe(0.35);
+    expect(reparsed.success && reparsed.data.tier2Config).toEqual({
+      modelId: "Qwen3.5-2B-q4f16_1-MLC",
+      contextWindowSize: 4096,
+      temperature: 0,
+      maxTokens: 512,
+      callBudgetMs: 30_000,
+    });
   });
 });
 
@@ -1160,6 +1261,17 @@ describe("a scorer separates 'failed closed on 40%' from 'found nothing'", () =>
           timings: result.timings,
           degraded: result.degraded,
           tier2Stats: ZEROED,
+          // Required exactly when `config.tier2` is set. The stub judge here is
+          // not a WebLlmJudge and loads no engine, so this states the arm these
+          // records would have been written under rather than anything measured
+          // -- which is what makes them the shape Plan 8 will actually hold.
+          tier2Config: {
+            modelId: "Qwen3.5-2B-q4f16_1-MLC",
+            contextWindowSize: 8192,
+            temperature: 0,
+            maxTokens: 512,
+            callBudgetMs: 60_000,
+          },
           error: null,
           abandonedWorkInFlight: false,
         }) as RunRecord,
