@@ -19,11 +19,35 @@ import { z } from "zod";
  * fields we ignore and so feed the one failure mode actually observed here,
  * running out of tokens mid-response.
  *
- * UNMEASURED, and the only thing here that is: `type: "number"`. Every field in
- * the probe's schema was a string, so no probe call has exercised a numeric
- * type under this xgrammar build. An uncompilable schema HANGS rather than
- * erroring, so the first browser task to issue a constrained call should
- * confirm this one compiles before a bake-off depends on it.
+ * `type: "number"`, and its `minimum`/`maximum`, are MEASURED HERE rather than
+ * assumed. The grammar compiler is reachable from Node without a GPU: web-llm
+ * inlines xgrammar's wasm as a base64 data URI instead of fetching it, and
+ * standalone `@mlc-ai/web-xgrammar@0.1.27` carries the same binary. VERIFIED
+ * HERE by hashing both bundles' inlined blobs -- 727,906 bytes, sha256
+ * `80eb86a9e61e8148a45d60973ec29ffb85077a3e42cee8f042e1452fffd63774`, present
+ * in each -- so a schema compiled under Node exercises the exact binary the
+ * browser runs. This object was then put through `compileJSONSchema`, the call
+ * `llm_chat` itself makes, under a watchdog OUTSIDE the process because a hang
+ * inside wasm blocks Node's event loop. It compiled; nothing hung. That matters
+ * because an uncompilable schema HANGS rather than erroring.
+ *
+ * The bounds are not decoration and not merely a zod convenience. xgrammar
+ * folds them into the grammar itself --
+ * `("0" | "1" | "0" "." [0-9]{1,6} | "1" "." [0-9]{1,6})` -- so the logit mask
+ * forecloses an out-of-range confidence before sampling rather than after.
+ * MEASURED on the accept/reject oracle: with bounds, `95` (a model answering on
+ * a percentage scale), `-0.5`, `1e999` and `0.5000001` are all REJECTED, where
+ * the unbounded `type: "number"` accepts every one of them.
+ *
+ * Two consequences worth stating rather than discovering:
+ *
+ * - **The grammar is a sound over-approximation, not an exact one.** `1.5`
+ *   still passes, because the rule pins only the leading digit. The zod check
+ *   in `JudgeResponseSchema` is therefore NOT redundant and must stay.
+ * - **`{1,6}` caps the fraction at six digits.** MEASURED: `0.123456` is
+ *   accepted and `0.1234567` is rejected. A model wanting a seventh decimal
+ *   place is masked into stopping at six. That is a precision limit on a field
+ *   we only ever compare and threshold, not a failure.
  *
  * Frozen for the same reason as the manifest: `readonly` is erased at runtime,
  * and this object is process-wide shared state handed to every engine arm.
@@ -38,7 +62,7 @@ export const JUDGE_SCHEMA = deepFreeze({
         properties: {
           predicateId: { type: "string" },
           quote: { type: "string" },
-          confidence: { type: "number" },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
         },
         required: ["predicateId", "quote", "confidence"],
         additionalProperties: false,
@@ -72,6 +96,17 @@ export const JudgeResponseSchema = z.object({
       // MEASURED on zod 4.4.3: `z.number()` already rejects NaN and both
       // infinities, and `.min(0).max(1)` excludes them independently of that.
       //
+      // This is the SECOND of two layers, and it is not redundant. `JUDGE_SCHEMA`
+      // now carries the same bounds, and MEASURED on the shipped grammar
+      // compiler they are real: 95, -0.5 and 1e999 become unemittable. But the
+      // compiled rule pins only the leading digit --
+      // `("0" | "1" | "0" "." [0-9]{1,6} | "1" "." [0-9]{1,6})` -- so it is a
+      // sound over-approximation, not an exact one, and `1.5` still reaches
+      // here. Deleting this check because "the grammar already handles it"
+      // would let exactly that value through. The grammar also only binds a
+      // grammar-constrained call; anything replayed from a record, or read back
+      // from a run made before the bounds were added, arrives unfiltered.
+      //
       // Out-of-range values are REJECTED, not clamped. A model answering on a
       // percentage scale has failed to honour the contract; clamping 95 to 1.0
       // would turn that misunderstanding into a maximally confident finding and
@@ -85,13 +120,14 @@ export type JudgeResponse = z.infer<typeof JudgeResponseSchema>;
 
 export type ParseResult =
   | { ok: true; value: JudgeResponse }
-  | { ok: false; reason: "truncated" | "malformed" | "schema"; detail: string };
+  | { ok: false; reason: "aborted" | "truncated" | "malformed" | "schema"; detail: string };
 
 /**
- * Parse a model response, distinguishing the three failure modes because they
- * call for different responses: truncation means raise max_tokens or shorten
- * the prompt, malformation means the grammar constraint is not working, and a
- * schema mismatch means the prompt and the schema disagree.
+ * Parse a model response, distinguishing the four failure modes because they
+ * call for different responses: an abort means nobody let the call finish,
+ * truncation means raise max_tokens or shorten the prompt, malformation means
+ * the grammar constraint is not working, and a schema mismatch means the prompt
+ * and the schema disagree.
  *
  * Plan 5's feasibility run recorded 0 malformed responses in 77 constrained
  * calls. VERIFIED HERE against that run's out-e5.json: 3 of Phi-4-mini's 6
@@ -104,12 +140,35 @@ export type ParseResult =
  * `finishReason` is the engine's own `choices[0].finish_reason`. Pass it when
  * you have it: "length" is the engine stating that IT cut the response off,
  * where the shape of the fragment is only evidence for the same conclusion.
+ * The full union on 0.2.84 is `"stop" | "length" | "tool_calls" | "abort"` plus
+ * `undefined`; only "length" and "abort" change the answer here.
+ *
+ * A body that parses AND validates is returned as `ok` whatever the finish
+ * reason says, including "abort". That is deliberate rather than overlooked: an
+ * aborted call almost never leaves a schema-valid document behind, and when it
+ * does the findings in it are real. The caller holds `finishReason` too and can
+ * decide whether to trust a judgement from a call it cancelled.
  */
 export function parseJudgeResponse(raw: string, finishReason?: string): ParseResult {
   let json: unknown;
   try {
     json = JSON.parse(raw);
   } catch (cause) {
+    // Checked BEFORE "length" and before the shape scanner, because it is the
+    // one finish_reason that says why there is no body rather than what the
+    // body looks like. An interrupted engine returns "", and "" is a perfect
+    // truncated prefix -- `classifyJsonPrefix` calls it truncated and is right
+    // to -- so without this branch a cancelled call is indistinguishable from a
+    // model that ran out of tokens. The two call for opposite responses:
+    // raising max_tokens does nothing for a call nobody let finish, and filing
+    // it as truncation inflates the per-arm truncation count that the bake-off
+    // reads as "this model is too verbose for its budget". Task 3 measured the
+    // engine state that produces this: after an interrupt-and-drain the flag
+    // stays set, and EVERY later call returns instantly with an empty body and
+    // finish_reason "abort" until it is cleared.
+    if (finishReason === "abort") {
+      return { ok: false, reason: "aborted", detail: `${String(cause)} (finish_reason=abort)` };
+    }
     if (finishReason === "length") {
       return { ok: false, reason: "truncated", detail: `${String(cause)} (finish_reason=length)` };
     }

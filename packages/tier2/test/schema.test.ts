@@ -32,6 +32,23 @@ describe("JUDGE_SCHEMA", () => {
     expect(Object.keys(props)).not.toContain("start");
     expect(Object.keys(props)).not.toContain("end");
   });
+
+  it("bounds confidence in the GRAMMAR, so an out-of-range value is unemittable", () => {
+    // MEASURED on the shipped grammar compiler -- web-llm inlines xgrammar's
+    // wasm and @mlc-ai/web-xgrammar@0.1.27 carries the byte-identical binary
+    // (727,906 bytes, sha256 80eb86a9e61e8148...), so this was settled under
+    // Node without a GPU. xgrammar folds these two keywords into the grammar as
+    //   ( "0" | "1" | "0" "." [0-9]{1,6} | "1" "." [0-9]{1,6} )
+    // and the logit mask then forecloses 95, -0.5, 1e999 and 0.5000001 before
+    // sampling. Without them, `type: "number"` accepts every one of those.
+    //
+    // The zod check in JudgeResponseSchema is NOT made redundant by this and
+    // must stay: the grammar is a sound over-approximation, not an exact one --
+    // 1.5 still passes it, because the rule pins only the leading digit.
+    const confidence = JUDGE_SCHEMA.properties.findings.items.properties.confidence;
+    expect(confidence.minimum).toBe(0);
+    expect(confidence.maximum).toBe(1);
+  });
 });
 
 describe("parseJudgeResponse", () => {
@@ -155,6 +172,43 @@ describe("truncation is classified structurally, not by sniffing the V8 error te
     const r = parseJudgeResponse('{"findings":[{"predicateId":"p1"} bogus', "length");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("truncated");
+  });
+
+  it("files a cancelled call as aborted, never as truncation", () => {
+    // An interrupted engine returns "", and "" is a perfect truncated prefix --
+    // classifyJsonPrefix calls it truncated and is right to. So without the
+    // finish_reason branch these two are indistinguishable, and the empty body
+    // of a poisoned engine is reported as "the model ran out of tokens". That
+    // points at the wrong fix (raise max_tokens does nothing for a call nobody
+    // let finish) and inflates the per-arm truncation count the bake-off reads
+    // as "this model is too verbose for its budget".
+    //
+    // The pairing is the assertion: the SAME raw body classifies differently
+    // depending only on what the engine said about why it stopped.
+    const aborted = parseJudgeResponse("", "abort");
+    expect(aborted.ok).toBe(false);
+    if (!aborted.ok) {
+      expect(aborted.reason).toBe("aborted");
+      expect(aborted.detail).toContain("finish_reason=abort");
+    }
+    expect(parseJudgeResponse("").ok).toBe(false);
+    const noReason = parseJudgeResponse("");
+    if (!noReason.ok) expect(noReason.reason).toBe("truncated");
+
+    // A partial body under an abort is still an abort: the cut is why it is
+    // partial, so the reason has to name the cut and not its shape.
+    const partial = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"Acme', "abort");
+    expect(partial.ok).toBe(false);
+    if (!partial.ok) expect(partial.reason).toBe("aborted");
+  });
+
+  it("still returns a schema-valid body as ok even when the call was aborted", () => {
+    // Deliberate, and stated so it is not mistaken for an oversight: an abort
+    // almost never leaves a complete document behind, but when it does the
+    // findings in it are real and the caller holds finishReason too. Filing a
+    // parseable answer as a failure would discard genuine findings.
+    const r = parseJudgeResponse('{"findings":[]}', "abort");
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -286,15 +340,37 @@ describe("JUDGE_SCHEMA stays inside the keyword set measured to compile", () => 
     expect(bad).toEqual([]);
   });
 
-  it("uses only keywords the probe corpus proved xgrammar 0.1.27 compiles", () => {
+  it("uses only keywords measured to compile on xgrammar 0.1.27", () => {
     // A serializable schema is not necessarily a COMPILABLE one, and an
     // uncompilable schema hangs rather than erroring -- so round-trip equality
-    // alone is not enough. The probe's measured schema (webllm-probe
-    // page/main2.ts, 77 calls, no hang) used exactly these keywords. Anything
-    // outside this set -- $ref, allOf, pattern, patternProperties, minimum,
-    // maxItems -- is unmeasured here and must be probed in a browser task
-    // before it ships.
-    const ALLOWED = new Set(["type", "properties", "items", "required", "additionalProperties"]);
+    // alone is not enough. Anything outside this set -- $ref, allOf, pattern,
+    // patternProperties, maxItems -- is unmeasured and must not ship until it
+    // has been put through the compiler.
+    //
+    // The first five come from the probe's measured schema (webllm-probe
+    // page/main2.ts, 77 calls, no hang).
+    //
+    // `minimum` and `maximum` were MEASURED SEPARATELY, and under Node rather
+    // than in a browser, which is possible because web-llm inlines xgrammar's
+    // wasm as base64 instead of fetching it and standalone
+    // @mlc-ai/web-xgrammar@0.1.27 carries the same binary -- verified by
+    // hashing both inlined blobs: 727,906 bytes, sha256 80eb86a9e61e8148...,
+    // byte-identical. This exact JUDGE_SCHEMA object was put through
+    // `compileJSONSchema`, the call llm_chat itself makes, under a watchdog
+    // OUTSIDE the process because a hang inside wasm blocks Node's event loop.
+    // It compiled. The compiled rule is
+    //   ( "0" | "1" | "0" "." [0-9]{1,6} | "1" "." [0-9]{1,6} )
+    // and on the accept/reject oracle it rejects 95, -0.5, 1e999 and 0.5000001
+    // while the unbounded `type: "number"` accepts all four.
+    const ALLOWED = new Set([
+      "type",
+      "properties",
+      "items",
+      "required",
+      "additionalProperties",
+      "minimum",
+      "maximum",
+    ]);
     const seen = new Set<string>();
     const walk = (node: unknown): void => {
       if (Array.isArray(node)) return void node.forEach(walk);

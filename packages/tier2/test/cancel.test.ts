@@ -2,6 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 import { runWithDeadline, DeadlineExpired } from "../src/cancel.js";
 
 /**
+ * The DeadlineExpired a call rejected with.
+ *
+ * `await p.catch((e) => e)` types as `resolved | DeadlineExpired`, which makes
+ * every field access a cast; and it silently returns the RESOLVED value when
+ * the call did not reject at all, so an assertion written that way passes
+ * vacuously the moment the rejection stops happening. This throws instead.
+ */
+async function rejection(p: Promise<unknown>): Promise<DeadlineExpired> {
+  try {
+    await p;
+  } catch (e) {
+    return e as DeadlineExpired;
+  }
+  throw new Error("expected this call to reject, but it resolved");
+}
+
+/**
  * A fake engine that models what web-llm 0.2.84 was MEASURED to do, not what a
  * cancellable API would ideally do. Three behaviours are copied from the real
  * engine because each one breaks a plausible-looking implementation:
@@ -121,28 +138,77 @@ describe("runWithDeadline", () => {
     expect(e.state.drained).toBe(1);
   });
 
-  it("propagates an outer abort the same way as a deadline", async () => {
+  it("interrupts and drains on an outer abort, but does not call it a budget overrun", async () => {
+    // An outer abort takes the SAME recovery path as a deadline -- interrupt,
+    // drain, clear -- and that half is asserted below. What it must not do is
+    // report itself as the same EVENT: 0 ms of a 5000 ms budget had been spent.
+    // A record that cannot tell "we ran out of time" from "the caller changed
+    // its mind" attributes a cancelled run to a model being too slow.
     const e = fakeEngine({ hangs: true });
     const ac = new AbortController();
     const p = runWithDeadline(e, (s) => e.create(s), 5000, ac.signal);
     // Abort only once the request has actually reached the engine. Aborting
-    // sooner exercises the queue-entry path instead (covered above), and there
+    // sooner exercises the queue-entry path instead (covered below), and there
     // the correct behaviour is the opposite: no interrupt at all.
     await vi.waitFor(() => { expect(e.state.calls).toBe(1); });
     ac.abort();
-    await expect(p).rejects.toBeInstanceOf(DeadlineExpired);
+    const err = await rejection(p);
+    expect(err).toBeInstanceOf(DeadlineExpired);
+    expect(err.reason).toBe("aborted");
+    // Interrupted -- true here, and the reason `interrupted` is a field rather
+    // than a constant baked into the message.
+    expect(err.interrupted).toBe(true);
+    expect(err.message).not.toMatch(/exceeded/);
     expect(e.state.interrupted).toBe(1);
     expect(e.state.drained).toBe(1);
     expect(e.state.interruptSignal).toBe(false);
   });
 
-  it("rejects immediately when the outer signal is already aborted", async () => {
+  it("rejects immediately when the outer signal is already aborted, claiming nothing", async () => {
     const e = fakeEngine({ hangs: true });
     const p = runWithDeadline(e, (s) => e.create(s), 5000, AbortSignal.abort());
-    await expect(p).rejects.toBeInstanceOf(DeadlineExpired);
+    const err = await rejection(p);
+    expect(err).toBeInstanceOf(DeadlineExpired);
     // Never handed to the engine at all, so there is nothing to drain or clear.
     expect(e.state.calls).toBe(0);
     expect(e.state.cleared).toBe(0);
+    // ...and therefore the error must claim neither. The old single message
+    // said "exceeded its 5000ms budget and was interrupted" here, which was
+    // false on both counts, and the two assertions above are what prove it.
+    expect(err.reason).toBe("aborted");
+    expect(err.interrupted).toBe(false);
+    expect(err.message).not.toMatch(/exceeded/);
+    expect(err.message).toMatch(/nothing ran/);
+    expect(err.message).toMatch(/budget never started/);
+  });
+
+  it("refuses a budgetMs setTimeout would silently reinterpret", async () => {
+    // MEASURED on Node 26: setTimeout coerces Infinity, NaN, 0, -1 and
+    // 2147483648 to a 1 ms delay, while 2147483647 and 1e9 do not fire within
+    // 120 ms. So POSITIVE_INFINITY, the natural spelling of "no budget", is the
+    // fastest deadline available and interrupts the engine before it answers.
+    //
+    // REJECTED rather than reinterpreted as "no deadline": a budget is required
+    // precisely because both known ways this engine stops responding present as
+    // a call that never returns, so "wait forever" is the one value this seam
+    // must not accept.
+    const e = fakeEngine({ hangs: true });
+    for (const bad of [Number.POSITIVE_INFINITY, Number.NaN, 0, -1, 2_147_483_648, -0.5]) {
+      await expect(runWithDeadline(e, (s) => e.create(s), bad)).rejects.toThrow(/budgetMs/);
+    }
+    // Refused before the engine was touched, before a queue turn was taken, and
+    // without the interrupt that a 1 ms deadline would have fired.
+    expect(e.state.calls).toBe(0);
+    expect(e.state.interrupted).toBe(0);
+    // Not a DeadlineExpired: this is a caller bug, not a call that ran out of
+    // time, and reporting it as the latter would put a phantom timeout in the
+    // per-arm counts.
+    await expect(runWithDeadline(e, (s) => e.create(s), 0)).rejects.not.toBeInstanceOf(
+      DeadlineExpired,
+    );
+    // The upper boundary is usable, not merely the safe middle.
+    const ok = fakeEngine();
+    await expect(runWithDeadline(ok, (s) => ok.create(s), 2_147_483_647)).resolves.toBeDefined();
   });
 
   it("clears its timer on the success path", async () => {
