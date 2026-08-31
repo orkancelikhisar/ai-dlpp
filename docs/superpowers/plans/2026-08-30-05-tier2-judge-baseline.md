@@ -652,6 +652,17 @@ git add -A && git commit -m "feat(tier2): interrupt-and-drain cancellation, neve
 
 **Also worth knowing:** this plan's test `"never returns a span whose text disagrees with its offsets"` is **tautological** — the implementation defines `text` as the slice, so it cannot fail. The tests that actually catch drift assert offsets against `indexOf` ground truth. And the ladder was validated against the **six real model quotes** in the probe corpus, nothing selected out; the one non-verbatim quote came from the **Approach B arm** specifically, which is the arm that must not lose on offset arithmetic.
 
+**Rung 2 was rebuilt after review, and the numbers it produces must be read differently.** The first fix — strip trailing non-word characters, then descend by whole words — was found by two independent reviews to reproduce the defect it was written to cure. Stripping was **greedy**, so a secret ending in `=`, `_`, `!` or `)` lost that character to the span while it stayed in the message; and the word descent still shed the final word whenever a model perturbed it with a *word* character rather than punctuation (`"…AKIAIOSFODNN7EXAMPLF"` resolved to `"the AWS key"` — 0 of 20 credential characters).
+
+Rung 2 is now an **incremental code-point peel**: remove one code point from the tail, retest for a unique occurrence, stop at the first hit, trimming only trailing spaces. Measured against the reviews' 11 concrete cases, 6 strictly better / 5 identical / 0 worse; over a 40,000-pair differential fuzz, **0 mis-located, 0 start-offset moves, 0 spans shorter than the old ladder**, 2,766 longer, 778 newly resolved. Containment was *proved*, not merely fuzzed: same start, end never smaller.
+
+Two consequences worth carrying into the bake-off:
+
+- **Rung-2 spans now end inside a word 31.6% of the time** (the word descent: 0.0%). That is the improvement stated honestly — the `…EXAMPLF` case recovers 19 of 20 credential characters instead of 0 — but it means a rung-2 span is no longer guaranteed to be word-aligned, and a reader comparing arms should not treat a mid-word end as a defect.
+- **The three-word floor no longer bounds what it admits.** The "three-word quotes are ~0% ambiguous" measurement was taken over *whole* words; the peel will accept `"the deploy p"`. The floor still stops the ladder from descending into one- and two-word territory, but it is no longer the ambiguity guarantee its name suggests.
+
+A third defect surfaced only under differential fuzzing, and neither review found it: `return at(...)` on a unique hit meant that a candidate `at()` correctly **refused** — a boundary splitting a surrogate pair — ended the whole ladder instead of continuing to a shorter candidate. Fixed at both rungs; it accounted for 259 of the 778 newly resolved cases.
+
 **The honesty requirement.** Because a recovered span is sliced from the message, a *mis-located* span is schema-valid and passes core's fidelity check — that check catches incoherence, not mis-location. So **which rung resolved each finding is a first-class reported metric**, not an implementation detail. An arm whose findings mostly resolve at rung 3 is reporting guesses.
 
 - [ ] **Step 1: Write the failing test**
