@@ -15,6 +15,7 @@ import {
   gateReport,
   itemDeadlineBound,
   judgedUnitFor,
+  minSampleForOneContrary,
   planBakeoff,
   runBakeoff,
   type ArmFamily,
@@ -978,6 +979,180 @@ describe("the semantic gates", () => {
     const r = report([judged([call()])]);
     expect(outcome(r, "resolvable-rate").verdict).toBe("not-measured");
     expect(outcome(r, "duplicate-rate").verdict).toBe("not-measured");
+  });
+});
+
+describe("a gate does not rule on a sample too small to be about the arm", () => {
+  /**
+   * The defect, MEASURED rather than argued.
+   *
+   * `runs/slate-p-fin-01.gates.jsonl`, the 16-arm slate that has actually run:
+   * `tier2-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC` and its
+   * `tier2only-` twin both came back `killedOnRunGates: true` on
+   * `resolvable-rate`, reading "1 of 2 quote(s) resolved to a span ... a rate
+   * of 0.500 against a floor of 0.8". SAMPLE SIZE 2. One unplaceable quote out
+   * of two is not a capability verdict, and `killedOnRunGates` is the field a
+   * reader takes as the bake-off's judgement of an arm.
+   *
+   * `not-measured` fired only at sample 0 before this block existed, so the
+   * only thing standing between a two-observation sample and a kill was that
+   * `0.5 >= 0.8` is false.
+   */
+  it("reports the rate and withholds the verdict on the shape that killed two arms", () => {
+    // The two Ministral arms' counters, verbatim from the run: one quote the
+    // ladder placed at rung 1, one it could not place, across 13 items.
+    const r = report([judged([call()], { rung1: 1, unresolvedQuotes: 1 })]);
+    const g = outcome(r, "resolvable-rate");
+    expect(g.sample).toBe(2);
+    expect(g.observed).toBe(0.5);
+    expect(g.verdict).toBe("not-measured");
+    expect(r.killedOnRunGates).toBe(false);
+    // The OBSERVATION survives -- this is not the empty not-measured an arm
+    // that made no call gets, and a reader must be able to tell them apart on
+    // the row. The counts, the rate and both sample numbers are all present.
+    expect(g.detail).toContain("1 of 2 quote(s) resolved");
+    expect(g.detail).toContain("0.500");
+    expect(g.detail).toContain("HAS NOT RULED");
+    expect(g.minSample).toBe(5);
+    // Which the sample-0 row does not carry, so the two are distinguishable by
+    // a downstream reader with no access to this file.
+    expect(outcome(report([judged([call()])]), "resolvable-rate").observed).toBeUndefined();
+  });
+
+  it("puts the minimum exactly where one contrary observation stops deciding it", () => {
+    // 5 is arithmetic on the gate's OWN floor, not a preference: a floor of 0.8
+    // tolerates one unplaceable quote in five, so 5 is the smallest n with
+    // (n-1)/n >= 0.8. Below it every rate one bad quote can produce -- 0/1,
+    // 1/2, 2/3, 3/4 -- is under the floor, so a "fail" there says "this arm
+    // produced one bad quote" and not "this arm is under the floor". Those are
+    // different claims and only the second one is the gate's.
+    const oneBadQuote = (resolved: number) =>
+      outcome(
+        report([judged([call()], { rung1: resolved, unresolvedQuotes: 1 })]),
+        "resolvable-rate",
+      );
+    for (const resolved of [0, 1, 2, 3]) {
+      expect(oneBadQuote(resolved).verdict, `${resolved} resolved + 1 unplaceable`).toBe(
+        "not-measured",
+      );
+      expect(oneBadQuote(resolved).observed! < GATES.minResolvableRate).toBe(true);
+    }
+    // And at 5 the same single bad quote is a PASS, which is what makes 5 the
+    // boundary rather than a round number: the gate can now say something.
+    expect(oneBadQuote(4).sample).toBe(5);
+    expect(oneBadQuote(4).observed).toBe(GATES.minResolvableRate);
+    expect(oneBadQuote(4).verdict).toBe("pass");
+  });
+
+  it("still fails an arm that is under the floor on a sample it may rule on", () => {
+    // THE CONTROL for this whole block. A minimum can be set high enough that
+    // the gate never rules, and a gate that cannot fail is worse than one that
+    // fails on two observations -- it looks like coverage and is not. Same five
+    // quotes, TWO of them unplaceable: 0.6 against a floor of 0.8, ruled on,
+    // and the arm is killed.
+    const r = report([judged([call()], { rung1: 3, unresolvedQuotes: 2 })]);
+    expect(outcome(r, "resolvable-rate").sample).toBe(5);
+    expect(outcome(r, "resolvable-rate").observed).toBeCloseTo(0.6, 10);
+    expect(outcome(r, "resolvable-rate").verdict).toBe("fail");
+    expect(r.killedOnRunGates).toBe(true);
+  });
+
+  it("derives the duplicate ceiling's minimum from ITS threshold, a different number", () => {
+    // 2 and not 5, out of the same arithmetic against a ceiling of 0.9: the
+    // smallest n with 1/n <= 0.9. One minimum shared by both rate gates would
+    // be a number chosen rather than derived, and it would be wrong for one of
+    // them whichever number it was.
+    const one = report([judged([call()], { rung1: 1 })]);
+    expect(outcome(one, "duplicate-rate").sample).toBe(1);
+    expect(outcome(one, "duplicate-rate").minSample).toBe(2);
+    // MEASURED in the slate run: four arms passed `duplicate-rate` on a sample
+    // of exactly 1. "0 of 1 finding was a restatement" is a statement about how
+    // many findings the arm produced, not about whether it restates itself.
+    expect(outcome(one, "duplicate-rate").observed).toBe(0);
+    expect(outcome(one, "duplicate-rate").verdict).toBe("not-measured");
+
+    const two = report([judged([call()], { rung1: 1, duplicatesDropped: 1 })]);
+    expect(outcome(two, "duplicate-rate").sample).toBe(2);
+    expect(outcome(two, "duplicate-rate").verdict).toBe("pass");
+  });
+
+  it("leaves the two per-call gates at one, and they still rule on what the run found", () => {
+    // A DECISION and not an omission, and the two rate gates above are why it
+    // is a different one. Those are rates over a denominator the ARM chooses --
+    // an arm that emits two quotes gets a rate quantised to {0, 0.5, 1}, and
+    // two of those three values fail. `p95-ttft` and `decode-rate` take one
+    // observation per answered CALL, and the corpus fixes how many calls there
+    // are: every arm in the slate that answered at all answered 12 or 13 times.
+    // Neither threshold has slack for `minSampleForOneContrary` to find, either
+    // -- 1,500 ms tolerates no call over 1,500 ms, and below n = 20 the
+    // nearest-rank p95 IS the maximum, which `GATES.maxP95TtftMs` argues for at
+    // length. Raising them would silence the clearest finding the slate
+    // produced without naming a defect it would have prevented.
+    const r = report([judged([call({ ttftMs: 9_000, completionTokens: 100, decodeTokPerSec: 2 })])]);
+    expect(outcome(r, "p95-ttft").minSample).toBe(1);
+    expect(outcome(r, "decode-rate").minSample).toBe(1);
+    expect(outcome(r, "p95-ttft").verdict).toBe("fail");
+    expect(outcome(r, "decode-rate").verdict).toBe("fail");
+
+    // The slate's own Approach-B result, at the size it was taken: 12 answered
+    // calls with a p95 of 2,733.57 ms against the 1,500 ms ceiling. It is still
+    // a fail after this change, which is the point of not touching this gate.
+    const b = report([judged(Array.from({ length: 12 }, () => call({ ttftMs: 2_733.57 })), { rung1: 8 })]);
+    expect(outcome(b, "p95-ttft").sample).toBe(12);
+    expect(outcome(b, "p95-ttft").verdict).toBe("fail");
+    expect(b.killedOnRunGates).toBe(true);
+  });
+
+  it("gives every gate a minimum, so a new one cannot arrive without declaring one", () => {
+    const r = report([judged([call()], { rung1: 9, unresolvedQuotes: 1, duplicatesDropped: 1 })]);
+    // A pair per gate rather than a blanket `>= 1`: the numbers themselves are
+    // the decision this block exists to record, and a list makes changing one
+    // a red test rather than a silent retune.
+    expect(r.gates.map((g) => [g.gate, g.minSample])).toEqual([
+      ["p95-ttft", 1],
+      ["decode-rate", 1],
+      ["resolvable-rate", 5],
+      ["duplicate-rate", 2],
+      ["non-empty-after-stop", 1],
+    ]);
+    // And no gate rules below its own minimum, whatever the minimum is.
+    for (const g of r.gates) {
+      if (g.sample < g.minSample) expect(g.verdict, g.gate).toBe("not-measured");
+    }
+  });
+});
+
+describe("the minimum sample is computed from a threshold, never chosen", () => {
+  it("is the smallest n at which one contrary observation still passes", () => {
+    const floor = (f: number) =>
+      minSampleForOneContrary({ passes: (o) => o >= f, oneContraryAt: (n) => (n - 1) / n });
+    const ceiling = (c: number) =>
+      minSampleForOneContrary({ passes: (o) => o <= c, oneContraryAt: (n) => 1 / n });
+    // Hand-derived, one threshold per line, and NOT by calling the function
+    // with the shipped constants -- a search keyed to the one number it is used
+    // at cannot tell "solves the inequality" from "returns 5". A floor f needs
+    // n >= 1/(1-f); a ceiling c needs n >= 1/c.
+    expect(floor(0)).toBe(1);
+    expect(floor(0.5)).toBe(2);
+    expect(floor(0.75)).toBe(4);
+    expect(floor(0.8)).toBe(5);
+    expect(floor(0.9)).toBe(10);
+    expect(floor(0.99)).toBe(100);
+    expect(ceiling(1)).toBe(1);
+    expect(ceiling(0.9)).toBe(2);
+    expect(ceiling(0.5)).toBe(2);
+    expect(ceiling(0.25)).toBe(4);
+    expect(ceiling(0.1)).toBe(10);
+  });
+
+  it("refuses a threshold with no slack rather than inventing a number for it", () => {
+    // A floor of 1.0 tolerates nothing: one contrary observation crosses it at
+    // every sample size, so no minimum separates "under the floor" from "one
+    // bad observation". Returning a large number there would be a gate that
+    // never rules, wearing a derivation.
+    expect(() =>
+      minSampleForOneContrary({ passes: (o) => o >= 1, oneContraryAt: (n) => (n - 1) / n }),
+    ).toThrow(/tolerates no contrary observation/);
   });
 });
 

@@ -5,7 +5,12 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunRecordSchema, type RunRecord } from "../src/driver/record.js";
-import { runBakeoff, type ArmGateReport, type BakeoffOptions } from "../src/driver/bakeoff.js";
+import {
+  resolveIrPath,
+  runBakeoff,
+  type ArmGateReport,
+  type BakeoffOptions,
+} from "../src/driver/bakeoff.js";
 
 /**
  * `runBakeoff` itself: the guards between a plan and a directory of files.
@@ -864,5 +869,115 @@ describe("runBakeoff, against a scripted page", () => {
     await expect(
       runBakeoff(page, bakeoffOptions(dir, { families: ["baseline-b"], policyPath: join(REPO_ROOT, "policies", "p-corp.md") })),
     ).rejects.toThrow(/policyHash/);
+  });
+});
+
+/**
+ * Where this driver looks for an IR, given only the name the PAGE serves it by.
+ *
+ * ## The defect these pin
+ *
+ * MEASURED before the fix, by running the documented invocation: the page's
+ * `IR_FIXTURES` genuinely registers "p-fin" (it `?raw`-imports
+ * `policies/compiled/p-fin.ir.json`), `slateBakeoffOptions` genuinely accepts
+ * `SIH_BAKEOFF_IR=p-fin`, and `runBakeoff` then resolved
+ * `apps/eval/fixtures/p-fin-ir.json` -- a path this repository has never had --
+ * and died inside `readFileSync` with a bare `ENOENT`. The requirement was
+ * written down (`slateBakeoffOptions`'s docblock said p-fin "needs
+ * SIH_BAKEOFF_IR_PATH and SIH_BAKEOFF_POLICY_PATH together") and enforced
+ * nowhere, which is this project's recurring shape: the knowledge lives in a
+ * comment and not in the code.
+ */
+describe("the IR name the page serves and the file this driver reads", () => {
+  it("has no file where the fixture convention would put the compiled policy's IR", () => {
+    // The PREMISE of everything below, asserted rather than assumed: if someone
+    // ever adds `apps/eval/fixtures/p-fin-ir.json`, the convention starts
+    // resolving and the two tests after this stop testing what they claim.
+    expect(existsSync(join(REPO_ROOT, "apps", "eval", "fixtures", "p-fin-ir.json"))).toBe(false);
+  });
+
+  it("resolves the compiled policy's IR from the registry name alone", () => {
+    // Not a second copy of the page's registry standing unchecked: `runBakeoff`
+    // compares its own sha256 of whatever this resolved against the digest
+    // `useIr(name)` returns from the page's bundled bytes, and refuses the run
+    // on a mismatch ("refuses when the page's IR is not the file this process
+    // planned against", above). What this asserts is that the resolution lands
+    // on the file whose bytes the page actually carries.
+    expect(resolveIrPath({ irName: "p-fin" })).toBe(B_IR_PATH);
+    expect(existsSync(resolveIrPath({ irName: "p-fin" }))).toBe(true);
+  });
+
+  it("still resolves the three fixtures the convention does cover", () => {
+    // The CONTROL for the line above: the off-convention entry must not have
+    // replaced the convention, or `SIH_BAKEOFF_IR=multiclass` -- which works
+    // today and is nobody's defect -- would start refusing.
+    for (const name of ["minimal", "multiclass", "semantic"]) {
+      const resolved = resolveIrPath({ irName: name });
+      expect(resolved).toBe(join(REPO_ROOT, "apps", "eval", "fixtures", `${name}-ir.json`));
+      expect(existsSync(resolved)).toBe(true);
+    }
+    // And the default, which is the one a run with no `SIH_BAKEOFF_IR` takes.
+    expect(resolveIrPath({})).toBe(IR_PATH);
+  });
+
+  it("keeps an explicit path exactly as the caller gave it", () => {
+    // `irPath` wins over both the table and the convention, because a caller
+    // who named a file is not asking to be second-guessed -- and it is how
+    // `test/baseline.spec.ts` and every B test above select p-fin today.
+    expect(resolveIrPath({ irName: "p-fin", irPath: "/tmp/somewhere-else.ir.json" })).toBe(
+      "/tmp/somewhere-else.ir.json",
+    );
+  });
+
+  it("refuses a name it has no file for, naming the cause rather than the syscall", () => {
+    // The failure mode the fix is FOR. Before it, a name outside the convention
+    // produced `ENOENT: no such file or directory, open '.../typo-ir.json'`
+    // from four layers inside `runBakeoff` -- a path that was never going to
+    // exist, about a name the page may well serve.
+    let thrown: unknown;
+    try {
+      resolveIrPath({ irName: "typo" });
+    } catch (error) {
+      thrown = error;
+    }
+    const message = String(thrown);
+    expect(message).toContain("typo");
+    // The path it TRIED, so a reader can see what the convention would have
+    // wanted and decide whether to move the file or pass the option.
+    expect(message).toContain(join("fixtures", "typo-ir.json"));
+    // Both spellings of the way out, once: the option a programmatic caller
+    // passes and the variable the shipped command reads.
+    expect(message).toContain("irPath");
+    expect(message).toContain("SIH_BAKEOFF_IR_PATH");
+    // And it says WHY the name being accepted elsewhere is not evidence this
+    // driver can find it -- the exact confusion that produced the defect.
+    expect(message).toContain("registry");
+    // Not a re-thrown syscall error.
+    expect(message).not.toContain("ENOENT");
+  });
+
+  it("runs the whole slate from `irName: p-fin` with no path at all", async () => {
+    // End to end through `runBakeoff`, because that is where the ENOENT was:
+    // the resolution above is only worth anything if the function that reads
+    // the file uses it. The page is scripted to report p-fin's digest, so the
+    // two-sided hash check is a real comparison here and not a tautology --
+    // hand it `IR_HASH` instead and this test goes red on the mismatch.
+    const dir = outDir();
+    const { page } = scriptedPage({ irHash: B_IR_HASH });
+    const result = await runBakeoff(
+      page,
+      bakeoffOptions(dir, { irName: "p-fin", irPath: undefined, itemTimeoutMs: B_ITEM_TIMEOUT_MS }),
+    );
+    expect(result.written).toHaveLength(1);
+    // Every record names the IR the page served, which is p-fin's and not the
+    // default fixture's -- so the run really did switch policies rather than
+    // resolving the old file under a new name.
+    const rows = readFileSync(result.written[0]!, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as RunRecord);
+    expect(rows).toHaveLength(CORPUS_ITEMS);
+    for (const row of rows) expect(row.irHash).toBe(B_IR_HASH);
+    expect(B_IR_HASH).not.toBe(IR_HASH);
   });
 });

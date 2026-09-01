@@ -165,7 +165,7 @@ test("runs the slate", async ({ page }) => {
         `origin storage ${(g.originStorageBytes / 1e9).toFixed(2)} GB, ` +
         `${g.answeredCalls} answered call(s), ttftMs ${JSON.stringify(g.ttftMs)}, ` +
         `ladder ${JSON.stringify(g.ladder)}, ` +
-        `gates ${g.gates.map((x) => `${x.gate}=${x.verdict}(n=${x.sample})`).join(" ")}, ` +
+        `gates ${g.gates.map((x) => `${x.gate}=${x.verdict}(n=${x.sample}/min${x.minSample})`).join(" ")}, ` +
         `killedOnRunGates=${g.killedOnRunGates}`,
     );
   }
