@@ -52,8 +52,19 @@ import type { Finding } from "./types.js";
  * model reaching p95 <= 3 s. `ir.latencyBudgetMs` is a required positive
  * integer with no schema default, and the value the test fixtures carry is
  * 5000. So on those numbers ONE unnecessary segment spends 92% of the whole
- * message budget and a second one blows it, which is why the cheapest decision
- * available -- do not call at all -- is worth making carefully.
+ * message budget and a second one blows it.
+ *
+ * Those numbers have since failed to reproduce, and by a lot. `apps/eval`'s
+ * `test/tier2.spec.ts` logs the call rows of real judge calls on that same
+ * cheapest model, and a whole call there -- time to first token plus decoding
+ * the answer -- is 0.55-1.15 s, 11-23% of a 5,000 ms message budget rather than
+ * 92%, at a p95 TTFT under 0.6 s -- on THAT model, which is the only one of the
+ * four this machine has measured. Core cannot run that measurement (it has no
+ * model, and cannot import `@sih/tier2` at all), so the figure is not restated
+ * here as if this package had produced it. What it changes is the STRENGTH of
+ * the argument, not its direction: at the measured cost an unnecessary segment
+ * is affordable and this filter is a wall-clock and false-positive argument,
+ * not a "one wasted call ends the message" one.
  */
 
 /**

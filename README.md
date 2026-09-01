@@ -165,14 +165,16 @@ Eight plans; four are done.
 | 2 | Vault, pseudonymization, rehydration | **done** — Plans 1&nbsp;+&nbsp;2 built `packages/core`, which held 276 tests when Plan 2 closed. It holds 354 now: Plan 5 added the degraded channel, message scope and the escalation policy to it, so the count is no longer attributable to these two plans. |
 | 3 | Policy compiler + policy suite | **done** offline — 139 tests. The live compile against a frontier model is deferred by choice. |
 | 4 | Tier-1 span tagger + eval harness | **done** — `packages/tier1` 219 tests. `apps/eval` is shared with Plan 5 and its count is no longer attributable to one plan. |
-| 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (269 tests); the compiler-versus-prompting head-to-head runs, see below |
+| 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (272 tests); the compiler-versus-prompting head-to-head runs, see below |
 | 6 | Extension (WXT, MV3) | not started |
 | 7 | Corpus pipeline | not started |
 | 8 | Evaluation and analysis | not started |
 
-**1,303 tests** — 1,222 vitest (core 354, tier2 269, eval 241, tier1 219, compiler 139) plus 81
-Playwright specs against real Chrome, of which 80 run and **one is skipped by default**: the
+**1,311 tests** — 1,229 vitest (core 354, tier2 272, eval 245, tier1 219, compiler 139) plus 82
+Playwright specs against real Chrome, of which 81 run and **one is skipped by default**: the
 four-model bake-off, which is a deliberate command rather than part of a suite run (see below).
+Every figure here is off one `pnpm -r test` and one `playwright test --list`, the Playwright half
+included — it was carried forward unchecked for several commits and was one short.
 Typechecking clean across five projects.
 
 ### What is deliberately *not* claimed yet
@@ -203,17 +205,23 @@ Typechecking clean across five projects.
   produce are throughput and hygiene properties; `ArmGateReport.scoring.verdictMeans` says so on
   every row.
 - **Approach B fails the p95 time-to-first-token gate, and that is not a result either.** The
-  ceiling was derived at the compiled judge's ~1.1 kB prompt, built from one segment; B carries
-  the whole policy document on every call and measures ~4.7x the prompt tokens. Every report row
-  carries `judgedUnit`, `judgedUnitChars` and `promptTokens` so the mismatch is visible rather
-  than described, but the gate is still applied and a B-appropriate ceiling would have to be
-  derived from a run that has not happened.
+  ceiling was derived at the compiled judge's ~1.1 kB prompt, which was built from ONE SEGMENT —
+  a prompt the judge no longer builds on this policy, since `p-fin`'s only predicate is
+  message-scoped and the judge is now shown the whole message. Against the arms as they run
+  today the gap is **4.8x** the prompt tokens (baseline-b 1,433 p50 against
+  compiled-tier2-only 297) and **4.75x** on the tier-0 pair (1,450 against 305) — pairing each B
+  arm with the compiled arm that ran the same tiers, which is the only comparison the four arms
+  support. Against the one-segment prompt the ceiling was actually set at (264 p50 tokens, the
+  run recorded in Plan 5's document) it is 5.4x. Every report row carries `judgedUnit`,
+  `judgedUnitChars` and `promptTokens` so the mismatch is visible rather than described, but the
+  gate is still applied and a B-appropriate ceiling would have to be derived from a run that has
+  not happened.
 
   The current numbers, MEASURED on one machine, one model (`Qwen3.5-2B-q4f16_1-MLC`) and three
   items, from `test/baseline.spec.ts` against `p-fin` at its own 5,000 ms message budget: both
   compiled families make **3 answered calls** (one per message, all message-scope) at a p50 TTFT
   of ~0.56 s on p50 prompts of 297/305 tokens; both B families make 3 calls at a p50 TTFT of
-  ~2.7 s on p50 prompts of 1,433/1,450 tokens (two runs agreed on the token counts exactly and
+  ~2.7 s on p50 prompts of 1,433/1,450 tokens (four runs agreed on the token counts exactly and
   on the latencies to within 2%). No arm files a budget notice of either kind. Read that as a *prompt-size* difference and not yet as a method result: nothing here
   scores what either arm found.
 - **No accuracy numbers exist.** The corpus in this repo is a 13-item smoke fixture whose only
@@ -241,11 +249,17 @@ Typechecking clean across five projects.
   both, so nothing here is silent — but a reader who takes `judgedUnitChars` as the prompt size
   the p95 TTFT was taken at is reading the wrong column on a message-only policy. Fixing it
   means deriving the judged unit from the family *and* the IR's declared scopes, which reaches
-  `planBakeoff`, `segmentSizeDistribution` and `gateReport`; it is unowned.
+  `segmentSizeDistribution` and `gateReport`; it is unowned. What is no longer part of it is
+  `planBakeoff`'s **call ceiling**: `maxCallsPerItem` now counts the whole-message call off the
+  IR's declared scopes, because the labelling gap is cosmetic where the arithmetic gap is not —
+  an undercounted ceiling is an item deadline a legitimate item exceeds, and it also made the
+  planner refuse a message-scoped arm outright on any corpus where escalation selects no
+  segment, while both Approach-B arms planned and ran.
 - **The gates' `p95` is a maximum at this corpus size.** The percentile is nearest-rank, and
   `ceil(0.95 × n) = n` for every n ≤ 19 — this corpus produces at most 18 engine calls per
-  compiled arm and 13 per Approach-B arm, so `maxP95TtftMs` is a ceiling on an arm's single
-  slowest call and one slow call kills it. Every gate row carries its `sample`, and the
+  compiled arm (that is the segment-scoped worst case; on `p-fin`, whose one predicate is
+  message-scoped, it is 13, one per message) and 13 per Approach-B arm, so `maxP95TtftMs` is a
+  ceiling on an arm's single slowest call and one slow call kills it. Every gate row carries its `sample`, and the
   `p95-ttft` row says so in words whenever it is true.
 - **The xgrammar #807 counter was never built, and this corpus could not feed it.** The carried
   risk asks for an error counter over ≥ 200 grammar-constrained calls. No such counter exists,

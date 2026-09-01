@@ -502,15 +502,27 @@ export class WebLlmJudge implements SemanticJudge {
    * ## Why the message call goes FIRST
    *
    * It is exactly one call, known before the run; the segment list is not. Under
-   * a budget that admits k calls -- and `p-fin` carries the compiler's real
-   * 5,000 ms against Plan 5's measured ~4.6 s per call, so k is about 1 -- a
-   * message-LAST order makes coverage of the policy's message clause depend on
-   * how many segments the message happened to have: answered on short messages,
-   * silently skipped on long ones, with the difference invisible in any
-   * aggregate. Message-first also spends that one affordable call on the same
-   * unit the Approach-B baseline spends its own single call on, so a budget that
-   * admits one call does not end up comparing a segment answer against a
-   * message answer.
+   * a budget that admits k calls, a message-LAST order makes coverage of the
+   * policy's message clause depend on how many segments the message happened to
+   * have: answered on short messages, silently skipped on long ones, with the
+   * difference invisible in any aggregate. Message-first also spends its call on
+   * the same unit the Approach-B baseline spends its own single call on, so a
+   * tight budget does not end up comparing a segment answer against a message
+   * answer.
+   *
+   * What k is here, MEASURED rather than quoted. `p-fin` carries the compiler's
+   * real 5,000 ms per message, and a whole tier-2 call on this machine's
+   * `Qwen3.5-2B-q4f16_1-MLC` -- time to first token plus decoding the answer --
+   * ran 0.55 s for a 5-token answer and 1.15 s for a 33-token one, computed
+   * from the call rows `apps/eval/test/tier2.spec.ts` logs. So k is about 4-9,
+   * NOT the ~1 that Plan 5's ~4.6 s per call implies: that figure was taken at
+   * a prompt size nobody recorded, and the plan records its sibling latency
+   * (Approach B's "7.5 s") not reproducing here either. The ordering argument
+   * survives k = 4 -- any k below a message's segment count leaves the message
+   * clause's coverage decided by segmentation -- but "only one call fits" is
+   * not a premise anything in this repository measured, and a both-scopes
+   * policy sized from it would be sized from a number this machine does not
+   * produce.
    *
    * What it costs, honestly: on a message with segment-scoped work, the message
    * call takes the budget the first segment would have had, and a stop there

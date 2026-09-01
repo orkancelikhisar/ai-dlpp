@@ -2611,10 +2611,15 @@ criterion was really after — `scope-unjudged: 0` — holds, because
   `selectedSegments + 1` — the segment loop has no clause to carry.
 - The message call goes FIRST. It is exactly one call, known before the run,
   where the segment list is not; message-LAST makes coverage of the policy's
-  message clause depend on how many segments a message happened to have, and
-  under a budget that admits ~1 call it would never be reached. Message-first
-  also spends that call on the same unit Approach B spends its own single call
-  on. MEASURED: moving the block after the segment loop fails four tests.
+  message clause depend on how many segments a message happened to have, so
+  under any budget that admits fewer calls than a message has segments it can go
+  unreached. The "~1 call" this bullet used to name came from the ~4.6 s per
+  call above; MEASURED on this machine a whole call is 0.55–1.15 s
+  (`tier2.spec.ts`'s logged call rows), so `p-fin`'s 5,000 ms admits about 4–9,
+  and the argument rests on k being small rather than on k being 1.
+  Message-first also spends that call on the same unit Approach B spends its own
+  single call on. MEASURED: moving the block after the segment loop fails four
+  tests.
 - One call for ALL message-scoped predicates together, per the plan's own
   decision, and matching what the segment loop already does per segment.
 - `scopesJudged` names a scope this run ASKED about — the word is pushed beside

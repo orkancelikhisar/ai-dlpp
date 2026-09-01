@@ -74,8 +74,16 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  * `scopesJudged: ["segment"]`, and `detect` filed a `scope-unjudged` notice for
  * the message scope on every message. That was an unimplemented feature, not a
  * property of either method, and it is now implemented -- `WebLlmJudge` asks
- * message-scoped predicates once about the whole message, so both families file
- * zero `scope-unjudged` on `p-fin` (MEASURED, `test/baseline.spec.ts`).
+ * message-scoped predicates once about the whole message, so the COMPILED
+ * families file zero `scope-unjudged` on `p-fin` where they used to file one
+ * per message (MEASURED, `test/baseline.spec.ts`).
+ *
+ * A B arm's zero on the same column is not the same fact and must not be read
+ * as one. `scope-unjudged` is filed by core's `detect`, off
+ * `unjudgedScopes(ir, verdict.scopesJudged)`, and this module returns a
+ * `Detector` rather than a `SemanticJudge`: B never reaches that code, names no
+ * scope, and would file zero under a judge that answered nothing at all. B's 0
+ * is a structural constant; only the compiled arms' 0 moved.
  *
  * What remains true and is worth keeping: ONE notice per unjudged SCOPE, not
  * one per predicate -- MEASURED against `detect` with three message-scoped
@@ -106,12 +114,26 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  * ## The asymmetry that is NOT fixed here, and how to see it in the numbers
  *
  * **B has one message's worth of completion budget where the judge has one per
- * segment.** `max_tokens` is fixed on the engine (`Tier2Config.maxTokens`,
- * consumed by `buildCallParams`), so a message split into five segments gives
- * the compiled arm five times B's output allowance for the same input. Plan 5
- * already recorded truncation as the dominant parse failure -- 3 of 6
+ * CALL, and how many calls the judge makes is the policy's business.**
+ * `max_tokens` is fixed on the engine (`Tier2Config.maxTokens`, consumed by
+ * `buildCallParams`), so it is spent per call rather than per message: a policy
+ * with a segment-scoped clause and a message split into five selected segments
+ * gives the compiled arm five times B's output allowance for the same input.
+ *
+ * The size of that handicap is therefore a property of the POLICY, and on the
+ * only compiled policy in this repository it is zero. `p-fin`'s one predicate
+ * is message-scoped, so the judge makes exactly one whole-message call and gets
+ * exactly one call's worth of `maxTokens` -- the same allowance B gets, since
+ * both arms are built from the same `Tier2Config` (MEASURED,
+ * `test/baseline.spec.ts`: 3 answered calls and `truncatedResponses: 0` on each
+ * of the four arms). Read this bullet as the shape of the asymmetry on a policy
+ * with segment-scoped clauses, not as a handicap the numbers in this repository
+ * were taken under.
+ *
+ * Plan 5 already recorded truncation as the dominant parse failure -- 3 of 6
  * constrained Phi-4-mini calls, all three at `finish_reason: "length"` -- at a
- * budget LARGER than the one pinned here, and B is the arm most exposed to it.
+ * budget LARGER than the one pinned here, and B is the arm most exposed to it
+ * wherever the gap is real.
  *
  * This module cannot correct it: raising `max_tokens` for B alone would trade
  * one asymmetry for another. What it does instead is make it visible, which is

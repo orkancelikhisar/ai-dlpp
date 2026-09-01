@@ -184,8 +184,19 @@ test("runs Approach B against the compiled arms over one compiled policy", async
   // no segment-scoped clause for a per-segment call to carry, and a call
   // carrying an empty predicate list is seconds of a 2 GB model spent on
   // nothing. A policy declaring both scopes costs `selectedSegments + 1`; this
-  // one costs 1, which is the cost the compiled arm used to pay 2-6 times over
-  // while answering the predicate in a scope it was not declared in.
+  // one costs 1.
+  //
+  // What that replaced, in the units it was paid in: the arm used to spend one
+  // call per SELECTED SEGMENT answering this message-scoped predicate in a
+  // scope the policy never declared it in. On these three items escalation
+  // selects 1, 2 and 2 segments without tier-0 priors and 1, 3 and 2 with them
+  // -- MEASURED by calling core's `selectSegments` over this same slice, not
+  // read off a run -- so the saving is 5 calls to 3 on `compiled-tier2-only`
+  // and 6 to 3 on `compiled`, never more than 3 calls to 1 on any one message.
+  // The plan's record of the pre-change run reports exactly those 5 and 6
+  // answered calls (docs/superpowers/plans/2026-08-30-05-tier2-judge-baseline.md),
+  // which is where the totals are checkable; the per-item counts above are the
+  // half this file can compute for itself.
   expect(callsPerItem("compiled")).toEqual([1, 1, 1]);
   expect(callsPerItem("compiled-tier2-only")).toEqual([1, 1, 1]);
   // ATTRIBUTED, so "one call" cannot be a judge that did nothing: every one of
@@ -215,11 +226,16 @@ test("runs Approach B against the compiled arms over one compiled policy", async
 
   // THE ASYMMETRY THAT DECIDES HOW TO READ THE LATENCY GATE, asserted rather
   // than described. B carries the whole 5,272-character policy document in
-  // every prompt where the judge carries one segment, so B's prompts are
-  // several times larger -- and `GATES.maxP95TtftMs` was derived at the
-  // judge's ~1.1 kB. A B arm failing that gate is failing a threshold set for
-  // different work, which is why `judgedUnit` and `promptTokens` are on the row
-  // beside the verdict.
+  // every prompt; the judge carries the passage its model was shown and no
+  // policy text at all -- on THIS policy that passage is the whole message,
+  // which is the same text B is shown minus the document. So B's prompts are
+  // several times larger, and the difference is the document.
+  //
+  // `GATES.maxP95TtftMs` was derived at the judge's ~1.1 kB, which was a
+  // ONE-SEGMENT prompt: the judge on this policy no longer builds one, so the
+  // ratio below is not the ratio the ceiling was set at. A B arm failing that
+  // gate is failing a threshold set for different work either way, which is why
+  // `judgedUnit` and `promptTokens` are on the row beside the verdict.
   const b = byFamily.get("baseline-b")!;
   const compiledOnly = byFamily.get("compiled-tier2-only")!;
   expect(b.judgedUnit).toBe("message");
@@ -246,8 +262,15 @@ test("runs Approach B against the compiled arms over one compiled policy", async
   // and every head-to-head number taken before this line changed was taken with
   // the compiled arm unable to answer the one predicate the policy declares.
   //
-  // All four are 0 now, and all four for the same reason: every arm asks its
-  // model about the whole message.
+  // All four are 0 now, and only TWO of the four zeros moved. The compiled
+  // arms' zero is the measurement: `unjudgedScopes(p-fin, ["message"])` returns
+  // nothing because the judge named the scope it asked about, and it named
+  // "segment" before this. The B arms' zero is a structural constant -- the
+  // notice is filed inside core's `detect`, which a B arm never enters
+  // (`createBaselineB` is a `Detector`, not a `SemanticJudge`), so a B row
+  // reads 0 under any judge and is not evidence about what B asks its model.
+  // Asserted on all four anyway: the B rows are the control that says the
+  // column is 0 where nothing could have filed it.
   for (const g of gates) expect(g.degradedNotices["scope-unjudged"], g.arm).toBe(0);
   // And the 0s are not vacuous: this policy really does declare a predicate in
   // a scope `unjudgedScopes` enumerates, so a judge that stopped naming

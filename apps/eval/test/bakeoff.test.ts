@@ -373,6 +373,13 @@ describe("the per-item wall-clock ceiling", () => {
     // is intrinsic to the method rather than a harness asymmetry: the compiled
     // judge makes one engine call per SELECTED SEGMENT plus the one repair
     // retry, while Approach B makes one call per MESSAGE plus the same retry.
+    //
+    // On THIS IR. `PAIRED_IR`'s only predicate is segment-scoped, which is the
+    // one shape on which "count the selected segments" is the whole story --
+    // a message-scoped clause costs one more call per item, and the block
+    // "the call ceiling is the policy's, not only the family's" below is what
+    // covers that.
+    expect(PAIRED_IR.semanticPredicates.map((p) => p.scope)).toEqual(["segment"]);
     expect(familyShape("compiled").judgedUnit).toBe("segment");
     expect(familyShape("baseline-b").judgedUnit).toBe("message");
     expect(familyShape("baseline-b-tier0").judgedUnit).toBe("message");
@@ -389,6 +396,162 @@ describe("the per-item wall-clock ceiling", () => {
     expect(compiled.maxCallsPerItem).toBe(2 * compiled.segments.perItem!.max);
     expect(compiled.segments.perItem!.max).toBeGreaterThan(1);
     expect(baseline.maxCallsPerItem).toBe(2);
+  });
+});
+
+describe("the call ceiling is the policy's, not only the family's", () => {
+  /**
+   * `familyShape` hardcodes `judgedUnit` per family, but how many calls a
+   * compiled arm makes is decided by the SCOPES the IR declares:
+   * `WebLlmJudge` partitions its predicates by scope and never enters a loop it
+   * has no predicate for, so a message-scoped clause costs exactly one call an
+   * item and a policy with no segment-scoped clause costs no segment call at
+   * all however many segments escalation selected.
+   *
+   * Every other planning test in this file runs `SEMANTIC_IR`, whose only
+   * predicate is segment-scoped -- the one shape on which counting segments and
+   * counting segments-plus-the-message-call give the same answer, so none of
+   * them can tell the two rules apart. These can.
+   */
+  const MESSAGE_CLAUSE: PolicyIr["semanticPredicates"][number] = {
+    id: "board-confidential",
+    nlPredicate: "whether the message discusses an unannounced board decision",
+    scope: "message",
+  };
+
+  /** The shadow entityType the compiler mints for a predicate; see mintShadowEntityTypes. */
+  const MESSAGE_SHADOW: PolicyIr["entityTypes"][number] = {
+    id: "pred:board-confidential",
+    tier: 2,
+    nlDefinition: MESSAGE_CLAUSE.nlPredicate,
+    examples: [],
+    counterExamples: [],
+    severity: "high",
+  };
+
+  /** The shipped fixture's predicate, moved to the scope `p-fin`'s real one declares. */
+  const MESSAGE_ONLY_IR: PolicyIr = {
+    ...PAIRED_IR,
+    semanticPredicates: PAIRED_IR.semanticPredicates.map((p) => ({ ...p, scope: "message" })),
+  };
+
+  /** Both scopes at once, which is the shape neither `p-fin` nor the fixture has. */
+  const BOTH_SCOPES_IR: PolicyIr = {
+    ...PAIRED_IR,
+    semanticPredicates: [...PAIRED_IR.semanticPredicates, MESSAGE_CLAUSE],
+    entityTypes: [...PAIRED_IR.entityTypes, MESSAGE_SHADOW],
+    actions: {
+      ...PAIRED_IR.actions,
+      default: { ...PAIRED_IR.actions.default, [MESSAGE_SHADOW.id]: "redact" },
+    },
+  };
+
+  /**
+   * Two messages that are nothing but a fenced block, and no high-entropy
+   * string in either -- so escalation selects NOTHING on them under both tier-0
+   * conditions. MEASURED against core's own `selectSegments` in the first
+   * assertion below rather than asserted here, since the whole point of the
+   * corpus is a precondition this file does not control.
+   */
+  const CODE_ONLY_ITEMS = loadCorpus(
+    [
+      {
+        id: "code-only-a",
+        text: "```\nconst total = price * quantity;\n```",
+        policy: "minimal-fixture",
+        gold: [],
+      },
+      {
+        id: "code-only-b",
+        text: "```js\nfunction add(a, b) {\n  return a + b;\n}\n```",
+        policy: "minimal-fixture",
+        gold: [],
+      },
+    ]
+      .map((item) => JSON.stringify(item))
+      .join("\n"),
+  );
+
+  it("adds the whole-message call to a compiled arm's ceiling, and only to that arm's", () => {
+    // The undercount this closes: `maxCallsPerItem` reaches `itemDeadlineBound`
+    // as bound (b), and a ceiling below an arm's legitimate worst case turns a
+    // merely-slow item into an errored row AND stamps every later row of the
+    // arm `abandonedWorkInFlight` -- the arm's whole latency column.
+    const plan = (ir: PolicyIr) =>
+      planBakeoff({
+        options: options({ families: ["compiled", "baseline-b"] }),
+        ir,
+        items: ITEMS,
+        policyText: POLICY_TEXT,
+      });
+    const armOf = (p: ReturnType<typeof plan>, family: ArmFamily) =>
+      p.arms.find((a) => a.family === family)!;
+
+    const both = plan(BOTH_SCOPES_IR);
+    const segmentOnly = plan(PAIRED_IR);
+    const compiledBoth = armOf(both, "compiled");
+    const compiledSegmentOnly = armOf(segmentOnly, "compiled");
+
+    // The same corpus and the same escalation, so the segment term is identical
+    // and the only thing that moved is the declared scope.
+    expect(compiledBoth.segments.perItem).toEqual(compiledSegmentOnly.segments.perItem);
+    expect(compiledBoth.segments.perItem!.max).toBe(3);
+    expect(compiledSegmentOnly.maxCallsPerItem).toBe(6);
+    expect(compiledBoth.maxCallsPerItem).toBe(8);
+    // Approach B is shown the message whatever the policy declares.
+    expect(armOf(both, "baseline-b").maxCallsPerItem).toBe(2);
+    expect(armOf(segmentOnly, "baseline-b").maxCallsPerItem).toBe(2);
+  });
+
+  it("charges NO segment call on a policy with no segment-scoped clause", () => {
+    // The other half, and the one `p-fin` is: escalation still selects up to 3
+    // segments per item, the judge is still handed them, and it makes no call
+    // about any of them -- so a ceiling of 2 x 3 would size the arm at three
+    // times the calls it can make.
+    const plan = planBakeoff({
+      options: options({ families: ["compiled"] }),
+      ir: MESSAGE_ONLY_IR,
+      items: ITEMS,
+    });
+    const compiled = plan.arms[0]!;
+    expect(compiled.segments.perItem!.max).toBe(3);
+    expect(compiled.maxCallsPerItem).toBe(2);
+  });
+
+  it("plans a message-scoped arm on a corpus where escalation selects nothing", () => {
+    // The refusal below exists to stop an arm writing "a complete, schema-valid
+    // transcript of a model that never ran". On a message-scoped policy that is
+    // not what a zero segment count means: the judge calls the model once about
+    // the whole message whether or not a single segment was selected. Refusing
+    // here would drop the compiled arm from a code-heavy corpus while both B
+    // arms ran -- an artifact of the harness, not of either method.
+    const plan = planBakeoff({
+      options: options({ families: ["compiled", "compiled-tier2-only"] }),
+      ir: MESSAGE_ONLY_IR,
+      items: CODE_ONLY_ITEMS,
+    });
+    for (const arm of plan.arms) {
+      // The precondition, read off core's own escalation through the planner:
+      // segments exist, and none of them is selected.
+      expect(arm.segments.segmentsTotal, arm.arm).toBe(2);
+      expect(arm.segments.count, arm.arm).toBe(0);
+      expect(arm.segments.perItem, arm.arm).toEqual({ p50: 0, p95: 0, max: 0, min: 0 });
+      expect(arm.maxCallsPerItem, arm.arm).toBe(2);
+    }
+  });
+
+  it("still refuses an arm whose ONLY calls would be segment calls it will not make", () => {
+    // The control for the test above: the refusal has to keep firing where it
+    // is true, or the fix has traded a one-sided refusal for a one-sided
+    // silence. Same corpus, same families, and the only difference is the scope
+    // the predicate is declared in.
+    expect(() =>
+      planBakeoff({
+        options: options({ families: ["compiled-tier2-only"] }),
+        ir: PAIRED_IR,
+        items: CODE_ONLY_ITEMS,
+      }),
+    ).toThrow(/would make no engine call on any of the 2 corpus items/);
   });
 });
 

@@ -366,14 +366,27 @@ export interface FamilyShape {
   /** False for the Approach-B arms, which are their own `Detector`. */
   readonly runsCompiledJudge: boolean;
   /**
-   * What ONE engine call covers.
+   * What ONE engine call covers, as a property of the FAMILY alone.
    *
-   * The compiled judge makes one call per SELECTED SEGMENT (escalation decides
-   * which); Approach B makes one call per MESSAGE, because the whole message is
-   * what its model is shown. This is intrinsic to the two methods and is the
-   * one place the families legitimately differ in cost -- which is why the
-   * shared wall-clock ceiling is sized from the larger of the two rather than
-   * from an average that would squeeze the compiled family.
+   * Approach B makes one call per MESSAGE, because the whole message is what
+   * its model is shown, and that is intrinsic to "simply prompting". The
+   * compiled judge's unit is NOT a property of the family: `WebLlmJudge` asks
+   * each predicate in the scope the policy DECLARED it in, so a segment-scoped
+   * clause costs one call per SELECTED SEGMENT (escalation decides which) and a
+   * message-scoped clause costs one call about the whole message. How much the
+   * two families differ in cost is therefore a property of the policy, and on
+   * `policies/compiled/p-fin.ir.json` -- the only compiled policy here, whose
+   * one predicate is message-scoped -- they do not differ at all: all four arms
+   * make one call per message (MEASURED, `test/baseline.spec.ts`, 3 answered
+   * calls on each of the four arms over three items).
+   *
+   * This field still says "segment" on both compiled families, which is why
+   * `judgedUnitChars` and `judgedUnitsPerItem` describe a segment distribution
+   * on a message-only policy; that gap is the README's carried risk and is not
+   * closed here. What no longer depends on it is the CALL CEILING:
+   * `maxCallsPerItem` below counts the message call off the IR's declared
+   * scopes rather than off this field, because a ceiling that undercounts is a
+   * deadline a legitimate item can exceed.
    *
    * It is also what `SegmentSizeDistribution.unit` has to agree with, which is
    * why the union is imported from `segments.ts` rather than restated: a family
@@ -540,9 +553,10 @@ export interface ItemDeadlineBound {
  * and the arithmetic below is that IR's. It is NOT the only IR a tier-2 arm can
  * run: `policies/compiled/p-fin.ir.json` declares a semantic predicate too, at
  * the compiler's own 5,000 ms default, and this function is called with
- * whichever one the run loaded -- at 5,000 (a) is 5,020 against the same
- * 360,120 for (b), so the message budget binds far harder and the bound is
- * 6,020 with the default allowance. The page's
+ * whichever one the run loaded -- at 5,000 (a) is 5,020, and that IR's one
+ * predicate is message-scoped, so a compiled arm judges ONE unit per item and
+ * (b) is 2 x 60,020 = 120,040. The message budget binds far harder either way
+ * and the bound is 6,020 with the default allowance. The page's
  * `DEFAULT_TIER2_CALL_BUDGET_MS` is 60,000 and the smoke corpus selects at most
  * 3 segments per message under that IR on the default `compiled` family --
  * MEASURED here, and it is 3 rather than 2 because that family runs tier 0,
@@ -953,6 +967,12 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
     );
   }
 
+  // Which scopes this policy declares a predicate in, which is what decides how
+  // many calls the compiled judge makes per item -- see `maxUnits` below.
+  // Computed once: it is a property of the IR, not of an arm.
+  const declaresMessageScope = ir.semanticPredicates.some((p) => p.scope === "message");
+  const declaresSegmentScope = ir.semanticPredicates.some((p) => p.scope === "segment");
+
   const arms: PlannedArm[] = [];
   const owners = new Map<string, string>();
   for (const model of ordered) {
@@ -971,18 +991,41 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
         );
       }
       owners.set(path, arm);
-      // One call per judged unit plus the single repair retry. On the compiled
-      // family the unit count is the MAXIMUM of this arm's own per-item sample,
+      // One call per judged unit plus the single repair retry.
+      //
+      // An Approach-B arm judges one unit per item -- the message -- whatever
+      // the message contains. A compiled arm's count comes off the POLICY as
+      // well as the family, because `WebLlmJudge` partitions its predicates by
+      // the scope each was DECLARED in and never enters a loop it has no
+      // predicate for: the segment-scoped half costs one call per SELECTED
+      // segment and the message-scoped half exactly one more, per item.
+      //
+      // Read off `ir.semanticPredicates` and NOT off `shape.judgedUnit`, which
+      // is hardcoded per family and cannot see the policy. Counting segments
+      // alone undercounts a both-scopes policy by `callsPerJudgedUnit` calls an
+      // item -- and `deriveItemTimeoutMs` turns an undercounted ceiling into a
+      // deadline a legitimate item exceeds, which errors the row and stamps
+      // every later row of the arm `abandonedWorkInFlight`. On a message-only
+      // policy it also undercounts to ZERO whenever escalation selects nothing,
+      // which is the refusal below firing on an arm that in fact makes one
+      // whole-message call per item.
+      //
+      // The segment term is the MAXIMUM of this arm's own per-item sample,
       // never the p95: at n = 13 those are the same rank anyway, and a ceiling
       // built on a percentile would be a ceiling the worst message exceeds by
       // construction.
-      const maxUnits = shape.judgedUnit === "message" ? 1 : (segments.perItem?.max ?? 0);
+      const maxUnits = shape.runsCompiledJudge
+        ? (declaresSegmentScope ? (segments.perItem?.max ?? 0) : 0) +
+          (declaresMessageScope ? 1 : 0)
+        : 1;
       const maxCallsPerItem = shape.callsPerJudgedUnit * maxUnits;
       if (maxCallsPerItem === 0) {
         throw new Error(
           `arm "${arm}" would make no engine call on any of the ${items.length} corpus items: ` +
-            `escalation selected no segment anywhere (${segments.segmentsTotal} segment(s) in ` +
-            `total). Its file would be a complete, schema-valid transcript of a model that never ran.`,
+            `none of the IR's ${ir.semanticPredicates.length} semantic predicate(s) is ` +
+            `message-scoped, so this arm's only calls would be segment calls, and escalation ` +
+            `selected no segment anywhere (${segments.segmentsTotal} segment(s) in total). Its ` +
+            `file would be a complete, schema-valid transcript of a model that never ran.`,
         );
       }
       arms.push({

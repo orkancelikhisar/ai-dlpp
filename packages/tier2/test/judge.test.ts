@@ -1337,6 +1337,117 @@ describe("message-scoped predicates", () => {
     expect(new Set(found.map((f) => `${f.start}:${f.end}`)).size).toBe(1);
   });
 
+  it("hands the MESSAGE call the caller's signal and the configured budget", async () => {
+    // The equivalent segment-call assertion cannot cover this one: it builds
+    // `predicateIr()`, whose default predicate is segment-scoped, so it never
+    // issues a message call at all. `engine.ts` passes `opts.signal` as
+    // `runWithDeadline`'s outer abort, and that signal is the ONLY channel by
+    // which the orchestrator's per-message deadline can stop a call -- an
+    // unsignalled call runs to the judge's per-call budget instead, which on a
+    // bake-off arm is 60,000 ms against p-fin's 5,000 ms message budget. Under
+    // message-first ordering this is the FIRST call of every message, so a
+    // dropped signal would leave spec 5.3's per-message bound unenforced on
+    // every item.
+    //
+    // A second, non-default budget on purpose: a test that only ever exercises
+    // the value the implementation might have hardcoded cannot tell "reads the
+    // config" from "hardcodes the default".
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const engine = fakeEngine({ findings: [] });
+    const controller = new AbortController();
+    await new WebLlmJudge(engine, { budgetMs: 1234 }).judge(
+      req(twoSegments(), ir, [], { signal: controller.signal }),
+    );
+    // Call 0 is the message call -- the prompt is what says so, not the index.
+    expect(engine.promptOf(0)).toContain("- m1: ");
+    expect(engine.calls[0]!.opts.signal).toBe(controller.signal);
+    expect(engine.calls[0]!.opts.budgetMs).toBe(1234);
+    // And the segment calls after it, so a fix that wired only the first call
+    // cannot pass.
+    for (const index of [1, 2]) {
+      expect(engine.calls[index]!.opts.signal, `call ${index}`).toBe(controller.signal);
+      expect(engine.calls[index]!.opts.budgetMs, `call ${index}`).toBe(1234);
+    }
+  });
+
+  it("tells the message call about EVERY prior on the message, as labels and counts", async () => {
+    // The fairness premise of the whole head-to-head, pinned. `priorFindingsLine`'s
+    // own docblock states it: the whole-message call carries every prior on the
+    // message, "which is the same set Approach B's own prompt carries -- so the
+    // two arms' models are told the same thing about the same lower tier when
+    // they are shown the same text". Nothing asserted it on this side. The B
+    // side IS asserted (`baselineB.test.ts`, "in-pan (x1)"), so a message call
+    // that silently lost its priors would leave `baseline-b-tier0` with tier-0
+    // context and `compiled` without it -- the compiled arm looking worse at
+    // the task for a reason no counter, notice or gate reports.
+    //
+    // TWO priors, one in each segment, and the counts are the assertion. A
+    // single prior cannot tell "the passage is the whole message" from "the
+    // passage is the first segment", and the message passage's `end` is a
+    // hand-written literal whose only consumer is this line: `priorFindingsLine`
+    // drops a prior with `prior.start >= passage.end`, so an `end` that is too
+    // small discards the tail of the message silently.
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const segments = twoSegments();
+    const priors: Finding[] = segments.map((segment, index) => ({
+      start: segment.start,
+      end: segment.end,
+      // Not a substring of the message: if the prompt interpolates a prior's
+      // `text`, nothing else can have put this string there. The value a lower
+      // tier detected is exactly the answer key this project keeps out of
+      // prompts.
+      text: `SENTINEL-PRIOR-${index}`,
+      entityType: "client-name",
+      severity: "medium",
+      tier: 1,
+      source: "gliner-pii-base",
+      confidence: 0.9,
+    }));
+    const engine = fakeEngine({ findings: [] });
+    await new WebLlmJudge(engine, BUDGET).judge(req(segments, ir, priors));
+
+    const message = engine.promptOf(0);
+    expect(message).toContain("client-name (x2)");
+    expect(message).not.toContain("SENTINEL-PRIOR-0");
+    expect(message).not.toContain("SENTINEL-PRIOR-1");
+    // Each segment call sees only its own, which is what makes the x2 above a
+    // statement about the message passage rather than about the prior list.
+    expect(engine.promptOf(1)).toContain("client-name (x1)");
+    expect(engine.promptOf(2)).toContain("client-name (x1)");
+  });
+
+  it("charges a LATCHED message call to the message, and ends the run there", async () => {
+    // The latch is the one outcome that is both a failure and a stop, and on
+    // the message call neither half was pinned. Task 3 measured the state: after
+    // an interrupt the engine's flag stays set and every later call returns
+    // instantly with an empty body and `finish_reason: "abort"`, so continuing
+    // into the segment loop spends real calls on an engine that cannot answer
+    // and files the results as SEGMENT failures -- a message-scope failure
+    // landing inside the segment denominator, which is the units error the
+    // three messageScope* counters exist to prevent.
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const engine = fakeEngine({ raw: "", finishReason: "abort" });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const segments = twoSegments();
+    const verdict = await judge.judge(req(segments, ir));
+
+    // The run ENDED: no segment call was attempted.
+    expect(engine.calls).toHaveLength(1);
+    expect(judge.stats.messageScopeCalls).toBe(1);
+    expect(judge.stats.messageScopeJudged).toBe(0);
+    expect(judge.stats.messageScopeFailedClosed).toBe(1);
+    expect(judge.stats.abortedResponses).toBe(1);
+    expect(judge.stats.truncatedResponses).toBe(0);
+    expect(judge.stats.repairAttempts).toBe(0);
+    // ... and it is charged to the MESSAGE, never to the segment accounting.
+    expect(judge.stats.failedClosed).toBe(0);
+    expect(judge.stats.segmentsJudged).toBe(0);
+    expect(judge.stats.segmentsSkipped).toBe(segments.length);
+    expect(verdict.scopesJudged).toEqual(["message"]);
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
+    expect(verdict.degraded?.[0]!.detail).toContain("the whole message");
+  });
+
   it("files no scope-unjudged notice through detect() for a message-scoped policy", async () => {
     // The end of the chain, and the defect this closes: `p-fin`'s one predicate
     // is message-scoped, so every message used to carry a `scope-unjudged`
