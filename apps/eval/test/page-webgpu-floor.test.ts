@@ -9,14 +9,19 @@ import { WEBLLM_ADAPTER_FLOOR, meetsWebLlmAdapterFloor } from "../src/page/webgp
  *
  * ## Why this cannot be a browser test
  *
- * Every tier-2 spec opens with `test.skip(!webgpuAvailable())`, so an error in
- * this comparison is a silent green skip rather than a failure. The review that
- * found this measured both mutations against the pre-extraction code -- raising
- * `maxComputeWorkgroupStorageSize` to `64 << 10` made all nine tier-2 tests
- * skip at exit 0, and replacing the whole floor walk with `return true` was
- * equally green, because this machine clears the real floor either way, so no
- * machine can exercise both directions. Re-run here: each of them now fails in
- * this file.
+ * Nine of the eleven tier-2 specs open with `test.skip(!webgpuAvailable())`, so
+ * an error in this comparison is a silent green skip rather than a failure. The
+ * review that found this measured both mutations against the pre-extraction
+ * code -- raising `maxComputeWorkgroupStorageSize` to `64 << 10` made every
+ * tier-2 test skip at exit 0, and replacing the whole floor walk with
+ * `return true` was equally green, because this machine clears the real floor
+ * either way, so no machine can exercise both directions. Re-run here: each of
+ * them now fails in this file.
+ *
+ * The skip half re-measured on the suite as it stands, since the review's "all
+ * nine tier-2 tests" predates two of them: with `meetsWebLlmAdapterFloor`
+ * forced to `return false`, `playwright test tier2.spec.ts tier2-arms.spec.ts`
+ * reports 9 skipped, 2 passed, exit 0.
  *
  * The two halves below are what no machine provides: a limits object sitting
  * exactly ON the floor, and one a single unit below each of the four. And the

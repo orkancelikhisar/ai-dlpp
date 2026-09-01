@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { UNCERTAIN_BELOW, loadPolicyIr, type PolicyIr } from "@sih/core";
+import { UNCERTAIN_BELOW, loadPolicyIr, runTier0, segmentText, type PolicyIr } from "@sih/core";
 import {
+  DEFAULT_LOWER_TIER_ALLOWANCE_MS,
+  DEFAULT_TIER2_CALL_BUDGET_MS,
   GATES,
   INTERRUPT_DRAIN_OVERSHOOT_MS,
   armName,
@@ -12,6 +14,7 @@ import {
   gateReport,
   itemDeadlineBound,
   planBakeoff,
+  runBakeoff,
   type ArmFamily,
   type BakeoffOptions,
 } from "../src/driver/bakeoff.js";
@@ -23,9 +26,10 @@ import { segmentSizeDistribution } from "../src/driver/segments.js";
  * The bake-off driver: arms in, one JSONL file per arm and a gate verdict
  * beside each of them.
  *
- * Everything here is the NODE half -- planning, the deadline derivation and the
- * gate arithmetic -- because that is the half whose correctness can be settled
- * without twelve gigabytes of weights. The browser half has its own spec.
+ * Everything here is the NODE half -- planning, the deadline derivation, the
+ * gate arithmetic and, through a scripted page, `runBakeoff`'s own refusals --
+ * because that is the half whose correctness can be settled without the 7.49 GB
+ * of weights `test/tier2-profile.ts` measured. The browser half has its own spec.
  *
  * The rule the whole file is arranged around: a gate is COMPUTED, never
  * enforced by dropping data. An arm that fails one is a result, and a driver
@@ -150,11 +154,33 @@ const call = (over: Partial<Call> = {}): Call => ({
   ...over,
 });
 
+/**
+ * The two escalation conditions, each measured the way `planBakeoff` measures
+ * it for the family that runs under it.
+ *
+ * TWO of them and never one, because `gateReport` now refuses a distribution
+ * whose condition disagrees with the arm's family -- `segmentChars`,
+ * `segmentsPerItem` and `escalation` are the only fields on a gate report that
+ * do not come off the rows, so the wrong one would describe the other family's
+ * work under this arm's name. A single shared constant was what let this file
+ * hand a no-priors distribution to a `compiled` report for the whole of the
+ * previous round.
+ *
+ * `undefined` priors and `() => []` are deliberately different callers here:
+ * the first is the tier-2-only condition and the second would not be.
+ */
 const SEGMENTS = segmentSizeDistribution(ITEMS, { hasPredicates: true });
+const SEGMENTS_TIER0 = segmentSizeDistribution(ITEMS, {
+  hasPredicates: true,
+  priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
+});
 
 /**
  * The three settings no record carries, as `runBakeoff` would pass them for a
  * run of the shipped corpus against `semantic-ir.json`.
+ *
+ * `itemTimeoutMs` is a number this driver chose and is reported, not checked,
+ * so it need not be the one `planBakeoff` would derive.
  */
 const RUN_CONTEXT = {
   corpus: CORPUS,
@@ -162,13 +188,14 @@ const RUN_CONTEXT = {
   latencyBudgetMs: SEMANTIC_IR.latencyBudgetMs,
 } as const;
 
+/** The distribution `planBakeoff` would hand `gateReport` for this family. */
 function report(records: readonly RunRecord[], family: ArmFamily = "compiled") {
   return gateReport({
     arm: "tier2-" + MODEL,
     family,
     modelId: MODEL,
     records,
-    segments: SEGMENTS,
+    segments: familyShape(family).runsTier0 ? SEGMENTS_TIER0 : SEGMENTS,
     ...RUN_CONTEXT,
   });
 }
@@ -379,9 +406,77 @@ describe("the p95 time-to-first-token gate", () => {
     // Same sample size as the latency it stands beside; a prompt column taken
     // over a different set of calls could not be checked against it.
     expect(outcome(r, "p95-ttft").sample).toBe(2);
-    // And the segment sizes the arm actually ran over, which ARE in characters
-    // and so are directly comparable to the ~1.1 kB the threshold was derived at.
-    expect(r.segmentChars).toEqual(SEGMENTS.chars);
+    // And the segment sizes escalation selects for the arm, which ARE in
+    // characters and so are directly comparable to the ~1.1 kB the threshold
+    // was derived at.
+    expect(r.segmentChars).toEqual(SEGMENTS_TIER0.chars);
+  });
+
+  it("carries THIS family's escalation, on the one field where the two differ", () => {
+    // `segmentChars` cannot tell the two conditions apart on this corpus and
+    // that is a measured fact, not a weakness of the fixture: the segment tier 0
+    // re-admits is 66 characters, larger than nine of the seventeen the
+    // predicate branch selects and smaller than the largest, so it moves neither
+    // the median nor the maximum. Asserting `segmentChars` alone therefore
+    // proves nothing about WHICH distribution a report carries. `segmentsPerItem`
+    // is where the two separate -- max 3 against max 2 -- so it is the field
+    // this test reads.
+    expect(SEGMENTS_TIER0.chars).toEqual(SEGMENTS.chars);
+    expect(SEGMENTS_TIER0.perItem).not.toEqual(SEGMENTS.perItem);
+
+    const tier0 = report([judged([call()])], "compiled");
+    expect(tier0.segmentsPerItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
+    expect(tier0.escalation.hasPriors).toBe(true);
+
+    const tier2Only = report([judged([call()])], "compiled-tier2-only");
+    expect(tier2Only.segmentsPerItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
+    expect(tier2Only.escalation.hasPriors).toBe(false);
+  });
+
+  it("refuses the other family's distribution rather than reporting it as this arm's", () => {
+    // The population check. `segmentChars`, `segmentsPerItem` and `escalation`
+    // are the only fields on a gate report that do not come off the rows -- they
+    // are the PLAN's, measured before the arm ran -- so nothing else in the
+    // report contradicts a distribution belonging to the other family. This file
+    // itself shipped that mistake for a round: one shared no-priors constant,
+    // handed to `compiled` reports.
+    expect(() =>
+      gateReport({
+        arm: "tier2-" + MODEL,
+        family: "compiled",
+        modelId: MODEL,
+        records: [judged([call()])],
+        segments: SEGMENTS,
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/WITHOUT tier-0 priors/);
+    expect(() =>
+      gateReport({
+        arm: "tier2only-" + MODEL,
+        family: "compiled-tier2-only",
+        modelId: MODEL,
+        records: [judged([call()], {}, { arm: "tier2only-" + MODEL })],
+        segments: SEGMENTS_TIER0,
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/WITH tier-0 priors/);
+    // And a distribution selected at a different escalation threshold is the
+    // same defect through the other input: `uncertainBelow` is an experiment
+    // variable every record carries, so plan and run can disagree on it.
+    expect(() =>
+      gateReport({
+        arm: "tier2-" + MODEL,
+        family: "compiled",
+        modelId: MODEL,
+        records: [judged([call()])],
+        segments: segmentSizeDistribution(ITEMS, {
+          hasPredicates: true,
+          uncertainBelow: 0.99,
+          priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
+        }),
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/0\.99/);
   });
 
   it("does not kill an arm that produced no call to measure", () => {
@@ -541,6 +636,145 @@ describe("the semantic gates", () => {
   });
 });
 
+describe("every gate, exactly ON its threshold", () => {
+  // The four numeric gates are four comparators, and until this block existed
+  // three of them had never been exercised at the number they compare against:
+  // every fixture sat comfortably on one side. So `<=` against `<` and `>=`
+  // against `>` were free changes, and an arm sitting exactly on a gate could
+  // have been killed or passed either way -- on a threshold that is a judgement
+  // call in three cases out of four.
+  //
+  // The direction each gate is inclusive in is a decision, and it is the same
+  // one every time: the threshold VALUE PASSES. A ceiling of 1,500 ms means
+  // 1,500 is allowed, and a floor of 25 tok/s means 25 is allowed -- which
+  // matters most for `minDecodeTokPerSec`, whose own comment records that
+  // Qwen3-4B's measured 25 tok/s sits "exactly on the line". Under `>` that
+  // comment would describe a killed arm.
+
+  it("passes a p95 time-to-first-token exactly at the ceiling, and fails one millisecond over", () => {
+    expect(outcome(report([judged([call({ ttftMs: GATES.maxP95TtftMs })])]), "p95-ttft").verdict).toBe("pass");
+    expect(outcome(report([judged([call({ ttftMs: GATES.maxP95TtftMs + 1 })])]), "p95-ttft").verdict).toBe("fail");
+  });
+
+  it("passes a sustained decode rate exactly at the floor, and fails just under", () => {
+    // 50 tokens at 25 tok/s is 2 s, and 50/2 is 25 exactly -- both halves are
+    // the engine's own numbers, so no rounding stands between the fixture and
+    // the comparison. Qwen3-4B's manifest rate is this number.
+    const onTheLine = report([judged([call({ completionTokens: 50, decodeTokPerSec: GATES.minDecodeTokPerSec })])]);
+    expect(onTheLine.sustainedDecodeTokPerSec).toBe(GATES.minDecodeTokPerSec);
+    expect(outcome(onTheLine, "decode-rate").verdict).toBe("pass");
+    expect(onTheLine.killed).toBe(false);
+
+    const under = report([judged([call({ completionTokens: 50, decodeTokPerSec: 24 })])]);
+    expect(outcome(under, "decode-rate").verdict).toBe("fail");
+  });
+
+  it("passes a resolvable rate exactly at the floor, and fails just under", () => {
+    // 4 of 5 is 0.8, and the double 4/5 rounds to is the double the literal 0.8
+    // is, so this really is the comparator at its threshold rather than near it.
+    const onTheLine = report([judged([call()], { rung1: 4, unresolvedQuotes: 1 })]);
+    expect(outcome(onTheLine, "resolvable-rate").observed).toBe(GATES.minResolvableRate);
+    expect(outcome(onTheLine, "resolvable-rate").verdict).toBe("pass");
+
+    const under = report([judged([call()], { rung1: 79, unresolvedQuotes: 21 })]);
+    expect(outcome(under, "resolvable-rate").observed).toBeCloseTo(0.79, 10);
+    expect(outcome(under, "resolvable-rate").verdict).toBe("fail");
+  });
+
+  it("passes a duplicate rate exactly at the ceiling, and fails just over", () => {
+    const onTheLine = report([judged([call()], { rung1: 1, duplicatesDropped: 9 })]);
+    expect(outcome(onTheLine, "duplicate-rate").observed).toBe(GATES.maxDuplicateRate);
+    expect(outcome(onTheLine, "duplicate-rate").verdict).toBe("pass");
+
+    const over = report([judged([call()], { rung1: 9, duplicatesDropped: 91 })]);
+    expect(outcome(over, "duplicate-rate").observed).toBeCloseTo(0.91, 10);
+    expect(outcome(over, "duplicate-rate").verdict).toBe("fail");
+  });
+});
+
+describe("the p95 gate is the 95th percentile and not a neighbour of it", () => {
+  it("reads the nearest-rank 95th value, which no fixture under n = 20 can distinguish", () => {
+    // The fixture-too-small-for-the-rank trap, and this project has already
+    // written the note about it in `segments.test.ts`: at n < 20 the nearest-rank
+    // p95 IS the maximum, so every one- and two-call fixture in this file is
+    // equally satisfied by p95, p96, p99 and max. n = 100 is the size at which
+    // p94, p95, p96 and max are four different answers.
+    //
+    // 10..1000 by tens: rank ceil(95 * 100 / 100) = 95 -> 950. The neighbours
+    // are 940 and 960 and the maximum is 1000, so a gate computing any of them
+    // reports a different number here.
+    const tens = Array.from({ length: 100 }, (_, i) => call({ ttftMs: (i + 1) * 10 }));
+    const spread = report([judged(tens)]);
+    expect(spread.ttftCalls).toBe(100);
+    expect(outcome(spread, "p95-ttft").observed).toBe(950);
+    expect(spread.ttftMs).toEqual({ p50: 500, p95: 950, max: 1000, min: 10 });
+
+    // And the rank decides the VERDICT, not just the number. 95 calls at 1,000 ms
+    // and 5 at 9,000: the 95th value is 1,000 and passes, while the maximum --
+    // or a p96, or a mean -- is 9,000 and kills the arm. An arm whose slowest
+    // twentieth is slow is exactly what a p95 exists to tolerate.
+    const tail = report([
+      judged([
+        ...Array.from({ length: 95 }, () => call({ ttftMs: 1000 })),
+        ...Array.from({ length: 5 }, () => call({ ttftMs: 9000 })),
+      ]),
+    ]);
+    expect(outcome(tail, "p95-ttft").observed).toBe(1000);
+    expect(outcome(tail, "p95-ttft").verdict).toBe("pass");
+    expect(tail.ttftMs!.max).toBe(9000);
+    expect(tail.killed).toBe(false);
+  });
+});
+
+describe("every ladder counter reaches the report", () => {
+  it("sums all eleven across items, each at a distinct value", () => {
+    // Seven of the eleven were summed into `ArmGateReport.ladder` and asserted
+    // nowhere, so a swapped or dropped `+=` shipped silently -- and `ladder` is
+    // what the gate comments tell a reader to recompute a disputed rate from.
+    // Distinct primes per counter, so no two can be confused for each other, and
+    // TWO items, so a `=` written for a `+=` is caught as well.
+    const counters = {
+      rung1: 2,
+      rung2: 3,
+      unresolvedQuotes: 5,
+      duplicatesDropped: 7,
+      unknownPredicates: 11,
+      failedClosed: 13,
+      truncatedResponses: 17,
+      abortedResponses: 19,
+      repairAttempts: 23,
+      segmentsJudged: 29,
+      segmentsSkipped: 31,
+    } as const;
+    const r = report([judged([call()], counters), judged([call()], counters)]);
+    expect(r.ladder).toEqual(Object.fromEntries(Object.entries(counters).map(([k, v]) => [k, 2 * v])));
+    // The three stop counters are NOT in `ladder` and must not be: they are the
+    // stop-gate's evidence, not the ladder's, and a report that summed them here
+    // would be reporting an interruption as a judgement.
+    expect(Object.keys(r.ladder).sort()).toEqual(Object.keys(counters).sort());
+  });
+});
+
+describe("the duplicate rate's denominator counts both rungs", () => {
+  it("includes rung 2, which no other fixture drives beside a duplicate", () => {
+    // `quotesResolved = rung1 + rung2 + duplicatesDropped` is the denominator of
+    // the duplicate rate and the numerator of the resolvable one, and no fixture
+    // had both `rung2 > 0` and `duplicatesDropped > 0` -- so dropping the rung2
+    // term from that sum changed nothing anywhere. It is not a rare shape: rung 2
+    // is the ladder's normalised match, which is how a model that rewrites
+    // whitespace or casing gets placed at all.
+    const r = report([judged([call()], { rung1: 1, rung2: 1, duplicatesDropped: 2 })]);
+    expect(outcome(r, "duplicate-rate").sample).toBe(4);
+    expect(outcome(r, "duplicate-rate").observed).toBe(0.5);
+    // Without the rung2 term the same fixture reads 2 of 3, a rate of 0.667 --
+    // a 33% overstatement of how much of this arm's output was restatement.
+    expect(outcome(r, "duplicate-rate").observed).not.toBeCloseTo(2 / 3, 3);
+    expect(outcome(r, "resolvable-rate").observed).toBe(1);
+    expect(outcome(r, "resolvable-rate").sample).toBe(4);
+    expect(outcome(r, "resolvable-rate").detail).toContain("rung 2: 1");
+  });
+});
+
 describe("the engine-poisoning assertion", () => {
   it("flags a run whose first call after a stop came back aborted", () => {
     // Task 3 measured the engine latching its interrupt flag on the pinned
@@ -622,6 +856,67 @@ describe("the engine-poisoning assertion", () => {
 
   it("is not measured when nothing stopped", () => {
     expect(outcome(report([judged([call()])]), "non-empty-after-stop").verdict).toBe("not-measured");
+  });
+
+  it("arms on ALL THREE stop counters, not only on a deadline expiry", () => {
+    // `deadlineExpiries + callerAbortsMidGeneration + callerAbortsWhileQueued`
+    // is the stop condition, and only the first term had a fixture -- so two
+    // stop causes could have been dropped from that sum without a test noticing,
+    // and an engine latched by a caller abort would have been reported as
+    // `not-measured` rather than as the fail it is.
+    //
+    // The two abort counters are not hypothetical: `cancel.ts` distinguishes an
+    // abort that arrives MID-GENERATION from one that arrives while the call is
+    // still QUEUED, and the orchestrator's message deadline can deliver either.
+    for (const counter of ["deadlineExpiries", "callerAbortsMidGeneration", "callerAbortsWhileQueued"] as const) {
+      const poisoned = report([
+        judged([call()]),
+        judged([], { [counter]: 1, segmentsSkipped: 1 }),
+        judged([call({ finishReason: "abort", completionTokens: 0 })], { abortedResponses: 1 }),
+      ]);
+      expect(outcome(poisoned, "non-empty-after-stop").verdict, counter).toBe("fail");
+
+      const survived = report([
+        judged([call()]),
+        judged([], { [counter]: 1, segmentsSkipped: 1 }),
+        judged([call()], { rung1: 1 }),
+      ]);
+      expect(outcome(survived, "non-empty-after-stop").verdict, counter).toBe("pass");
+    }
+  });
+
+  it("is not measured when a stop was the LAST engine work in the arm", () => {
+    // The third branch of the gate, and it had no test at all: something
+    // stopped, and nothing after it ever reached the engine. Both other answers
+    // are wrong here. "Pass" would assert an engine survived an interrupt
+    // nothing afterwards asked it to survive -- the single most valuable claim
+    // this gate makes, invented. "Fail" would kill the arm for running out of
+    // budget on its last item, which is the one rule this module must not have.
+    //
+    // It is the ordinary shape of a stopped run, not a corner: the message
+    // budget is spent monotonically across an arm, so the stop that ends the run
+    // tends to be near the end of the corpus.
+    const r = report([
+      judged([call()], { rung1: 1 }, { itemId: "healthy" }),
+      judged([call()], { deadlineExpiries: 1, segmentsSkipped: 1 }, { itemId: "the-stop" }),
+      // A later item, but one that made no engine call: the budget was already
+      // spent before its first segment, so the judge never reached the engine.
+      judged([], { segmentsSkipped: 2 }, {
+        itemId: "after-the-stop",
+        degraded: [{ tier: 2, reason: "budget-exhausted", detail: "spent" }],
+      }),
+    ]);
+    const stop = outcome(r, "non-empty-after-stop");
+    expect(stop.verdict).toBe("not-measured");
+    expect(stop.detail).toContain("no later item made an engine call");
+    // Named, so a reader knows WHICH stop went unexamined rather than being told
+    // only that something did -- and it is the STOPPED item that is named, not
+    // the healthy one before it or the silent one after.
+    expect(stop.detail).toContain("the-stop");
+    expect(stop.detail).not.toContain("healthy");
+    expect(stop.detail).not.toContain("after-the-stop");
+    expect(stop.sample).toBe(0);
+    expect(r.killed).toBe(false);
   });
 });
 
@@ -815,6 +1110,84 @@ describe("planning the slate", () => {
     expect(new Set(plan.arms.map((a) => a.callBudgetMs)).size).toBe(1);
   });
 
+  it("reads each option that has a default, at a value that is NOT the default", () => {
+    // The rule this project learned twice in one task: a test that exercises
+    // only the default config cannot tell "reads the option" from "hardcodes the
+    // default". Four `BakeoffOptions` knobs were only ever seen at their
+    // defaults here -- `contextWindowSize`, `callBudgetMs`, `lowerTierAllowanceMs`
+    // and `uncertainBelow` -- and each of them reaches something that decides how
+    // an arm runs or how its rows are read.
+    //
+    // Every value below differs from the default AND from every other value in
+    // this file, so a hardcode shows up as the default coming back.
+    const plan = planBakeoff({
+      options: options({
+        contextWindowSize: 4096,
+        callBudgetMs: 12_345,
+        lowerTierAllowanceMs: 2_500,
+        uncertainBelow: 0.42,
+        itemTimeoutMs: 400_000,
+      }),
+      ir: SEMANTIC_IR,
+      items: ITEMS,
+    });
+    const arm = plan.arms[0]!;
+    expect(arm.contextWindowSize).toBe(4096);
+    expect(arm.callBudgetMs).toBe(12_345);
+    // Into the TierConfig `detect` receives and every record carries, not merely
+    // into the plan: `uncertainBelow` is the escalation threshold a scorer groups
+    // rows by.
+    expect(arm.config.uncertainBelow).toBe(0.42);
+    // And into the escalation the ceiling is sized from. 0.42 is below the
+    // corpus's tier-0 confidences, so the tier-0 arm's extra segment goes away
+    // and this arm plans 2 segments rather than 3 -- the knob is not merely
+    // stored, it changed the plan.
+    expect(arm.segments.escalation.uncertainBelow).toBe(0.42);
+    expect(arm.segments.perItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
+    expect(arm.maxCallsPerItem).toBe(4);
+    // The allowance is the third summand of the bound, and 2,500 is not 1,000.
+    // At a 12,345 ms per-call budget the CALL bound binds rather than the
+    // message budget -- 4 x 12,365 is under 120,020 -- so both knobs are visible
+    // in this one number and the default for either would change it.
+    expect(arm.bound.input.lowerTierAllowanceMs).toBe(2_500);
+    expect(arm.bound.bindingBound).toBe("call-budget");
+    expect(arm.bound.boundMs).toBe(2_500 + 4 * (12_345 + INTERRUPT_DRAIN_OVERSHOOT_MS));
+
+    // The defaults, asserted beside them, so "reads the option" and "applies the
+    // documented default" are two separate claims rather than one.
+    const defaults = planBakeoff({ options: options(), ir: SEMANTIC_IR, items: ITEMS }).arms[0]!;
+    expect(defaults.callBudgetMs).toBe(DEFAULT_TIER2_CALL_BUDGET_MS);
+    expect(defaults.config.uncertainBelow).toBe(UNCERTAIN_BELOW);
+    expect(defaults.bound.input.lowerTierAllowanceMs).toBe(DEFAULT_LOWER_TIER_ALLOWANCE_MS);
+  });
+
+  it("holds the same per-call budget the PAGE defaults to, checked against its source", () => {
+    // The page declares its own `DEFAULT_TIER2_CALL_BUDGET_MS` and does not
+    // export it -- it is a Vite entry point, not a module this driver can import
+    // -- so the driver keeps a copy, and a copy with nothing comparing it is a
+    // number free to drift. `runBakeoff` does compare them at run time, by
+    // passing this value to `loadTier2` and refusing an arm whose page resolved
+    // a different one, but that refusal needs a GPU and this ceiling is derived
+    // on every machine.
+    //
+    // So the page's literal is read out of its SOURCE. Anchored on the
+    // declaration and asserted to have matched, so a rename fails here loudly
+    // rather than by matching nothing.
+    expect(DEFAULT_TIER2_CALL_BUDGET_MS).toBe(60_000);
+    const pageSource = readFileSync(join(REPO_ROOT, "apps", "eval", "src", "page", "main.ts"), "utf8");
+    const declared = /^const DEFAULT_TIER2_CALL_BUDGET_MS = ([\d_]+);$/m.exec(pageSource);
+    expect(declared, "the page no longer declares DEFAULT_TIER2_CALL_BUDGET_MS").not.toBeNull();
+    expect(Number(declared![1]!.replaceAll("_", ""))).toBe(DEFAULT_TIER2_CALL_BUDGET_MS);
+
+    // And it is the number the plan actually uses, not just a constant sitting
+    // beside one: the ceiling is derived from it.
+    const plan = planBakeoff({ options: options(), ir: SEMANTIC_IR, items: ITEMS });
+    expect(plan.arms.map((a) => a.callBudgetMs)).toEqual([DEFAULT_TIER2_CALL_BUDGET_MS]);
+    expect(plan.arms[0]!.bound.callBudgetBoundMs).toBe(
+      plan.arms[0]!.maxCallsPerItem * (DEFAULT_TIER2_CALL_BUDGET_MS + INTERRUPT_DRAIN_OVERSHOOT_MS),
+    );
+  });
+
   it("sizes the shared ceiling from the family that needs the most, not the least", () => {
     // The compiled family makes up to 2 calls per selected segment and the
     // baseline family 2 per message. One shared ceiling is what keeps the
@@ -892,6 +1265,36 @@ describe("the baseline family and the policy it would be shown", () => {
     ).toThrow(/policy/i);
   });
 
+  it("demands the document when ANY family needs it, not only when every one does", () => {
+    // `needsPolicy = families.some(...)`, and every fixture that exercised it
+    // passed a slate of baseline arms ONLY -- on which `some` and `every` return
+    // the same answer, so the quantifier was a free change. Under `every` the
+    // mixed slate below plans happily and the B arm runs with no document, which
+    // is Approach B's entire premise missing: it would be shown nothing and lose
+    // to the compiled arm for a reason invisible in every number of the run.
+    const mixed: ArmFamily[] = ["compiled", "baseline-b"];
+    expect(mixed.some((f) => !familyShape(f).runsCompiledJudge)).toBe(true);
+    expect(mixed.every((f) => !familyShape(f).runsCompiledJudge)).toBe(false);
+    expect(() =>
+      planBakeoff({ options: options({ families: mixed }), ir: SEMANTIC_IR, items: ITEMS }),
+    ).toThrow(/policyPath/);
+    // The same slate with a document that does not match the IR is refused on
+    // the hash instead, which proves the demand reached the check rather than
+    // stopping at "some string was supplied".
+    expect(() =>
+      planBakeoff({
+        options: options({ families: mixed }),
+        ir: SEMANTIC_IR,
+        items: ITEMS,
+        policyText: "# Some other standard\n",
+      }),
+    ).toThrow(/policyHash/);
+    // And a compiled-only slate never asks for one.
+    expect(() =>
+      planBakeoff({ options: options({ families: ["compiled"] }), ir: SEMANTIC_IR, items: ITEMS }),
+    ).not.toThrow();
+  });
+
   it("pairs each baseline arm with the compiled arm that runs the same tiers", () => {
     // B alone against a tier-0+tier-2 compiled arm would credit tier 0's
     // deterministic findings to the compiler. The families are declared in
@@ -911,7 +1314,7 @@ describe("what this harness can actually execute", () => {
     ).not.toThrow();
   });
 
-  it("refuses a baseline arm, naming the door that is missing and the three things behind it", () => {
+  it("refuses a baseline arm, naming the door that is missing and the two things behind it", () => {
     // A valid experiment with nowhere to run. The refusal is separate from
     // planning on purpose: the plan is a statement about fairness and this is a
     // statement about the browser half, and conflating them would make a fair
@@ -932,10 +1335,17 @@ describe("what this harness can actually execute", () => {
     // The door.
     expect(message).toContain("createBaselineB");
     expect(message).toContain("window.__sih.detect");
-    // And the three reasons adding it would not be enough on its own.
+    // And the two reasons adding it would not be enough on its own.
     expect(message).toContain("compiled from");
-    expect(message).toContain("rules");
     expect(message).toContain("BaselineStats");
+    // A THIRD reason stood here and is gone: `semantic-ir.json` used to declare
+    // `rules: []`, so tier 0 found nothing and the B/B+tier0 pair would have
+    // been two runs of the same arm. The fixture carries three rules now and
+    // that pair really would differ, so the message must NOT still claim it --
+    // an out-of-date reason in a refusal is a reader's evidence about the
+    // fixture, and this one would be false.
+    expect(SEMANTIC_IR.rules.length).toBeGreaterThan(0);
+    expect(message).not.toContain("declares no rules");
   });
 });
 

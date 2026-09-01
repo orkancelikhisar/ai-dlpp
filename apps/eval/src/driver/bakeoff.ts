@@ -77,8 +77,19 @@ export const GATES = {
    * p95 time-to-first-token at the MEASURED tier-2 segment size.
    *
    * Task 9 measured that size over `corpora/fixtures/smoke.jsonl`, the only
-   * corpus in this repository, keeping the 17 of 19 segments the escalation
-   * policy selects: p50 62 characters, max 153, and 9 words at the median.
+   * corpus in this repository, keeping the segments the escalation policy
+   * selects: p50 62 characters and max 153.
+   *
+   * RE-MEASURED HERE against the shipped `semantic-ir.json` under BOTH of the
+   * conditions this driver runs, because Task 9's figure was one of them: the
+   * tier-2-only families select 17 of the corpus's 19 segments and the tier-0
+   * families 18, and the character distribution is the same in both -- p50 62,
+   * p95 153, max 153, min 22 -- because the segment tier 0 re-admits (the
+   * 66-character code fence) is larger than nine of the seventeen and smaller
+   * than the largest, so it moves neither end. The WORD median does move, 9
+   * without priors and 8 with, which is why the number above is quoted in
+   * characters. What the extra segment does move is the per-MESSAGE count, and
+   * that is `segmentsPerItem`'s business rather than this threshold's.
    *
    * MEASURED HERE for the whole prompt, by driving the real `WebLlmJudge` over
    * those two segments with a capturing engine and adding up what
@@ -111,9 +122,10 @@ export const GATES = {
    * What it does instead is put the size BESIDE the number, twice over --
    * `ArmGateReport.promptTokens` is the engine's own prompt-token count over
    * exactly the calls the p95 was taken over, and `ArmGateReport.segmentChars`
-   * is the character-size distribution of the segments the arm ran, which is the
-   * unit the 1.1 kB above is quoted in. A reader who finds either one out of
-   * line with the derivation knows the gate was applied to different work.
+   * is the character-size distribution escalation selects for the arm, which is
+   * the unit the 1.1 kB above is quoted in (and is PLANNED rather than observed
+   * -- see that field). A reader who finds either one out of line with the
+   * derivation knows the gate was applied to different work.
    */
   maxP95TtftMs: 1500,
   /**
@@ -442,9 +454,12 @@ export interface ItemDeadlineBound {
  * `apps/eval/fixtures/semantic-ir.json` is the only IR in this repository a
  * tier-2 arm can run, and it carries `latencyBudgetMs: 120_000`. The page's
  * `DEFAULT_TIER2_CALL_BUDGET_MS` is 60,000 and the smoke corpus selects at most
- * 2 segments per message under that IR, so (b) is 4 x 60,020 = 240,080 and (a)
- * is 120,020: the MESSAGE budget binds, and the bound is 121,020 with the
- * default allowance. The plan's `itemTimeoutMs: 120_000` is BELOW that -- it is
+ * 3 segments per message under that IR on the default `compiled` family --
+ * MEASURED here, and it is 3 rather than 2 because that family runs tier 0,
+ * whose entropy rule re-admits the corpus's one code fence -- so (b) is
+ * 6 x 60,020 = 360,120 and (a) is 120,020: the MESSAGE budget binds, and the
+ * bound is 121,020 with the default allowance. (A tier-2-only arm selects at
+ * most 2, so its (b) is 240,080 and the same bound binds.) The plan's `itemTimeoutMs: 120_000` is BELOW that -- it is
  * the message budget itself, unrounded -- so an item that legitimately spends
  * its whole budget races the driver's own deadline. `assertItemTimeoutMs`
  * refuses it rather than letting the race decide.
@@ -604,13 +619,19 @@ export interface PlannedArm {
    * its p95 and its max come from the same 13 numbers.
    *
    * WHICH condition an arm lands in is a property of ITS IR as well as its tier
-   * flags, and that matters here: Task 9's priors condition was measured against
-   * `minimal-ir.json`, whose `entropy-rule` fires on this corpus's code fence at
-   * confidence 0.7 and re-admits it. `semantic-ir.json` -- the only IR a tier-2
-   * arm can run today -- declares `rules: []`, so `runTier0` finds nothing, no
-   * segment is uncertain, and a tier-0 arm's distribution here is IDENTICAL to a
-   * tier-2-only arm's at p95 2, max 2. Anything quoting 3 for this bake-off is
-   * quoting a different policy's number.
+   * flags, and that is worth stating because it was wrong for one commit.
+   * Task 9's priors condition was measured with the findings `minimal-ir.json`'s
+   * `entropy-rule` produces on this corpus's code fence at confidence 0.7, which
+   * re-admit that fence to escalation. `semantic-ir.json` -- the only IR a
+   * tier-2 arm can run, since `planBakeoff` throws on any IR with no
+   * `semanticPredicates` -- shipped `rules: []` for one commit, so `runTier0`
+   * found nothing, no segment was uncertain, and a tier-0 arm's distribution was
+   * IDENTICAL to a tier-2-only arm's. It now carries the same three rules, and
+   * MEASURED HERE against it the two conditions are what Task 9 recorded: with
+   * priors 18 segments at p50 1, p95 3, max 3 per message; without, 17 at
+   * p50 1, p95 2, max 2. `bakeoff.test.ts` asserts both, and asserts the rules
+   * are still there, so stripping them fails loudly rather than in a results
+   * table where two arms agree for a reason that is not about tier 0.
    */
   readonly segments: SegmentSizeDistribution;
   readonly maxCallsPerItem: number;
@@ -650,10 +671,15 @@ function sha256(text: string): string {
 /**
  * Everything that can be decided before a model loads, decided.
  *
- * A four-model bake-off is hours of GPU time and roughly 12 GB of weights.
- * Learning on the last arm that its file name collides, that its policy is not
- * the one its IR came from, or that the per-item ceiling was set below the
- * message budget wastes all of it. Nothing in here touches the page or the disk.
+ * A four-model bake-off is hours of GPU time and 7.49 GB of weights. That is
+ * `test/tier2-profile.ts`'s measurement rather than one taken here -- it loaded
+ * all four pinned arms at this origin and read `navigator.storage.estimate()`,
+ * 1.08 GB for Qwen3.5-2B and 2 to 2.3 GB for each of the other three -- and it
+ * replaces the "roughly 12 GB" this comment carried, which was nobody's
+ * measurement. Learning on the last arm
+ * that its file name collides, that its policy is not the one its IR came from,
+ * or that the per-item ceiling was set below the message budget wastes all of
+ * it. Nothing in here touches the page or the disk.
  */
 export function planBakeoff(input: PlanInput): BakeoffPlan {
   const { options, ir, items } = input;
@@ -747,7 +773,13 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
       segmentSizeDistribution(items, {
         hasPredicates: ir.semanticPredicates.length > 0,
         uncertainBelow,
-        priorFindings: shape.runsTier0 ? (item) => tier0Priors(ir, item) : () => [],
+        // The key is OMITTED rather than set to `() => []` for a family that
+        // does not run tier 0, so `escalation.hasPriors` records which of the
+        // two conditions this distribution is. A supplied callback that returns
+        // nothing and no callback at all produce the same numbers, and only one
+        // of them is an arm that ran tier 0 -- which is the distinction
+        // `gateReport` checks a report's distribution against its family with.
+        ...(shape.runsTier0 ? { priorFindings: (item: CorpusItem) => tier0Priors(ir, item) } : {}),
       }),
     );
   }
@@ -855,12 +887,19 @@ function tier0Priors(ir: PolicyIr, item: CorpusItem): readonly Finding[] {
  *
  * It is declared in `apps/eval/src/page/main.ts` and not exported -- the page is
  * a Vite entry point, not a module this driver imports -- so the number cannot
- * be shared by reference. What keeps the two honest is that `runBakeoff` passes
- * this value TO `loadTier2` explicitly and then records the value the page
- * reports back, so a drift shows up as a refusal rather than as a record naming
- * a budget the arm did not run under.
+ * be shared by reference. Two things keep the two copies honest, and neither is
+ * this comment:
+ *
+ *   - `runBakeoff` passes this value TO `loadTier2` explicitly and then records
+ *     the value the page reports back, refusing an arm whose page resolved a
+ *     different one. So a drift is a refusal, not a record naming a budget the
+ *     arm did not run under.
+ *   - `bakeoff.test.ts` reads the page module's own literal out of its SOURCE
+ *     and compares it with this one, because the refusal above only fires on a
+ *     machine with a GPU and this file is planned on every machine. Exported
+ *     for that test alone: nothing else here imports it.
  */
-const DEFAULT_TIER2_CALL_BUDGET_MS = 60_000;
+export const DEFAULT_TIER2_CALL_BUDGET_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Gates, computed
@@ -1021,7 +1060,31 @@ export interface ArmGateReport {
   readonly degradedNotices: Readonly<Record<DegradedReason, number>>;
   /** Items carrying at least one notice of that reason. One item can carry two. */
   readonly degradedItems: Readonly<Record<DegradedReason, number>>;
-  /** The character-size distribution of the segments this arm ran over. */
+  /**
+   * The character-size distribution of the segments escalation SELECTS for this
+   * arm over this corpus.
+   *
+   * The evidence for `GATES.maxP95TtftMs` in the unit its ~1.1 kB derivation is
+   * quoted in -- `promptTokens` is the same calls in the engine's tokens, and
+   * neither converts into the other without the model's own tokenizer.
+   *
+   * PLANNED, not observed, and the name is only as true as that: it is computed
+   * in Node by `planBakeoff` before the first model loads, from core's own
+   * segmenter and the escalation policy under THIS arm's tier-0 setting -- so
+   * it is the set of segments a healthy run of this arm would judge, not a
+   * count taken off the rows. No record carries the segments the page actually
+   * handed the judge, so this is the closest population the file has. The three
+   * ways a real run diverges from it are all on this same report and should be
+   * read beside it: `itemsErrored` (an item that threw judged none of its
+   * segments), `degradedNotices["budget-exhausted"]` (a message that stopped
+   * before its later segments) and `ladder.segmentsJudged` (what the judge
+   * actually saw).
+   *
+   * What is checked rather than trusted: `gateReport` refuses a distribution
+   * whose escalation condition or item count disagrees with the rows, so this
+   * cannot be the OTHER family's distribution -- the two differ on this corpus
+   * -- or one measured over a different corpus.
+   */
   readonly segmentChars: SizeStats | undefined;
   readonly segmentsPerItem: SizeStats | undefined;
   readonly escalation: SegmentSizeDistribution["escalation"];
@@ -1124,6 +1187,56 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     uncertainBelow: uniform(records, "config.uncertainBelow", (r) => r.config.uncertainBelow),
     tier2Config: uniform(records, "tier2Config", (r) => r.tier2Config),
   };
+
+  // `segmentChars`, `segmentsPerItem` and `escalation` are the only fields on
+  // this report that do not come off the rows: they are the PLAN's distribution,
+  // measured in Node before the arm ran. That is the closest population there
+  // is -- no record carries the segments the page judged -- and it is only
+  // honest while the distribution describes THIS arm's work. Two ways it can
+  // stop doing so, both of which produce a perfectly well-formed report:
+  //
+  //   - the other family's condition. On `smoke.jsonl` the tier-0 families
+  //     select 18 segments and the tier-2-only families 17, with a per-message
+  //     maximum of 3 against 2, so a report carrying the wrong one states a
+  //     different arm's escalation under this arm's name. What that costs is a
+  //     reader's cross-check rather than the run: `planBakeoff` sized
+  //     `maxCallsPerItem` and the item ceiling from the RIGHT distribution
+  //     before the arm ran, and this report is where those numbers are checked
+  //     against the work -- so a wrong copy here breaks the check without
+  //     breaking the run, which is the worse of the two.
+  //   - a different `uncertainBelow`. The records carry the resolved threshold
+  //     `escalate.ts` compared against and the distribution carries the one it
+  //     selected under; they are the same experiment variable, so a
+  //     disagreement means the plan and the run escalated differently.
+  //
+  // NOT checked, and the decision is deliberate rather than an omission: that
+  // the distribution was measured over the same CORPUS as the rows. Neither
+  // side carries a corpus identity a comparison could use -- `run.corpus` is a
+  // basename this caller supplies -- and the obvious proxy, comparing
+  // `segments.items` with `records.length`, would be a check on the fixture
+  // rather than on the run: `runBakeoff` builds both from one `items` array, so
+  // it can only fire for a direct caller, and it would force every gate
+  // fixture in the tests to carry one record per corpus item. The coupling is
+  // pinned where it is real instead, in `bakeoff.test.ts`'s end-to-end
+  // `runBakeoff` case, which asserts each report's distribution IS its own
+  // arm's.
+  const shape = familyShape(family);
+  if (segments.escalation.hasPriors !== shape.runsTier0) {
+    throw new Error(
+      `arm "${arm}" is family "${family}", which ${shape.runsTier0 ? "runs" : "does not run"} ` +
+        `tier 0, but its segment distribution was measured ` +
+        `${segments.escalation.hasPriors ? "WITH" : "WITHOUT"} tier-0 priors; segmentChars, ` +
+        `segmentsPerItem and escalation would describe the other family's work under this arm's ` +
+        `name, and the p95 gate's stated prompt size with them`,
+    );
+  }
+  if (run.uncertainBelow !== undefined && segments.escalation.uncertainBelow !== run.uncertainBelow) {
+    throw new Error(
+      `arm "${arm}" ran at uncertainBelow ${run.uncertainBelow} and its segment distribution was ` +
+        `measured at ${segments.escalation.uncertainBelow}; the two escalated on different ` +
+        `thresholds, so the distribution is not this arm's`,
+    );
+  }
 
   const ttft: number[] = [];
   const promptTokens: number[] = [];
@@ -1446,25 +1559,29 @@ function stopGate(
  * `createBaselineB` is a `Detector` in its own right and the page imports
  * neither it nor a policy document, so there is no `window.__sih` call that
  * reaches it. That door is a small addition -- and it is deliberately NOT made
- * here, because three things in the corpus/policy layer would make a B arm
- * meaningless the moment it ran:
+ * here, because two things in the corpus/policy and record layers would make a
+ * B arm meaningless the moment it ran:
  *
  *   1. No IR in this repository was compiled from any policy document in it.
  *      `semantic-ir.json` carries `policyHash: "test-hash"`, which is not a
  *      sha256 of anything, so `planBakeoff` refuses every B arm here already.
- *   2. That same IR carries `rules: []`, so core's tier 0 finds nothing on any
- *      item -- and `baseline-b-tier0` versus `baseline-b`, the pair that
- *      separates "compiling helps" from "patterns help", would be two runs of
- *      the same thing.
- *   3. `RunRecordSchema` has `tier2Stats` and no baseline equivalent. B's
+ *   2. `RunRecordSchema` has `tier2Stats` and no baseline equivalent. B's
  *      counters are `BaselineStats`, which renames two events (`messagesJudged`
  *      for `segmentsJudged`, `unknownEntityTypes` for `unknownPredicates`) and
  *      adds `messageBudgetExpiries`, which no judge counter reports. Writing
  *      them into `tier2Stats` would be a record stating one event under another
  *      event's name.
  *
- * So this refuses, naming all of it, rather than running an arm whose numbers
- * would be confident and meaningless.
+ * A THIRD reason stood here and no longer does, which is worth recording rather
+ * than deleting: `semantic-ir.json` carried `rules: []`, so tier 0 found nothing
+ * on any item and `baseline-b-tier0` versus `baseline-b` -- the pair that
+ * separates "compiling helps" from "patterns help" -- would have been two runs
+ * of the same thing. The fixture now carries three tier-0 rules and that pair
+ * would differ (MEASURED: 18 selected segments against 17, per-message max 3
+ * against 2), so the objection is gone and only the two above remain.
+ *
+ * So this refuses, naming them, rather than running an arm whose numbers would
+ * be confident and meaningless.
  */
 export function assertPageCanRun(plan: BakeoffPlan): void {
   const baseline = plan.arms.filter((a) => !familyShape(a.family).runsCompiledJudge);
@@ -1474,11 +1591,10 @@ export function assertPageCanRun(plan: BakeoffPlan): void {
       `apps/eval/src/page/main.ts publishes only core's orchestrator (window.__sih.detect) and ` +
       `never constructs createBaselineB, so no call reaches it. Adding that door is small; what ` +
       `is not is that (1) no IR here was compiled from any policy document here, so B cannot be ` +
-      `shown the document the compiled arm's IR came from, (2) semantic-ir.json declares no ` +
-      `rules, so tier 0 finds nothing and the B/B+tier0 pair would be two runs of the same arm, ` +
-      `and (3) RunRecordSchema has no field for BaselineStats, whose messagesJudged, ` +
-      `unknownEntityTypes and messageBudgetExpiries are different events from the judge's. Run ` +
-      `the compiled families here and land the baseline families with the compiled policy.`,
+      `shown the document the compiled arm's IR came from, and (2) RunRecordSchema has no field ` +
+      `for BaselineStats, whose messagesJudged, unknownEntityTypes and messageBudgetExpiries are ` +
+      `different events from the judge's. Run the compiled families here and land the baseline ` +
+      `families with the compiled policy.`,
   );
 }
 
@@ -1741,5 +1857,37 @@ async function openHarness(page: Page): Promise<void> {
     throw cause;
   } finally {
     page.off("pageerror", listener);
+  }
+  await assertServedByThisCheckout(page);
+}
+
+/**
+ * The page this bake-off measures is THIS tree's page.
+ *
+ * `playwright.config.ts` sets `reuseExistingServer: !process.env["CI"]` and the
+ * base URL is a fixed port, so a dev server another worktree left running
+ * answers every `page.goto("/")` here. The IR check below covers the IR
+ * ARTIFACT and only it -- an identical fixture in a tree with a different
+ * `main.ts` or a different `@sih/tier2` passes it -- and no field of a record or
+ * a gates row names the code that produced it. The failure is uniform across
+ * arms, so it never surfaces as one arm disagreeing with another; it surfaces
+ * as a whole bake-off attributed to the wrong tree.
+ *
+ * `harnessDir()` is a `define` compiled into the page by `vite.config.ts`, so it
+ * is the SERVER's directory rather than anything this process could compute for
+ * it. What it cannot catch is a second checkout at the same path, which cannot
+ * exist on one machine.
+ */
+async function assertServedByThisCheckout(page: Page): Promise<void> {
+  const served = await page.evaluate(() => window.__sih!.harnessDir());
+  // `apps/eval`, from `<repo>/apps/eval/src/driver/bakeoff.ts`.
+  const here = join(import.meta.dirname, "..", "..");
+  if (served !== here) {
+    throw new Error(
+      `the page this driver navigated to was built by ${served}, but this driver is running from ` +
+        `${here}. Playwright reuses an existing dev server outside CI, so a server left running ` +
+        `by another worktree would serve every arm of this bake-off and every number would be ` +
+        `attributed to the wrong tree. Stop that server (lsof -ti :5178) and re-run.`,
+    );
   }
 }

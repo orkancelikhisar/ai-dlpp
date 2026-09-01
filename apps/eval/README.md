@@ -812,17 +812,42 @@ returns either the engine's `usage.prompt_tokens` or the
 
 `context_window_size: 8192` had been measured on Qwen3.5-2B only; the other three
 arms each ship `overrides.context_window_size: 4096` in the installed
-`prebuiltAppConfig` (all four do) and had never been loaded at 8192. All four
-load and answer at 8192, and all four enforce it:
+`prebuiltAppConfig` (all four do) and had never been loaded at 8192.
 
-| arm | loads at 8192 | prompt accepted at 8192 | same prompt at 4096 |
-|---|---|---|---|
-| Qwen3.5-2B | yes | 5,809 tokens | refused, "context window size: 4096" |
-| Ministral-3-3B | yes | 6,328 tokens | — |
-| Qwen3-4B | yes | 5,809 tokens | — |
-| Phi-4-mini | yes | 6,023 tokens | refused, "context window size: 4096" |
+Every cell below is a `probeContextWindow` call re-measured in one pass, and the
+prompt length is a **column** rather than a footnote, because an earlier version
+of this table had a 3,000-word measurement sitting in a row headed "same prompt".
+Token counts are the engine's own `usage.prompt_tokens`; refusals are
+`ContextWindowSizeExceededError`, quoting the window the library named.
 
-No arm has to run at 4096, so the bake-off does not have to report an asymmetry.
+| arm | 2,000 words @ 8192 | 2,000 words @ 4096 | 3,000 words @ 8192 | 3,000 words @ 4096 |
+|---|---|---|---|---|
+| Qwen3.5-2B | 5,809 tokens | refused (5,809) | refused (8,709) | refused (8,709) |
+| Ministral-3-3B | 6,328 tokens | refused (6,328) | refused (9,228) | refused (9,228) |
+| Qwen3-4B | 5,809 tokens | refused (5,809) | refused (8,709) | refused (8,709) |
+| Phi-4-mini | 4,023 tokens | **4,023, accepted** | 6,023 tokens | refused (6,023) |
+
+All four load at 8192 and all four **enforce** it: the three Qwen/Ministral arms
+refuse a 3,000-word prompt at 8192, and Phi-4-mini accepts the same prompt at
+8192 while refusing it at 4096. So no arm has to run at 4096, and the bake-off
+does not have to report an asymmetry.
+
+Two things the prompt-length column makes visible that the old table hid:
+
+- **Tokenizer density differs by a third.** The same 2,000 words are 4,023 tokens
+  on Phi-4-mini and 5,809 on Qwen3.5-2B — the largest cross-arm difference in the
+  slate, and it was invisible while Phi's cell held a 3,000-word number that
+  looked like Qwen's.
+- **2,000 words is the wrong probe size for Phi-4-mini**, because 4,023 < 4,096:
+  the very window the probe exists to rule out accepts it. Anyone sizing a probe
+  for a new arm or a new corpus has to read the token count back, which is what
+  `probeContextWindow` returns it for and what the comment on `fillerPrompt` in
+  `src/page/main.ts` warns about.
+
+`tier2-arms.spec.ts`'s test names say "loads and answers at an 8192-token context
+window", and that test asserts the window **requested** (`report.config.contextWindowSize`)
+— its own docblock says so under "WHAT THIS DOES NOT CHECK". The enforcement half
+is this table and the 4096 control in `tier2.spec.ts`, not those four green lines.
 
 `tier2-arms.spec.ts` re-runs the **load** half on every arm on every suite run,
 because the residual risk was KV-cache VRAM and the KV cache is allocated at load
@@ -835,12 +860,23 @@ default arm, together with the 4096 control that shows the probe can fail.
 
 ### What the tier-2 specs cannot catch
 
-When `webgpuAvailable()` is false every tier-2 test **skips**, which is a green
-suite. Verified by mutation: forcing that function to return false leaves the two
-spec files reporting 8 skipped and 1 passed. That is the intended behaviour on a
-machine without a GPU — WebGPU absent means tier 2 is *absent*, not degraded —
-but it means a bake-off driver must not read "the tier-2 specs passed" as "tier 2
-ran".
+When `webgpuAvailable()` is false almost every tier-2 test **skips**, which is a
+green suite. Verified by mutation, and re-measured on the suite as it stands:
+forcing `meetsWebLlmAdapterFloor` to return false leaves
+`playwright test tier2.spec.ts tier2-arms.spec.ts` reporting **9 skipped, 2
+passed, exit 0**. Eleven of the 76 tests `playwright test --list` counts are
+tier-2 tests, and nine of them are gated on that call; the two that survive are
+the profile-quota test and the test that asserts `webgpuAvailable()` against the
+real adapter, which agrees with the mutation and passes.
+
+That is the intended behaviour on a machine without a GPU — WebGPU absent means
+tier 2 is *absent*, not degraded — but it means a bake-off driver must not read
+"the tier-2 specs passed" as "tier 2 ran". Read the counts: a run where tier 2
+really ran reports **11 passed** for those two files. (An earlier version of this
+paragraph said "8 skipped and 1 passed" and "54 Playwright tests". Those were
+correct when written and were made stale by two added tests, which is the failure
+mode this paragraph exists to prevent — check the numbers against
+`playwright test --list` before trusting them.)
 
 ## Two config decisions worth knowing before you edit
 
@@ -923,28 +959,45 @@ spec 4.1's escalation policy would select — `selectSegments` itself, imported
 from `@sih/core`, never a second copy of the rule — and reports characters,
 UTF-8 bytes, words and selected-segments-per-message.
 
-Measured over `corpora/fixtures/smoke.jsonl` with `hasPredicates: true` and no
-prior findings, which is the input a bake-off arm runs under:
+There are **two** answers, not one, because escalation runs under two conditions
+and the bake-off runs both: an arm that runs tier 0 feeds its findings in and
+gets the uncertainty branch as well as the predicate branch, and an arm that does
+not gets only the predicate branch. Both measured over
+`corpora/fixtures/smoke.jsonl` against `fixtures/semantic-ir.json`, the only IR a
+tier-2 arm can run:
 
-| | value |
-|---|---|
-| items / segments produced / segments selected | 13 / 19 / 17 |
-| characters per segment (UTF-16 code units) | p50 **62**, p95 153, max 153, min 22 |
-| bytes per segment (UTF-8) | p50 **65**, p95 153, max 153, min 22 |
-| words per segment | p50 **9**, p95 25, max 25, min 3 |
-| selected segments per message | p50 **1**, p95 2, max 2 |
+| | no tier-0 priors (`compiled-tier2-only`, `baseline-b`) | with them (`compiled`, `baseline-b-tier0`) |
+|---|---|---|
+| items / segments produced / segments selected | 13 / 19 / **17** | 13 / 19 / **18** |
+| characters per segment (UTF-16 code units) | p50 **62**, p95 153, max 153, min 22 | identical |
+| bytes per segment (UTF-8) | p50 **65**, p95 153, max 153, min 22 | identical |
+| words per segment | p50 **9**, p95 25, max 25, min 3 | p50 **8**, p95 25, max 25, min 3 |
+| selected segments per message | p50 **1**, p95 2, max 2 | p50 **1**, p95 **3**, max **3** |
 
-Supplying the real tier-0 findings (`runTier0` under `fixtures/minimal-ir.json`)
-adds one segment — the 66-character AWS-key fence, escalated by an entropy
-finding at 0.7 — for 18 selected and a maximum of **3** segments in one message.
-Sizes move not at all.
+The extra segment is the 66-character AWS-key fence, escalated by the IR's
+`entropy-rule` at confidence 0.7 — the only way a code segment ever reaches a
+judge. It is larger than nine of the seventeen and smaller than the largest, so
+it moves neither end of the size distribution; what it moves is the per-message
+count, and through that the per-item ceiling (6 calls, not 4).
+
+`compiled` is the **default** family, so the right-hand column is the one a
+default bake-off runs under. Two earlier versions of this section got that wrong
+in opposite directions: one quoted the left-hand column as "the input a bake-off
+arm runs under", and one attributed the right-hand column to
+`fixtures/minimal-ir.json`. Neither is true. `minimal-ir.json` declares
+`semanticPredicates: []`, so the predicate branch selects nothing under it at
+all — measured, its own distribution is **2** selected segments at p50 0, p95 1,
+max 1, a median of zero.
 
 Three things to know before quoting any of these:
 
 - **The p95 is the maximum, and that is arithmetic rather than a finding.**
   Percentiles here are nearest-rank, so at n = 17 the 95th percentile is
-  `ceil(0.95 × 17) = 17` — the last rank. Below n = 20 that is true of every
-  sample. Read the p95 as "the largest of 17", never as a tail.
+  `ceil(0.95 × 17) = 17` — the last rank, and at n = 18 it is rank 18. Below
+  n = 20 that is true of every sample. Read the p95 as "the largest of 17",
+  never as a tail. (The gates file's p95 latency is a different sample — one per
+  engine CALL, not per segment — and `bakeoff.test.ts` pins its rank at n = 100,
+  where p94, p95, p96 and the maximum are four different answers.)
 - **Sizes are never tokens.** None of the four pinned tier-2 models has a
   tokenizer cached here, and a made-up chars-per-token ratio would put a
   fabricated number under a budget.

@@ -437,7 +437,35 @@ export interface SihPageApi {
    * an over-long prompt and the library's own refusal are the measurement.
    */
   probeContextWindow(options: { words: number; budgetMs: number }): Promise<Tier2WindowProbe>;
+  /**
+   * The `apps/eval` directory of the checkout whose Vite server built this page.
+   *
+   * Provenance, and it exists because nothing else in this harness had any.
+   * `playwright.config.ts` sets `reuseExistingServer: !CI`, so a dev server left
+   * running on 5178 by another worktree serves the page every tier-2 number is
+   * measured on -- quietly, and uniformly across arms, so it shows up as
+   * numbers attributed to the wrong code rather than as a discrepancy anyone
+   * would notice. `irHash` covers the IR ARTIFACT and only that; this covers the
+   * code.
+   *
+   * Compiled in by `vite.config.ts` as a `define`, so it is that config file's
+   * own directory rather than anything the browser or the driver could compute.
+   */
+  harnessDir(): string;
 }
+
+/**
+ * Injected by `vite.config.ts`'s `define`, which substitutes the literal into
+ * the source text at transform time.
+ *
+ * So a page served by a config without that `define` keeps the bare identifier,
+ * and `harnessDir()` throws a `ReferenceError` when it is called rather than
+ * returning something wrong. Called is the operative word -- the reference is
+ * inside an arrow function, so the module still evaluates and `__sih` still
+ * appears; the failure lands on the provenance check in `openHarness`, which is
+ * where a harness that cannot say which tree served it should fail.
+ */
+declare const __SIH_HARNESS_DIR__: string;
 
 declare global {
   interface Window {
@@ -798,6 +826,37 @@ async function measuredDetect(
   // this page inventing a message for the same mistake -- an empty object still
   // takes that path, since the guard tests the field and not the object.
   const { provider, text, config } = request;
+  // The TIER-2 twin of `detect`'s backend check, and it lives here rather than
+  // beside that one because this is where both doors onto the loaded engine
+  // meet: `detect` and `detectWithBudget`, the second of which builds a fresh
+  // judge over the SAME engine and would have walked past a check written up
+  // there.
+  //
+  // `TierConfig.t2Model` is an experiment variable the bake-off varies per arm
+  // and `runArm` copies the arm's own config onto every record, so without this
+  // a record can name one model for a detect the engine holding another served
+  // -- the substitution the observed/requested split exists to prevent, one tier
+  // up from where it was first closed.
+  //
+  // `servedModelId`, not `report.config.modelId`: the first came off a real
+  // completion in `loadTier2` and follows a `reload()` behind our back, the
+  // second is only what this page was asked for. The observed one is what a
+  // record has to agree with.
+  //
+  // Today `runBakeoff` also refuses this one level up, once per arm at load
+  // time, so for that driver this is a second lock on a closed door. It is the
+  // only lock for every other caller of the page API -- a manual
+  // `page.evaluate` session, Plan 6's extension harness, or a driver that loads
+  // once and varies `config.t2Model` per item.
+  if (config.tier2 && judge !== undefined && tier2 !== undefined && config.t2Model !== undefined) {
+    if (config.t2Model !== tier2.report.servedModelId) {
+      throw new Error(
+        `config.t2Model is "${config.t2Model}" but the loaded tier-2 engine answered as ` +
+          `"${tier2.report.servedModelId}"; refusing to report findings for one model under ` +
+          `the other's name`,
+      );
+    }
+  }
   const engines: DetectorEngines = {};
   if (tagger !== undefined) engines.tier1 = tagger;
   if (judge !== undefined) engines.tier2 = judge;
@@ -1268,6 +1327,11 @@ const api: SihPageApi = {
         );
       }
     }
+    // The TIER-2 twin of that check is NOT here, and deliberately: it is in
+    // `measuredDetect`, which is the one function both doors onto the loaded
+    // engine go through. `detectWithBudget` is the second door -- a fresh judge
+    // over the SAME engine -- and a check written beside this one would leave it
+    // open.
     const {
       result,
       tier1: tier1Stats,
@@ -1296,6 +1360,7 @@ const api: SihPageApi = {
       : { load: tier2.report, totals: tier2.judge.stats, lastDetect: lastTier2Detect },
   detectWithBudget,
   probeContextWindow,
+  harnessDir: () => __SIH_HARNESS_DIR__,
 };
 
 // Non-writable and non-configurable, not just assigned. Reassigning

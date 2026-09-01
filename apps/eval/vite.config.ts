@@ -1,6 +1,24 @@
 import { defineConfig } from "vite";
 
+/**
+ * WHICH CHECKOUT served this page, compiled into it.
+ *
+ * `playwright.config.ts` sets `reuseExistingServer: !CI`, so a dev server left
+ * running on port 5178 by another worktree silently supplies the page every
+ * tier-2 number is measured on. Nothing in a record, a gates file or a spec's
+ * output names the tree the page came from, the failure is uniform across arms
+ * so it shows up as no discrepancy between them, and this project works in
+ * worktrees. `test/tier2-profile.ts` compares this string with its own
+ * directory before any spec touches the page.
+ *
+ * `import.meta.dirname` is THIS FILE's directory, which is the one Vite is
+ * serving from -- `root` below is relative to it -- so it identifies the
+ * checkout rather than the process's cwd, which a driver can set anywhere.
+ */
+const harnessDir = import.meta.dirname;
+
 export default defineConfig({
+  define: { __SIH_HARNESS_DIR__: JSON.stringify(harnessDir) },
   root: "src/page",
   // Deliberately no `server.fs.allow`. It reads like an addition and is a
   // strict REPLACEMENT: setting it resolves to exactly the listed dirs plus

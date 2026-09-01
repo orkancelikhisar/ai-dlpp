@@ -11,13 +11,15 @@ import { expect, openHarness, test } from "./tier2-profile.js";
  * The bake-off driver's BROWSER half.
  *
  * Everything that can be settled in Node -- planning, the deadline derivation,
- * the gate arithmetic -- is in `bakeoff.test.ts` and is not repeated here. What
- * is left needs a real page, and one test here needs a real model.
+ * the gate arithmetic, and `runBakeoff`'s own refusals against a scripted page
+ * -- is in `bakeoff.test.ts` and `bakeoff-run.test.ts`, and is not repeated
+ * here. What is left needs a real page, and one test here needs a real model.
  *
  * ## What this file deliberately is not
  *
- * It is not the bake-off. Running the slate is four models and roughly 12 GB of
- * weights and is a separate decision; this runs ONE arm over a two-item slice,
+ * It is not the bake-off. Running the slate is four models and the 7.49 GB of
+ * weights `tier2-profile.ts` measured, and is a separate decision; this runs ONE
+ * arm over a two-item slice,
  * which is a pipe-integrity check on the driver and produces no accuracy number
  * in either direction. The slice exists to keep a suite run to minutes rather
  * than an hour, and it is the FIRST two items of the shipped corpus rather than
@@ -83,8 +85,11 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
 
   const out = freshOutDir();
   // The first two items of the shipped corpus, written out as a corpus of their
-  // own so this test costs three model calls rather than seventeen. Sliced, not
-  // edited: every field is the shipped item's.
+  // own so this test costs four model calls rather than eighteen. Sliced, not
+  // edited: every field is the shipped item's. (Four and eighteen because the
+  // default `compiled` family runs tier 0 and `semantic-ir.json`'s entropy rule
+  // re-admits this corpus's code fence -- which is in the second of these two
+  // items. It was three and seventeen while that IR carried no rules.)
   const slice = readFileSync(CORPUS, "utf8").trim().split("\n").slice(0, 2);
   const slicePath = join(out, "slice.jsonl");
   writeFileSync(slicePath, slice.join("\n") + "\n");

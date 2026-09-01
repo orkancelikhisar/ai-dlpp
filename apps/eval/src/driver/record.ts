@@ -234,22 +234,41 @@ const TIER2_FINISH_REASONS = Object.keys({
  *    sum -- is not available.
  *
  * The cost is size: `calls` is one small object per segment per message, and it
- * is bounded. Task 9 measured the segments-per-message distribution over the
- * only corpus in this repository under TWO conditions, and the one that applies
- * to a tier-2 bake-off here is the no-priors one, pinned in
- * test/segments.test.ts as `perItem: {p50: 1, p95: 2, max: 2, min: 1}`. So with
- * the pinned recipe's one repair retry that is at most 4 rows on the worst
- * message and at most 2 on the median one.
+ * is bounded. There are TWO bounds, one per arm family, because escalation runs
+ * under two conditions and the bake-off runs both -- MEASURED HERE over the only
+ * corpus in this repository (`corpora/fixtures/smoke.jsonl`, 13 items) against
+ * the only IR a tier-2 arm can run (`apps/eval/fixtures/semantic-ir.json`;
+ * `planBakeoff` throws on any IR with no `semanticPredicates`):
  *
- * The OTHER condition -- `{p50: 1, p95: 3, max: 3}` "under tier-0 priors" --
- * is the one an earlier version of this comment quoted, and it belongs to a
- * different policy: Task 9 measured it against `minimal-ir.json`, whose
- * `entropy-rule` fires on this corpus's code fence at confidence 0.7 and
- * re-admits that fence to escalation. `semantic-ir.json` -- the only IR a
- * tier-2 arm can run here, and `planBakeoff` throws on any other -- declares
- * `rules: []`, so tier 0 finds nothing, no segment is uncertain, and a tier-0
- * arm's distribution is identical to a tier-2-only arm's. `bakeoff.ts` says the
- * same thing beside `PlannedArm.segments`.
+ *   - WITHOUT tier-0 priors -- the `compiled-tier2-only` family -- 17 selected
+ *     segments at `perItem: {p50: 1, p95: 2, max: 2, min: 1}`. With the pinned
+ *     recipe's one repair retry that is at most 4 rows on the worst message and
+ *     2 on the median one.
+ *   - WITH them -- the `compiled` family, which is the DEFAULT slate -- 18
+ *     segments at `{p50: 1, p95: 3, max: 3, min: 1}`, because the IR's
+ *     `entropy-rule` fires on this corpus's one code fence at confidence 0.7 and
+ *     re-admits it. That is at most 6 rows on the worst message and still 2 on
+ *     the median one.
+ *
+ * The two BASELINE families are not on either line, and lumping them onto one
+ * would have been wrong in the safe-looking direction: `FamilyShape.judgedUnit`
+ * is "message" for them, so Approach B makes one call per MESSAGE however many
+ * segments the message has -- at most 2 rows whatever the escalation says. They
+ * cannot run here at all today (`assertPageCanRun`), which is a separate matter.
+ *
+ * Both are pinned in test/bakeoff.test.ts, through `planBakeoff` rather than by
+ * restating them here, and test/segments.test.ts pins the same two through the
+ * distribution's own caller.
+ *
+ * An earlier version of this comment quoted the priors condition as
+ * `minimal-ir.json`'s, and BOTH halves of that were wrong. `minimal-ir.json`
+ * declares `semanticPredicates: []`, so escalation's predicate branch selects
+ * nothing under it and only the uncertainty branch fires: MEASURED, its real
+ * distribution is 2 selected segments at `{p50: 0, p95: 1, max: 1, min: 0}` --
+ * a MEDIAN OF ZERO, not 1. What Task 9 measured as "with tier-0 priors" was
+ * minimal's tier-0 findings fed into a predicate-carrying policy's selection,
+ * which is a hybrid of two policies and is the shape `semantic-ir.json` now
+ * has on its own. `bakeoff.ts` says the same thing beside `PlannedArm.segments`.
  *
  * All five fields are OPTIONAL because `JudgeCallRecord` types all five
  * `| undefined`, so a row that carried a fabricated 0 would be worse than a row

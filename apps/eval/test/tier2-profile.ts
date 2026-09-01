@@ -55,6 +55,40 @@ export async function openHarness(page: Page): Promise<void> {
     }
     throw cause;
   }
+  await assertServedByThisCheckout(page);
+}
+
+/**
+ * The page these numbers are about is THIS tree's page.
+ *
+ * `playwright.config.ts` sets `reuseExistingServer: !process.env["CI"]` and
+ * `BASE_URL` above is a hardcoded port, so a dev server another worktree left
+ * running on 5178 serves every tier-2 spec, silently. This project works in
+ * worktrees, the tier-2 specs assert nothing about which checkout answered, and
+ * the failure is uniform across arms -- so it never appears as a disagreement
+ * between two numbers, only as numbers attributed to the wrong code.
+ *
+ * `window.__sih.harnessDir()` is a `define` compiled in by `vite.config.ts`, so
+ * it is the SERVER's own directory. Compared with this file's, which is the
+ * checkout the spec was loaded from. The one thing it cannot catch is a server
+ * from an identical path -- there is only one such tree per machine.
+ *
+ * Called from `openHarness`, so every tier-2 spec pays for it once per
+ * navigation and no spec has to remember it.
+ */
+async function assertServedByThisCheckout(page: Page): Promise<void> {
+  const served = await page.evaluate(() => window.__sih!.harnessDir());
+  // `apps/eval`, from `<repo>/apps/eval/test/tier2-profile.ts`. The Vite config
+  // that supplies the other half sits in that same directory.
+  const here = join(import.meta.dirname, "..");
+  if (served !== here) {
+    throw new Error(
+      `the page at ${BASE_URL} was built by ${served}, but these specs are running from ${here}. ` +
+        `playwright.config.ts reuses an existing dev server outside CI, so a server left running ` +
+        `by another worktree is serving the page every tier-2 number here would be measured on. ` +
+        `Stop that server (lsof -ti :5178) and re-run.`,
+    );
+  }
 }
 
 /**

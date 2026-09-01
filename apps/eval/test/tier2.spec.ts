@@ -65,18 +65,32 @@ test("the browser profile has room for the pinned arms", async ({ page }) => {
 test("webgpuAvailable answers this adapter's real limits, and says which one refused", async ({
   page,
 }) => {
-  // The one tier-2 test that must NEVER skip, because it is about the check
-  // every other tier-2 test skips on. `test.skip(!webgpuAvailable())` turns any
-  // error in that check into a green run of zero tests. The review that found
-  // this measured that: raising one floor constant made all nine tier-2 tests
-  // skip at exit 0 while the suite still reported 54 Playwright tests.
+  // One of the two tier-2 tests that must NEVER skip, because this one is about
+  // the check every other tier-2 test skips on. `test.skip(!webgpuAvailable())`
+  // turns any error in that check into a green run of zero tests. MEASURED HERE
+  // on the suite as it stands, with `meetsWebLlmAdapterFloor` forced to return
+  // false: `playwright test tier2.spec.ts tier2-arms.spec.ts` reports 9 skipped,
+  // 2 passed, exit 0 -- of the 76 tests `playwright test --list` counts across
+  // the 7 spec files, 11 are tier-2 tests and 9 of them are gated on that call.
+  // (The review that found this quoted "all nine tier-2 tests" and "54
+  // Playwright tests", which were the counts at the time and are not the counts
+  // now; two tier-2 tests have been added since.)
   //
-  // `webgpu-floor.test.ts` owns the comparison itself -- both directions, from
-  // synthetic limit objects, since no single machine can supply both. What is
-  // left is the WIRING, which only a browser can answer: that the page asks the
-  // real adapter, and that its answer is the one the tested function gives for
-  // those limits. The expectation is computed from the ADAPTER's own numbers,
-  // so it is not a restatement of the page's answer.
+  // WHAT THIS TEST CATCHES, stated narrowly because an earlier version of this
+  // comment overstated it. `webgpu-floor.test.ts` owns the comparison itself --
+  // both directions, from synthetic limit objects, since no single machine can
+  // supply both -- and it re-reads the four floor NUMBERS out of the installed
+  // web-llm bundle, which is what guards them. What is left for this test is the
+  // WIRING, which only a browser can answer: that the page asks the real
+  // adapter, and that its answer is what the tested function gives for those
+  // limits.
+  //
+  // So the expectation below is not a restatement of the PAGE's answer -- it is
+  // computed from the adapter's own numbers -- but it IS computed with the same
+  // constant table the function under test reads, and that half is tautological:
+  // raise a floor and both sides move together, this test stays green, and the
+  // whole tier-2 suite skips. Only `webgpu-floor.test.ts` fails then, which is
+  // exactly why it re-reads the numbers from the library instead of from here.
   await openHarness(page);
   const observed = await page.evaluate(async (floorKeys: readonly string[]) => {
     const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<null | { limits: Record<string, number | undefined> }> } }).gpu;
@@ -194,6 +208,47 @@ test("loads a tier-2 model in real Chrome and reports what the engine answered",
   );
   expect(rebudgeted.callBudgetMs).toBe(45_000);
   expect(rebudgeted.servedModelId).toBe(MODEL);
+
+  // And a `detect` that NAMES A DIFFERENT MODEL than the loaded engine is
+  // refused, which is the tier-2 twin of the backend guard one tier down.
+  // `config.t2Model` is copied onto every record by `runArm`, so without this a
+  // file can name one model for work another one did -- and it is a cheap
+  // mistake to make from outside this harness, where nothing checks a load
+  // against a config. The bake-off driver closes the same door one level up,
+  // once per arm; this closes it per call, for every other caller of the page.
+  //
+  // No engine call is made: the refusal is before `detect`, which is why this
+  // costs nothing to assert here.
+  const refusal = await page.evaluate(
+    async ([wrongModel, text]) =>
+      window
+        .__sih!.detect({
+          text: text as string,
+          provider: "claude",
+          config: { tier0: false, tier1: false, tier2: true, t2Model: wrongModel as string },
+        })
+        .then(() => "no refusal")
+        .catch((cause: unknown) => (cause as Error).message),
+    ["Phi-4-mini-instruct-q4f16_1-MLC", MESSAGE] as const,
+  );
+  expect(refusal).toContain("Phi-4-mini-instruct-q4f16_1-MLC");
+  expect(refusal).toContain(MODEL);
+
+  // The control that keeps the check from being "any t2Model is refused": the
+  // loaded arm's own id passes, and passing is what every bake-off record does.
+  const accepted = await page.evaluate(
+    async ([rightModel, text]) =>
+      window
+        .__sih!.detect({
+          text: text as string,
+          provider: "claude",
+          config: { tier0: false, tier1: false, tier2: true, t2Model: rightModel as string },
+        })
+        .then(() => "accepted")
+        .catch((cause: unknown) => (cause as Error).message),
+    [MODEL, MESSAGE] as const,
+  );
+  expect(accepted).toBe("accepted");
 });
 
 test("the requested context window is the one the engine enforces", async ({ page }) => {
@@ -442,7 +497,20 @@ test("the engine survives a deadline expiry", async ({ page }) => {
         provider: "claude",
         config: { tier0: false, tier1: false, tier2: true },
       });
-      return { expired, after, status: window.__sih!.tier2Status() };
+      // The SECOND budget, and it is what makes this test able to tell
+      // "detectWithBudget reads its caller's budget" from "detectWithBudget
+      // hardcodes 50". 50 was the only value any test ever passed, so a judge
+      // built with a literal 50 satisfied every assertion above -- and a budget
+      // knob that does nothing is a knob every later measurement is taken
+      // under. Far above the ~4.6 s a call costs on this arm, so this one must
+      // NOT expire.
+      const generous = await window.__sih!.detectWithBudget({
+        text,
+        provider: "claude",
+        config: { tier0: false, tier1: false, tier2: true },
+        callBudgetMs: 120_000,
+      });
+      return { expired, after, generous, status: window.__sih!.tier2Status() };
     },
     [MODEL, MESSAGE] as const,
   );
@@ -473,4 +541,15 @@ test("the engine survives a deadline expiry", async ({ page }) => {
   expect(after!.abortedResponses).toBe(0);
   expect(after!.failedClosed).toBe(0);
   expect(after!.segmentsJudged).toBe(1);
+
+  // And the budget is the CALLER's. The same function, the same engine, the
+  // same message: at 50 ms the call is interrupted and at 120,000 ms it is not,
+  // so the only thing that can have changed the outcome is the number passed in.
+  // Without this pair, `new WebLlmJudge(engine, {budgetMs: 50})` -- the value
+  // hardcoded -- passes every other assertion in this file.
+  expect(run.generous.stats.deadlineExpiries).toBe(0);
+  expect(run.generous.stats.segmentsJudged).toBe(1);
+  expect(
+    run.generous.result.degraded.some((notice) => notice.reason === "call-budget-exhausted"),
+  ).toBe(false);
 });

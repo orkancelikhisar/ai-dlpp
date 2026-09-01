@@ -34,11 +34,21 @@ export const WEBLLM_ADAPTER_FLOOR: Readonly<Record<string, number>> = Object.fre
  * a suite cannot be tested by that suite. `test.skip(!webgpuAvailable())` turns
  * any error in this comparison into a silent, green skip. The review that found
  * this measured both directions against the pre-extraction code -- raising
- * `maxComputeWorkgroupStorageSize` to `64 << 10` made all nine tier-2 tests
- * skip at exit 0, and replacing the whole walk with `return true` was equally
+ * `maxComputeWorkgroupStorageSize` to `64 << 10` made every tier-2 test skip at
+ * exit 0, and replacing the whole walk with `return true` was equally
  * green, because this machine clears the real floor either way -- and those are
  * its numbers rather than a run of mine. Neither direction is observable from
  * inside the browser suite.
+ *
+ * RE-MEASURED HERE on the suite as it stands, because the review's own count
+ * ("all nine tier-2 tests") described a smaller suite and had already gone
+ * stale. With this function forced to `return false`,
+ * `playwright test tier2.spec.ts tier2-arms.spec.ts` reports 9 SKIPPED, 2
+ * PASSED, exit 0. The two that still run are the two that never consult
+ * `webgpuAvailable()`: the profile-quota test, and the test that asserts this
+ * function's answer against the real adapter -- which under the mutation agrees
+ * with the page that the adapter is unusable, and passes. A green run of a
+ * suite that measured nothing is the whole argument for this module.
  *
  * Split out, both directions are one object literal each in a Node test: a
  * limits object sitting exactly ON the floor must be accepted, and one a single

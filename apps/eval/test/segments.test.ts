@@ -222,7 +222,7 @@ describe("segmentSizeDistribution", () => {
     // And the result says so, rather than reporting the permissive default it
     // did not run under. Stamping `hasPredicates: true` here survived the first
     // mutation round: the only test reading this field used the default.
-    expect(d.escalation).toEqual({ hasPredicates: false, uncertainBelow: 0.8 });
+    expect(d.escalation).toEqual({ hasPredicates: false, uncertainBelow: 0.8, hasPriors: false });
   });
 
   it("records the escalation input it actually ran under", () => {
@@ -232,7 +232,27 @@ describe("segmentSizeDistribution", () => {
     expect(segmentSizeDistribution([]).escalation).toEqual({
       hasPredicates: true,
       uncertainBelow: 0.8,
+      hasPriors: false,
     });
+  });
+
+  it("records whether a priors source was SUPPLIED, not whether it found anything", () => {
+    // The third escalation input, and the one that separates the two conditions
+    // a bake-off must never splice. It has to be about the CALLER rather than
+    // about the findings: a callback returning nothing on every item is still
+    // the tier-0 condition -- an IR whose rules match nothing on one corpus is a
+    // measurement, not a misconfiguration -- and it produces numbers identical
+    // to no callback at all. `gateReport` refuses a report whose family
+    // disagrees with this flag, so getting it from the findings would refuse a
+    // legitimate arm.
+    const items = [item("a", words(15)), item("b", words(5))];
+    const silent = segmentSizeDistribution(items, { priorFindings: () => [] });
+    const absent = segmentSizeDistribution(items);
+    expect(silent.escalation.hasPriors).toBe(true);
+    expect(absent.escalation.hasPriors).toBe(false);
+    // Identical in every measured field, which is exactly why the flag cannot be
+    // derived from them.
+    expect({ ...silent, escalation: undefined }).toEqual({ ...absent, escalation: undefined });
   });
 
   it("reads a real p95 once the sample is big enough for one, not the maximum", () => {

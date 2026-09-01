@@ -139,6 +139,23 @@ export interface SegmentSizeDistribution {
   readonly escalation: {
     readonly hasPredicates: boolean;
     readonly uncertainBelow: number;
+    /**
+     * Whether a `priorFindings` source was supplied at all.
+     *
+     * The THIRD escalation input, and the one that separates the two conditions
+     * a bake-off must never splice: an arm that runs tier 0 feeds its findings
+     * in here and gets the uncertainty branch, an arm that does not feeds
+     * nothing and gets only the predicate branch. Both produce a
+     * well-formed distribution and neither says so anywhere else, so a report
+     * could carry one family's distribution under the other family's name --
+     * which is what `gateReport` now refuses with this field.
+     *
+     * "Supplied", not "found something": a callback that returns no finding on
+     * any item is still the tier-0 condition, and a policy whose rules happen
+     * to match nothing on one corpus is a measurement rather than a
+     * misconfiguration. `count` and `perItem` are where the difference shows up.
+     */
+    readonly hasPriors: boolean;
   };
 }
 
@@ -245,6 +262,11 @@ export function segmentSizeDistribution(
 ): SegmentSizeDistribution {
   const hasPredicates = options.hasPredicates ?? true;
   const uncertainBelow = options.uncertainBelow ?? UNCERTAIN_BELOW;
+  // Recorded before the default is applied, because the default is exactly what
+  // the flag has to distinguish: `() => []` supplied by a caller and `() => []`
+  // filled in here produce identical numbers, and only one of them is an arm
+  // that ran tier 0.
+  const hasPriors = options.priorFindings !== undefined;
   const priorFindings = options.priorFindings ?? (() => []);
 
   const chars: number[] = [];
@@ -283,7 +305,7 @@ export function segmentSizeDistribution(
     words: sizeStats(words),
     perItem: sizeStats(perItem),
     samples: { chars, bytes, words, perItem },
-    escalation: { hasPredicates, uncertainBelow },
+    escalation: { hasPredicates, uncertainBelow, hasPriors },
   };
 }
 
