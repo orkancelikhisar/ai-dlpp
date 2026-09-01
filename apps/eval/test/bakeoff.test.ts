@@ -22,7 +22,7 @@ import {
 } from "../src/driver/bakeoff.js";
 import { loadCorpus } from "../src/driver/corpus.js";
 import { RECORD_SCHEMA_VERSION, RunRecordSchema, type RunRecord } from "../src/driver/record.js";
-import { segmentSizeDistribution } from "../src/driver/segments.js";
+import { percentile, segmentSizeDistribution } from "../src/driver/segments.js";
 
 /**
  * The bake-off driver: arms in, one JSONL file per arm and a gate verdict
@@ -42,7 +42,13 @@ const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
 const CORPUS = join(REPO_ROOT, "corpora", "fixtures", "smoke.jsonl");
 const ITEMS = loadCorpus(readFileSync(CORPUS, "utf8"));
 
-/** The page fixture the bake-off has to run: the only IR here that declares a predicate. */
+/**
+ * The hand-written page fixture most of this file plans against: one of the two
+ * IRs here that declare a semantic predicate. `policies/compiled/p-fin.ir.json`
+ * is the other, and it is the one `test/baseline.spec.ts` and
+ * `test/bakeoff-run.test.ts`'s Approach-B block run, because only a compiled
+ * policy can be paired with the document B is shown.
+ */
 const SEMANTIC_IR = JSON.parse(
   readFileSync(join(REPO_ROOT, "apps", "eval", "fixtures", "semantic-ir.json"), "utf8"),
 ) as PolicyIr;
@@ -216,6 +222,11 @@ const RUN_CONTEXT = {
   // `servedModelId` it has already refused the arm on. Three values that share
   // no digits, so a report that copied one field into another is a red test.
   load: { engineLoadMs: 1_234, engineWarmupMs: 567, originStorageBytes: 8_900_000_000 },
+  // The sixth: what the WHOLE run crosses, which one arm's rows cannot show.
+  // Deliberately NOT the four-model four-family slate, so a scope sentence that
+  // went back to naming "the four pinned arms" whatever ran is a red test here
+  // rather than a false claim on every row of a one-family run.
+  slate: { models: [MODEL], families: ["compiled", "compiled-tier2-only"] },
 } as const;
 
 /**
@@ -406,8 +417,9 @@ describe("the two segments-per-message conditions, never mixed", () => {
   it("escalates further WITH tier 0 than without, on the IR the bake-off actually runs", () => {
     // Task 9 measured two conditions and the plan quotes both: with tier-0
     // priors p50 1, p95 3, max 3; without them p50 1, p95 2, max 2. They were
-    // measured against `minimal-ir.json`, and for one commit the only IR a
-    // tier-2 arm could run carried `rules: []` -- so both numbers described a
+    // measured against `minimal-ir.json`, and for one commit this fixture --
+    // then the only IR a tier-2 arm could run -- carried `rules: []`, so both
+    // numbers described a
     // policy the bake-off never executed, and the two arms escalated alike.
     //
     // The premise assertion below is the guard. Strip the rules again and this
@@ -793,6 +805,27 @@ describe("the p95 gate is the 95th percentile and not a neighbour of it", () => 
     expect(outcome(twenty, "p95-ttft").observed).toBe(190);
     expect(twenty.ttftMs!.max).toBe(200);
     expect(outcome(twenty, "p95-ttft").detail).not.toContain("IS THE MAXIMUM");
+
+    // THE NUMBER 20 ITSELF, computed here rather than trusted. The two
+    // assertions above constrain it only to the interval (2, 20]: at 10, or at
+    // 3, the caveat would silently vanish from the real production run -- this
+    // corpus produces up to 18 calls on a compiled arm, inside the window --
+    // and the sentence emitted would read "ceil(0.95*n) = n for every n < 3",
+    // which is false. `P95_EQUALS_MAX_BELOW`'s docblock calls the value
+    // COMPUTED; this is the computation, from `percentile`'s own nearest-rank
+    // rule and not from the constant.
+    let firstDivergence: number | undefined;
+    for (let n = 1; n <= 40 && firstDivergence === undefined; n += 1) {
+      const sample = Array.from({ length: n }, (_, i) => (i + 1) * 10);
+      if (percentile(sample, 95) !== Math.max(...sample)) firstDivergence = n;
+    }
+    expect(firstDivergence).toBe(20);
+    // And the constant the DETAIL interpolates is that number, read out of the
+    // string a reader meets rather than imported: the docblock says two places
+    // must not disagree about it and nothing enforced that either.
+    expect(outcome(small, "p95-ttft").detail).toContain(
+      `ceil(0.95*n) = n for every n < ${String(firstDivergence)}`,
+    );
   });
 
   it("names the prompt-size mismatch only on the arm that has one", () => {
@@ -905,6 +938,30 @@ describe("the engine-poisoning assertion", () => {
     ]);
     expect(outcome(r, "non-empty-after-stop").verdict).toBe("fail");
     expect(r.killedOnRunGates).toBe(true);
+  });
+
+  it("names the FIRST stop, not the last, when two items stop", () => {
+    // The latch is `if (stoppedAt === undefined && stats.stops > 0)`, and no
+    // fixture in this file had two stopping items -- so last-write-wins survived
+    // the whole suite. `stoppedAt` is interpolated into this gate's detail three
+    // times, and under the mutant a two-stop arm reads "the first engine call
+    // after the stop on item B answered normally (on item B)": self-contradictory,
+    // and naming the wrong item as the one the engine had to survive.
+    const stop = (itemId: string) =>
+      judged([], { deadlineExpiries: 1, segmentsSkipped: 1 }, { itemId });
+    const r = report([
+      judged([call()], {}, { itemId: "item-1" }),
+      stop("item-2"),
+      judged([call()], {}, { itemId: "item-3" }),
+      stop("item-4"),
+      judged([call()], {}, { itemId: "item-5" }),
+    ]);
+    const detail = outcome(r, "non-empty-after-stop").detail;
+    expect(detail).toContain('the stop on item "item-2"');
+    expect(detail).not.toContain('the stop on item "item-4"');
+    // The call the engine had to survive is the one right after the FIRST stop.
+    expect(detail).toContain('answered normally (on item "item-3")');
+    expect(outcome(r, "non-empty-after-stop").verdict).toBe("pass");
   });
 
   it("flags a poisoned call on EITHER term, not only on both at once", () => {
@@ -1177,13 +1234,60 @@ describe("what a gate report says about the run itself", () => {
     expect(scope).toContain("one of the three policy documents has a compiled artifact");
     expect(scope).toContain("one machine and one GPU");
     expect(scope).toContain("It answers NOTHING about 'how well ... prevent leakage'");
-    // Identical across arms: it is a property of the driver rather than of an
-    // arm, and two rows of one gates file disagreeing about what the run
-    // measured would be the worse artifact. (Both arms here run the compiled
-    // judge; the Approach-B families are covered by the end-to-end run in
-    // `bakeoff-run.test.ts`, whose gates file is compared line by line with the
-    // reports this function returned.)
-    expect(report([rec()], "compiled-tier2-only").experimentScope).toBe(scope);
+    // The model and method points are READ OFF THE SLATE, not asserted. This
+    // was a constant naming "the four pinned arms" and four methods whatever
+    // ran -- so `SIH_BAKEOFF=1 ... pnpm -C apps/eval bakeoff`, whose
+    // `DEFAULT_FAMILIES` is `["compiled"]` alone, put a claim of a
+    // compiled-versus-Approach-B head-to-head on every row of a one-method run.
+    // RUN_CONTEXT's slate is one model and two compiled families, so a
+    // hardcoded four survives nothing here.
+    expect(scope).toContain("MODEL axis at 1 point(s) (" + MODEL + ")");
+    expect(scope).toContain(
+      "METHOD axis at 2 point(s) (tier 0 + compiled judge, compiled judge)",
+    );
+    expect(scope).not.toContain("the four pinned arms");
+    // A DIFFERENT slate produces a different sentence, which is what separates
+    // "reads the slate" from "happens to agree with this fixture".
+    const four = report([rec()], "compiled", {
+      slate: {
+        models: [MODEL, "Phi-4-mini-instruct-q4f16_1-MLC"],
+        families: ["compiled", "baseline-b"],
+      },
+    }).experimentScope;
+    expect(four).toContain("MODEL axis at 2 point(s)");
+    expect(four).toContain("METHOD axis at 2 point(s) (tier 0 + compiled judge, Approach B)");
+
+    // Identical across the arms of ONE run on the axes that come off the plan,
+    // because the plan is one object: two rows of a gates file disagreeing
+    // about what the RUN crossed would be the worse artifact. They may differ
+    // on the scoring clause, and should -- two families run different tier sets
+    // -- so the comparison is of the sentence up to that clause.
+    const upToScoring = (text: string) => text.slice(0, text.indexOf("and because "));
+    expect(upToScoring(report([rec()], "compiled-tier2-only").experimentScope)).toBe(
+      upToScoring(scope),
+    );
+  });
+
+  it("points the accuracy clause at this row's own scoring rather than restating it", () => {
+    // The clause used to end "the corpus carries no gold for the tier every arm
+    // here runs" -- a property of `options.corpus`, which SIH_BAKEOFF_CORPUS
+    // makes free and which Plan 7 exists to change. On a corpus carrying tier-2
+    // gold the SAME ROW would have said `tiersTheseRowsCannotScore: []` in the
+    // data and "there is no gold" in the prose.
+    const withGold = rec({
+      gold: [{ start: 0, end: 5, text: "hello", entityType: "pred:unannounced-deal", action: "redact" }],
+    });
+    const clean = report([withGold], "compiled-tier2-only");
+    expect(clean.scoring.tiersTheseRowsCannotScore).toEqual([]);
+    expect(clean.scoring.cannotScore).toEqual([]);
+    expect(clean.experimentScope).toContain("scoring.cannotScore on this row is empty");
+    expect(clean.experimentScope).not.toContain("way(s) these rows cannot be joined to gold");
+
+    const bare = report([rec()], "compiled-tier2-only");
+    expect(bare.scoring.cannotScore.length).toBeGreaterThan(0);
+    expect(bare.experimentScope).toContain(
+      `scoring.cannotScore on this row names ${String(bare.scoring.cannotScore.length)} way(s)`,
+    );
   });
 
   it("refuses records that disagree about the settings they ran under", () => {
@@ -1494,11 +1598,36 @@ describe("what this harness can actually execute", () => {
     expect(plan.arms).toHaveLength(2);
     expect(() => assertPageCanRun(plan)).not.toThrow();
     // And the plan carries the document, which is the thing the arms need.
+    // `name` here is `DEFAULT_IR_NAME`, because `options()` sets neither
+    // `policyName` nor `irName`.
     expect(plan.policy).toEqual({
       name: "semantic",
       sha256: POLICY_SHA256,
       chars: POLICY_TEXT.length,
     });
+  });
+
+  it("takes the policy registry name from policyName, then irName, then the default", () => {
+    // ALL THREE LEVELS, because only the innermost was ever exercised and
+    // hardcoding the whole expression therefore survived: `name: "semantic"`,
+    // `name: DEFAULT_IR_NAME` and `name: options.irName ?? DEFAULT_IR_NAME` each
+    // passed the entire suite. `plan.policy.name` is what `runBakeoff` hands the
+    // page for `policyDocHash(name)` and `loadBaseline({policy: name})`, and the
+    // page's POLICY_FIXTURES holds only "p-fin" -- so a regression here aborts a
+    // slate with "unknown policy semantic" rather than failing a test. It is
+    // also what made the field's docblock disagree with the code for a round.
+    const named = (over: Partial<Parameters<typeof options>[0]>) =>
+      planBakeoff({
+        options: options({ families: ["baseline-b"], ...over }),
+        ir: PAIRED_IR,
+        items: ITEMS,
+        policyText: POLICY_TEXT,
+      }).policy!.name;
+    expect(named({ policyName: "p-fin", irName: "semantic" })).toBe("p-fin");
+    // The default, and the reason it is `irName`: the page's two registries are
+    // keyed by the SAME name for the two halves of one compile.
+    expect(named({ irName: "p-fin" })).toBe("p-fin");
+    expect(named({})).toBe("semantic");
   });
 
   it("refuses a baseline arm whose plan carries no policy document", () => {
@@ -1863,24 +1992,62 @@ describe("a tier the corpus cannot score is a named result, not a silent zero", 
     action: "redact",
   } as const;
 
+  /** A tier-0-and-tier-2 arm, so the only scoring gap in a fixture is the one under test. */
+  const BOTH_TIERS = { tier0: true, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW };
+
   it("names tier 2 unscorable when the arm ran it and the rows carry no gold for it", () => {
-    const r = report([judged([call()], { rung1: 1 }, { gold: [tier0Gold] })]);
-    expect(r.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+    const r = report([judged([call()], { rung1: 1 }, { config: BOTH_TIERS, gold: [tier0Gold] })]);
+    expect(r.scoring.tiersTheseRowsCannotScore).toEqual([2]);
     expect(r.scoring.goldSpansByTier).toEqual({ 0: 1, 1: 0, 2: 0 });
     expect(r.scoring.cannotScore).toHaveLength(1);
     expect(r.scoring.cannotScore[0]).toContain("tier 2");
     // The consequence, named in the artifact rather than left to be worked out.
     expect(r.scoring.cannotScore[0]).toContain("false positive");
+    // WHICH entityTypes the IR declares at the unscorable tier, which is the
+    // half of the sentence only the IR knows and the only place a gates row
+    // says it. Asserted against the fixture IR's own tier-2 ids rather than
+    // against a literal, so "declares 0 entityType(s)" and "declares every
+    // tier's ids" are both red -- both survived the whole suite before this.
+    const tier2Ids = SEMANTIC_IR.entityTypes.filter((e) => e.tier === 2).map((e) => e.id);
+    expect(tier2Ids.length).toBeGreaterThan(0);
+    expect(r.scoring.cannotScore[0]).toContain(
+      `The IR declares ${String(tier2Ids.length)} entityType(s) at tier 2 (${tier2Ids.join(", ")})`,
+    );
+    const tier0Ids = SEMANTIC_IR.entityTypes.filter((e) => e.tier === 0).map((e) => e.id);
+    for (const id of tier0Ids) expect(r.scoring.cannotScore[0]).not.toContain(id);
   });
 
   it("names NO tier unscorable once the rows do carry gold at that tier", () => {
     // The discriminator. Without it, a field hardcoded to "[2]" -- which is the
     // right answer for every corpus in this repository -- passes the test above.
-    const r = report([judged([call()], { rung1: 1 }, { gold: [tier0Gold, tier2Gold] })]);
-    expect(r.scoring.tiersThisCorpusCannotScore).toEqual([]);
+    const r = report([
+      judged([call()], { rung1: 1 }, { config: BOTH_TIERS, gold: [tier0Gold, tier2Gold] }),
+    ]);
+    expect(r.scoring.tiersTheseRowsCannotScore).toEqual([]);
+    expect(r.scoring.tiersWithGoldThisArmDidNotRun).toEqual([]);
     expect(r.scoring.cannotScore).toEqual([]);
     expect(r.scoring.goldSpansByTier).toEqual({ 0: 1, 1: 0, 2: 1 });
     expect(r.scoring.tiers.find((t) => t.tier === 2)!.goldEntityTypes).toEqual([PRED]);
+  });
+
+  it("names gold at a tier the arm did NOT run, which caps recall by construction", () => {
+    // THE MIRROR, and it was missing: the tier/gold join comes back empty in
+    // two directions and only one of them had a field. On the shipped corpus
+    // this is `client-name` at tier 1 -- two of seven gold spans, at a tier
+    // `planBakeoff` switches off on every arm it plans -- so every arm's recall
+    // denominator silently included spans it could not produce.
+    const r = report([
+      judged([call()], { rung1: 1 }, { gold: [tier0Gold, tier2Gold] }),
+    ]);
+    expect(r.scoring.tiersRun).toEqual([2]);
+    expect(r.scoring.tiersWithGoldThisArmDidNotRun).toEqual([0]);
+    expect(r.scoring.tiersTheseRowsCannotScore).toEqual([]);
+    expect(r.scoring.cannotScore).toHaveLength(1);
+    // The BOUND, not just the fact: a recall over record.gold cannot exceed
+    // 1 of the 2 gold spans on this row whatever the model does.
+    expect(r.scoring.cannotScore[0]).toContain("did NOT run tier 0");
+    expect(r.scoring.cannotScore[0]).toContain("bounded above by 1/2");
+    expect(r.scoring.cannotScore[0]).toContain("(in-pan)");
   });
 
   it("reads which tiers RAN off config on the rows, not off the family label", () => {
@@ -1898,10 +2065,13 @@ describe("a tier the corpus cannot score is a named result, not a silent zero", 
     const withoutTier0 = report([judged([call()], { rung1: 1 }, { config: cfg(false), gold: [tier0Gold] })]);
     expect(withTier0.scoring.tiersRun).toEqual([0, 2]);
     expect(withoutTier0.scoring.tiersRun).toEqual([2]);
-    // And a tier with gold that the arm did NOT run is not a complaint: tier 1
-    // is off on every bake-off arm and gold for it would score nothing here.
+    // And a tier with gold that the arm did NOT run IS a complaint, in the
+    // mirror field: the gold is there, this arm cannot produce it, and a recall
+    // denominator that includes it is wrong by exactly that much.
     expect(withoutTier0.scoring.tiers.find((t) => t.tier === 0)!.goldSpans).toBe(1);
-    expect(withoutTier0.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+    expect(withoutTier0.scoring.tiersTheseRowsCannotScore).toEqual([2]);
+    expect(withoutTier0.scoring.tiersWithGoldThisArmDidNotRun).toEqual([0]);
+    expect(withTier0.scoring.tiersWithGoldThisArmDidNotRun).toEqual([]);
   });
 
   it("names a gold entityType the IR declares no tier for, which scores as nothing at all", () => {
@@ -1939,7 +2109,7 @@ describe("a tier the corpus cannot score is a named result, not a silent zero", 
     // The same refusal `gateReport` already makes for two IRs or two context
     // windows, applied to the one setting `scoring.tiersRun` is read from. A
     // report summing a tier-0 row and a tier-2-only row would state one tier set
-    // for work done under two, and `tiersThisCorpusCannotScore` would be
+    // for work done under two, and `tiersTheseRowsCannotScore` would be
     // computed against a tier half the rows never ran.
     const cfg = (tier0: boolean) => ({
       tier0,
@@ -1985,8 +2155,8 @@ describe("no verdict on a gate report is a selection", () => {
     const unmatchable = report(rows([]));
     expect(right.killedOnRunGates).toBe(unmatchable.killedOnRunGates);
     expect(right.gates).toEqual(unmatchable.gates);
-    expect(right.scoring.tiersThisCorpusCannotScore).toEqual([]);
-    expect(unmatchable.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+    expect(right.scoring.tiersTheseRowsCannotScore).toEqual([]);
+    expect(unmatchable.scoring.tiersTheseRowsCannotScore).toEqual([2]);
   });
 
   it("carries no gate whose subject is accuracy", () => {

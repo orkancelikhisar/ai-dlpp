@@ -139,7 +139,7 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
     `[bakeoff] ${report.arm}: killedOnRunGates=${report.killedOnRunGates} ` +
       `(run gates only, accuracyGated=${report.scoring.accuracyGated}); tiers run ` +
       `[${report.scoring.tiersRun.join(", ")}], this corpus cannot score ` +
-      `[${report.scoring.tiersThisCorpusCannotScore.join(", ")}]` +
+      `[${report.scoring.tiersTheseRowsCannotScore.join(", ")}]` +
       report.scoring.cannotScore.map((line) => `\n  - ${line}`).join(""),
   );
   // The model ANSWERED. Without this the file below is a complete, schema-valid
@@ -169,7 +169,7 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
   // and the row names that rather than leaving it to a scorer to discover.
   expect(report.scoring.tiersRun).toEqual([0, 2]);
   expect(report.scoring.goldSpansByTier[2]).toBe(0);
-  expect(report.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+  expect(report.scoring.tiersTheseRowsCannotScore).toEqual([2]);
   expect(report.scoring.accuracyGated).toBe(false);
 });
 

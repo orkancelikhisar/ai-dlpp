@@ -110,3 +110,62 @@ describe("policies/compiled", () => {
     });
   }
 });
+
+/**
+ * `scripts/compile-policies.ts` is the only path that PRODUCES those artifacts,
+ * and it is imported by no test.
+ *
+ * The determinism claim the round rests on -- "produced offline by
+ * `scripts/compile-policies.ts` replaying the committed LLM fixtures with no
+ * network call" -- was verified for the compiler and not for this script: the
+ * test above drives `runCli` directly with `loadTestFixtures()` and never loads
+ * the file. An inert declaration inserted at the top of it survived the whole
+ * compiler suite, which is what says the file is not loaded.
+ *
+ * Running it is not the answer: `main()` executes at module scope and WRITES
+ * into `policies/compiled/`, so importing it from a test would mutate the
+ * repository on every suite run. What can be checked without running it is its
+ * PROVENANCE -- that its only source of model answers is the committed fixture
+ * set, that it still compiles every policy document rather than a subset, and
+ * that it reports the ones it cannot. Those are the three properties the claim
+ * is made of, and the test above catches a drifted artifact independently.
+ */
+describe("the offline compile script's provenance", () => {
+  const SCRIPT = join(REPO, "scripts", "compile-policies.ts");
+  const source = readFileSync(SCRIPT, "utf8");
+
+  it("takes its model answers only from the committed fixtures", () => {
+    // The ONE call that decides whether a compile is offline: `runCli`'s options
+    // carry either `fixtures` or a live client, and this script must pass the
+    // former on every path.
+    expect(source).toContain("loadTestFixtures");
+    expect(source).toContain("{ fixtures }");
+    // And nothing that could reach a network or a key. `record-fixtures.ts` is
+    // the script that spends money; naming it in prose is fine, importing
+    // anything it imports is not.
+    const imports = [...source.matchAll(/^import[^;]*from\s+"([^"]+)";/gm)].map((m) => m[1]!);
+    expect(imports).toEqual(["node:fs", "node:path", "node:url", "../packages/compiler/src/index.js", "../packages/compiler/test/fixtures/index.js"]);
+    expect(source).not.toMatch(/\bfetch\s*\(|@anthropic-ai|process\.env/);
+  });
+
+  it("compiles every policy document in the repository, not a hand-kept subset", () => {
+    // A compiled directory holding one of three policies must not look like a
+    // compiled directory holding three, so the script iterates ALL of them and
+    // reports the misses. A `POLICIES` list that fell behind `policies/*.md`
+    // would silently stop trying the new one.
+    const documents = readdirSync(POLICIES)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => f.slice(0, -".md".length))
+      .sort();
+    expect(documents.length).toBeGreaterThan(0);
+    const listed = /const POLICIES = \[([^\]]*)\] as const;/.exec(source)?.[1] ?? "";
+    const names = [...listed.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+    expect(names).toEqual(documents);
+    // And the ones it expects to succeed offline are exactly the ones with a
+    // committed artifact -- the two directions the script's own exit code
+    // checks, checked here against the directory rather than against itself.
+    const expected = /const OFFLINE_POLICIES: readonly string\[\] = \[([^\]]*)\];/.exec(source)?.[1] ?? "";
+    const offline = [...expected.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+    expect(offline).toEqual(committedPolicies());
+  });
+});

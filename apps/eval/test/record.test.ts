@@ -1515,6 +1515,41 @@ describe("the Approach-B evidence a record has to carry", () => {
     ).toBe(true);
     expect(RunRecordSchema.safeParse({ ...without, baselineStats: B_STATS }).success).toBe(false);
     expect(b({ detector: "the-compiler" }).success).toBe(false);
+
+    // And the ENUM is closed, which the line above cannot show: `b()` builds a
+    // B-SHAPED row, so "the-compiler" is refused there by the `baselineStats`
+    // coupling ("present exactly when detector is approach-b") whatever the
+    // field's type is. A COMPILED-shaped row satisfies every refine for any
+    // detector that is not "approach-b", so it is the only shape where the enum
+    // is the thing under test -- and with `z.string().min(1)` in place of the
+    // enum, this row validates.
+    //
+    // What that would cost: a third value falls through every `detector === `
+    // comparison downstream to the wrong branch. `gateReport`'s
+    // `(detector === "core-orchestrator") !== shape.runsCompiledJudge` reads it
+    // as Approach B, and `normalizeArmStats` returns undefined for a row that
+    // carries counters.
+    //
+    // The shape that isolates it: an unknown detector satisfies EVERY refine
+    // when the row carries neither stats field (both couplings read "present
+    // exactly when detector is X", and false === false), so the enum is the
+    // only thing standing between this row and a valid record.
+    const { tier2Stats: _stats, ...noStats } = compiledShaped;
+    const unknown = RunRecordSchema.safeParse({ ...noStats, detector: "the-compiler" });
+    expect(unknown.success).toBe(false);
+    // On the FIELD, not on a refine: a refine's issue has an empty path, so
+    // this is what says the enum rejected it rather than a coupling.
+    expect(unknown.error!.issues.some((i) => i.path.join(".") === "detector")).toBe(true);
+    // And the same row with a known detector and its counters back is valid, so
+    // the refusal above is about the value and not about the fixture.
+    expect(RunRecordSchema.safeParse(compiledShaped).success).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({ ...compiledShaped, detector: "core-orchestrator" }).success,
+    ).toBe(true);
+    // Whitespace is not a near miss either.
+    expect(
+      RunRecordSchema.safeParse({ ...noStats, detector: "core-orchestrator " }).success,
+    ).toBe(false);
   });
 
   it("requires baselineStats on a returned B row and forbids them anywhere else", () => {

@@ -60,9 +60,15 @@ against a fourth rung that agrees to 0.000 under identical page code. (Those fou
 are Plan 4's scratch-harness measurement, pinned as `BACKEND_AGREEMENT` in
 `apps/eval/src/driver/main.ts`; nothing in the committed suite re-derives the tensor diff
 itself.) What the suite *does* re-run on every pass is the consequence, and it is not subtle:
-end to end at the same threshold on the same message, all three rungs return different spans,
-different labels and different confidences from WASM, and **no error is raised on any of them**.
+end to end at the same threshold on the same message, all three rungs return different spans and
+different confidences from WASM, and **no error is raised on any of them**.
 Session creation succeeds, the run resolves, and the logits are finite and correctly shaped.
+
+*(This paragraph said "different spans, **different labels** and different confidences" until
+2026-09-01. The label half is not observable and never was: the divergence cases run under the
+default `apps/eval/fixtures/minimal-ir.json`, whose only tier-1 entityType is `client-name`, so
+every finding on every rung and both providers carries that one label. Spans and confidences do
+differ, on every run.)*
 
 The ≈0.46 figure in the chart is **one rung's**, and reading it as all three would be reading it
 wrong: it is `gliner-pii-base-uint8`'s raw logit range collapsing from `[−30.46, +2.05]` on WASM
@@ -98,19 +104,23 @@ finding above is exactly the class of defect that a Node-only harness would have
 clean result.
 
 Two honest qualifications on that rule, because it is easy to state more strongly than it
-holds. The page API is a surface of about a dozen functions, not one call. And the driver does
+holds. The page API is a surface of seventeen functions, not one call. And the driver does
 import `@sih/core` and run it **in Node** — the segmenter, the escalation policy and `runTier0`
 — to *plan* a run: to size the per-item ceiling and to compute the segment distribution a gate
 is derived from. That is core's own code rather than a second copy of it, and none of it
 produces a measured number; the measurements all come from the browser.
 
 The TypeScript/Python boundary is a **JSONL file**, never a shared library: the harness emits
-records and computes no metric. A record carries the findings, the gold spans, the timings, the
+records and computes **no accuracy metric**. It does compute five *run gates* per arm — p95 TTFT,
+decode tok/s, span-ladder resolvable rate, duplicate rate, non-empty-after-stop — each with a
+threshold and a pass/fail verdict, and writes them to a gates file beside the records; not one of
+them reads a gold label. A record carries the findings, the gold spans, the timings, the
 resolved config, the IR hash, and the per-item loss counters — enough that a coverage claim can
 be re-derived from the file alone. **The Python side does not exist yet.** There is no
-`analysis/` directory and no `.py` file in this repository; spec §2.2 puts scoring in Plan 8,
-and until that plan runs, "scoring happens separately in Python" is a design decision rather
-than a description of anything shipped.
+`analysis/` directory and no `.py` file in this repository. Spec §2.2 puts scoring in `analysis/`'s
+Python and says nothing about plan numbering — deferring it to Plan 8 is this project's own
+sequencing — and until that runs, "scoring happens separately in Python" is a design decision
+rather than a description of anything shipped.
 
 ---
 
@@ -121,7 +131,7 @@ than a description of anything shipped.
 | `packages/core` | The detection runtime. Zero DOM, zero Node — enforced two ways, because it runs in both (see below). Policy IR, segmenter, tier-0 rules, merge, action resolution, pseudonymization vault, streaming rehydrator. |
 | `packages/compiler` | Policy document → IR. Node-only CLI. The one component allowed to call a frontier model, with an anti-hallucination gate requiring every rule to quote its source clause verbatim. |
 | `packages/tier1` | The GLiNER-class ONNX span tagger. Browser-only. Word splitter, per-word encoder, two decoders (the two model families express spans differently), and the span mapper. |
-| `apps/eval` | Playwright harness: corpus in, JSONL out. Computes no metrics. |
+| `apps/eval` | Playwright harness: corpus in, JSONL out. Computes throughput/hygiene run gates; **no accuracy metric**. |
 | `packages/tier2` | The in-browser instruct-LLM judge (`@mlc-ai/web-llm`, WebGPU) behind core's `SemanticJudge` seam, plus **Approach B** — a `Detector` that takes the whole policy document and the whole message in one model call, with no compiler and no tiers. |
 | `policies/` | Three deliberately disagreeing policy documents (finance, healthcare, generic corporate) plus the provider manifest. `policies/compiled/` holds compiled artifacts — see the caveat below. |
 | `corpora/` | Corpus fixtures and, later, the build pipeline. Never raw third-party data. |
@@ -187,9 +197,11 @@ Typechecking clean across five projects.
 
   What that is *not* is an answer. It is one model over three corpus items, the corpus is the
   smoke fixture whose gold was labelled under a different policy, and **no accuracy metric
-  exists anywhere in this repository** — spec 2.2 makes the JSONL file the whole boundary and
-  puts scoring in Plan 8. The gate verdicts that run does produce are throughput and hygiene
-  properties; `ArmGateReport.scoring.verdictMeans` says so on every row.
+  exists anywhere in this repository** — spec 2.2 makes the JSONL file the whole TS/Python
+  boundary and puts scoring in `analysis/`'s Python, which nobody has written here (the spec
+  does not mention plan numbering; Plan 8 is our sequencing). The gate verdicts that run does
+  produce are throughput and hygiene properties; `ArmGateReport.scoring.verdictMeans` says so on
+  every row.
 - **Approach B fails the p95 time-to-first-token gate, and that is not a result either.** The
   ceiling was derived at the compiled judge's ~1.1 kB prompt, built from one segment; B carries
   the whole policy document on every call and measures 5.4x the prompt tokens. Every report row
@@ -238,9 +250,13 @@ run of what is in this repository today is **a single point on most of those axe
 worth stating plainly beside any number it produces. The same paragraph is on every row of the
 gates file a bake-off writes, as `ArmGateReport.experimentScope`, so it travels with the data.
 
-What a run **does** cross: the **model** axis (the four pinned tier-2 arms) and the **method**
-axis (compiled judge, tier 0 + compiled judge, Approach B, B + tier 0). Those are real
-comparisons and they are the point of the apparatus.
+What a run **can** cross: the **model** axis (up to the four pinned tier-2 arms) and the
+**method** axis (compiled judge, tier 0 + compiled judge, Approach B, B + tier 0). Those are real
+comparisons and they are the point of the apparatus — but *how many points of each a given run
+actually crossed* is a property of that run, not of the harness. `SIH_BAKEOFF=1 … pnpm -C
+apps/eval bakeoff` with no `SIH_BAKEOFF_FAMILIES` runs **one** method (`DEFAULT_FAMILIES` is
+`["compiled"]`), and `experimentScope` on each gates row now names the points that run crossed
+rather than asserting four. The four-family head-to-head is `test/baseline.spec.ts`.
 
 What it holds at one point and cannot cross:
 
@@ -314,8 +330,9 @@ hours of GPU time:
 SIH_BAKEOFF=1 SIH_BAKEOFF_RUN_ID=<name> pnpm -C apps/eval bakeoff
 ```
 
-It writes one JSONL file per arm plus a gates file into `runs/`, refuses to overwrite either,
-and computes no metric. It has not been run; see "deliberately not claimed yet" above.
+It writes one JSONL file per arm plus a gates row into `runs/` as each arm finishes, refuses to
+overwrite either, and computes no **accuracy** metric — the gates it does compute are the five
+run gates above. It has not been run; see "deliberately not claimed yet" above.
 
 Compiled policy artifacts are regenerated offline, from the committed model-response fixtures
 and with no network call:

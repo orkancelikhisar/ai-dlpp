@@ -293,8 +293,9 @@ happens to emit, so a scorer has to match spans by overlap rather than equality.
 
 `src/driver/run.ts` turns a corpus into records. `runArm(page, spec)` sends every
 item through `window.__sih.detect` and returns one `RunRecord` per item, in
-corpus order. It computes **no metrics** — that half of the §2.2 boundary is
-Plan 8's Python.
+corpus order. It computes **no metric of any kind** — the run gates are
+`bakeoff.ts`'s, not this function's, and accuracy is the §2.2 boundary's other
+side, which nobody has written here.
 
 Behaviours worth knowing before calling it:
 
@@ -522,6 +523,12 @@ span `[-30.46, +2.05]` on wasm and `[-0.36, -0.16]` on webgpu, whose sigmoid is
 verdicts rest on: they are three to four orders of magnitude above anything
 WebGPU varies by on its own (below).
 
+Note what does **not** differ: the *labels*. These cases run under the default
+`fixtures/minimal-ir.json`, whose only tier-1 entityType is `client-name`, so
+every finding on every rung on both providers carries that one label — the
+README, `driver/main.ts` and this file all said "different spans and labels"
+until 2026-09-01, and the label half was never expressible here.
+
 **The clause that used to end that sentence was wrong, and it is worth keeping
 the correction visible.** It read "which is exactly what the end-to-end findings
 show, every word scoring 0.44–0.47 in monotone order", attributing that pattern
@@ -539,7 +546,8 @@ On a markerV0 rung `confidence` *is* `sigmoid(logit)` with nothing in between
 reproducible from this suite** — which is a gap in the characterisation, not in
 the verdicts. The verdicts rest on the magnitude of the logit differences
 (8.352 / 8.134 / 30.154 against ~5e-3 of self-jitter), and every rung marked
-**wrong** returns different spans and labels from wasm on every run.
+**wrong** returns different spans and different confidences from wasm on every
+run.
 
 **Nothing reports this.** Session creation succeeds, `run` resolves, the logits
 are finite and correctly shaped. `gliner-pii-base` agreeing under the same page
@@ -1004,15 +1012,27 @@ schema-valid and internally consistent.
 
 Two things follow, and both are in the artifact rather than only here.
 
-- **Every gates row carries `scoring`.** `scoring.tiersThisCorpusCannotScore` is
-  `[2]` on every arm today, `scoring.cannotScore` says what that costs a scorer,
-  and `scoring.goldSpansByTier` shows the 5/2/0 split. Read it before you read
-  any number in the row.
+- **Every gates row carries `scoring`.** `scoring.tiersTheseRowsCannotScore` is
+  `[2]` on every arm today and `scoring.cannotScore` says what that costs a
+  scorer. `scoring.goldSpansByTier` shows a 5/2/0 split **over the whole
+  13-item corpus scored against `fixtures/semantic-ir.json`** — do not expect
+  that literal on every file. The only bake-off this repository has actually
+  run, `test/baseline.spec.ts`, takes three items against
+  `policies/compiled/p-fin.ir.json` and reports `{0: 1, 1: 0, 2: 0}` with
+  `goldEntityTypesNotInIr: ["aws-key", "generic-secret"]`, because p-fin
+  declares neither of those two. Read the row, not this sentence.
+- **And the mirror.** `scoring.tiersWithGoldThisArmDidNotRun` is `[1]` on every
+  bake-off arm: the corpus carries two `client-name` spans, `client-name` is
+  tier 1, and every planned arm sets `tier1: false`. So a recall taken over
+  `record.gold` on the whole corpus is capped at 5/7 for every arm whatever the
+  model does. That was silent until 2026-09-01.
 - **`killed` is now `killedOnRunGates`.** It is the disjunction of the gates on
   the row — latency, decode rate, span-ladder resolvability, restatement rate,
   engine poisoning — and **not one of them reads a gold label**. Spec §4.2 makes
   task accuracy the primary criterion for this slate and no accuracy metric
-  exists in this repository (spec §2.2 puts scoring in Plan 8). An arm can pass
+  exists in this repository (spec §2.2 puts scoring in `analysis/`'s Python,
+  which nobody has written here; the spec says nothing about plan numbering —
+  deferring it to Plan 8 is our sequencing). An arm can pass
   every gate here and be the worst model on the slate. `scoring.verdictMeans`
   says exactly this, on the row.
 
@@ -1026,16 +1046,24 @@ a machine for producing edited data.
 ## Two more things every gates row carries
 
 **`experimentScope`.** Spec §6.3 defines a matrix over arms × backends ×
-policies; a run of this driver is one point on most of those axes. It crosses the
-MODEL axis (four pinned arms) and the METHOD axis (four families) and holds three
-fixed and uncrossable: backend, because tier 2 is WebGPU or absent and the driver
-refuses to run without it; policy, because it refuses an IR with no semantic
-predicate and one of the three policy documents has a compiled artifact; and
-hardware, because a run is one machine and one GPU and no field of any file names
-either. The string spells out which clauses of the project's research question a
-run answers — *policy-conditioned* (at one policy) and *fully-local* yes, latency
-and hardware cost partly, *prevent confidential-data leakage* not at all. It is a
-constant, so two rows of one file cannot disagree about it.
+policies; a run of this driver is one point on most of those axes. The string
+names **the points that run crossed** on the MODEL and METHOD axes, read off the
+plan — and that is a correction: it used to be a constant asserting "the four
+pinned arms" and four methods whatever ran, so the shipped slate command, whose
+`DEFAULT_FAMILIES` is `["compiled"]` alone, put a claim of a
+compiled-versus-Approach-B head-to-head on every row of a one-method run. It
+holds three axes fixed and uncrossable: backend, because tier 2 is WebGPU or
+absent and the driver refuses to run without it; policy, because it refuses an IR
+with no semantic predicate and one of the three policy documents has a compiled
+artifact; and hardware, because a run is one machine and one GPU and no field of
+any file names either. It spells out which clauses of the project's research
+question a run answers — *policy-conditioned* (at one policy) and *fully-local*
+yes, latency and hardware cost partly, *prevent confidential-data leakage* not at
+all — and it points at **this row's own `scoring.cannotScore`** for the gold gap
+rather than restating a corpus property that a different corpus would falsify.
+Two rows of one file agree on everything that comes off the plan; they may
+differ on the scoring clause, and should, because two families run different
+tiers.
 
 **`engineLoadMs`, `engineWarmupMs`, `originStorageBytes`.** The hardware half of
 "at what latency and hardware cost?", read off the page's `Tier2LoadReport` —
@@ -1054,32 +1082,47 @@ footprint; on a slate run cheapest-first it climbs monotonically and the last ar
 reports the whole slate. For a per-model size read `TIER2_MODELS[].vramRequiredMb`,
 which is `prebuiltAppConfig`'s VRAM figure and is not a download size either.
 
-## Latency here is measured at 24× a shipped policy's budget
+## Read `run.latencyBudgetTimesCompilerDefault` before any latency here
 
-`fixtures/semantic-ir.json` carries `latencyBudgetMs: 120000`. The compiler's
-`DEFAULT_LATENCY_BUDGET_MS` is **5,000**, which is what `minimal-ir.json` and
-`multiclass-ir.json` carry, and `planBakeoff` refuses any IR without a semantic
-predicate — so `semantic-ir.json` is the only IR a bake-off can run and *every*
-latency it can produce is taken at 24× the budget a compiled policy emits.
+**Two IRs in this repository can host a tier-2 arm, and they are 24× apart on the
+message budget.** `planBakeoff` refuses any IR without a semantic predicate; two
+have one. `fixtures/semantic-ir.json` carries `latencyBudgetMs: 120000`, which is
+24× the compiler's `DEFAULT_LATENCY_BUDGET_MS` of **5,000**;
+`policies/compiled/p-fin.ir.json` carries that 5,000 itself, because the compiler
+emits it for a policy that names no budget (as `minimal-ir.json` and
+`multiclass-ir.json` also do). So `run.latencyBudgetTimesCompilerDefault` on the
+row is 24 on a semantic-ir run and **1** on a p-fin run, and only the first needs
+the caveat below.
 
-That budget is not a mistake in the fixture: it arms one deadline over the whole
+*(This section used to be headed "Latency here is measured at 24× a shipped
+policy's budget" and asserted that `semantic-ir.json` is the only IR a bake-off
+can run. Both were false by the time they were written: `test/baseline.spec.ts`
+drives `runBakeoff` against p-fin at 5,000 ms and asserts the multiple is 1 on
+all four of its rows.)*
+
+The fixture's 120,000 is not a mistake: it arms one deadline over the whole
 `judge()` call, and at Plan 5's measured 4.6 s per call on the cheapest arm a
 5,000 ms budget fires during the first call of every tier-2 spec, so nothing
 would exercise a completed judgement.
 
-What it costs, stated rather than hidden: **the degradation a shipped policy's
-budget would cause is measured nowhere in this run.** A shorter budget does not
+What a 24× run costs, stated rather than hidden: **the degradation a shipped
+policy's budget would cause is measured nowhere in it.** A shorter budget does not
 slow a call, but it changes which calls happen — smaller sample, more calls ended
 by an interrupt, far fewer `ladder.segmentsJudged`, far more
 `degradedNotices["budget-exhausted"]`. Each gates row carries
 `run.compilerDefaultLatencyBudgetMs` and
 `run.latencyBudgetTimesCompilerDefault`, and both latency gate details name the
-budget their numbers came from.
+budget their numbers came from — and say so *conditionally*, so a 1× run is not
+handed a caveat that does not apply to it.
 
-Measuring it instead is cheap: one copy of `semantic-ir.json` with
-`latencyBudgetMs: 5000`, one line in `IR_FIXTURES` in `src/page/main.ts`, and a
-second `runBakeoff` under another `runId` and `irName` with an `itemTimeoutMs`
-matching the (much smaller) bound `planBakeoff` derives at that budget. The
+Measuring the degradation as such is still not done, and running p-fin is not it:
+p-fin is at 5,000 but carries a different predicate and a different entityType
+vocabulary, so the difference between its rows and a semantic-ir run's is two
+variables at once. The single-variable version is cheap: one copy of
+`semantic-ir.json` with `latencyBudgetMs: 5000`, one line in `IR_FIXTURES` in
+`src/page/main.ts`, and a second `runBakeoff` under another `runId` and `irName`
+with an `itemTimeoutMs` matching the (much smaller) bound `planBakeoff` derives
+at that budget. The
 degradation rate is then the ratio of `ladder.segmentsJudged` and of
 `degradedNotices["budget-exhausted"]` between the two gates rows. It is *not* a
 per-arm dimension of one run: a file is named by runId, family and model, so two
@@ -1099,8 +1142,9 @@ There are **two** answers, not one, because escalation runs under two conditions
 and the bake-off runs both: an arm that runs tier 0 feeds its findings in and
 gets the uncertainty branch as well as the predicate branch, and an arm that does
 not gets only the predicate branch. Both measured over
-`corpora/fixtures/smoke.jsonl` against `fixtures/semantic-ir.json`, the only IR a
-tier-2 arm can run:
+`corpora/fixtures/smoke.jsonl` against `fixtures/semantic-ir.json` (a run against
+`policies/compiled/p-fin.ir.json`, the other runnable IR, has its own
+distribution — its predicate and rules differ):
 
 | | no tier-0 priors (`compiled-tier2-only`, `baseline-b`) | with them (`compiled`, `baseline-b-tier0`) |
 |---|---|---|

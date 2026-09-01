@@ -2021,9 +2021,10 @@ in `apps/eval/test/baseline.spec.ts` and the numbers it produced are in the
 deviations entry at the end of this file. What is NOT done and is not claimed:
 the four MODEL arms of the bake-off have never been run against each other on a
 paired IR (one model, `TIER2_MODELS[0]`, is what the evidence covers), and no
-accuracy metric exists here at all -- spec 2.2 puts scoring in Plan 8, so this
-head-to-head is an apparatus that works, not an answer to which method is
-better.
+accuracy metric exists here at all -- spec 2.2 puts scoring in `analysis/`'s
+Python and this plan sequence puts writing it in Plan 8 (the spec itself never
+mentions plan numbering), so this head-to-head is an apparatus that works, not an
+answer to which method is better.
 
 **Explicitly NOT in this plan:** the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus remains a pipe-integrity check and cannot produce meaningful accuracy in either direction.
 
@@ -2125,7 +2126,8 @@ machine for producing edited data.
 **`ArmGateReport.killed` is now `killedOnRunGates`.** It reads as the bake-off's
 answer to "which model won" and is not one: spec 4.2's stated primary criterion
 is task accuracy, no accuracy metric exists in this repository (spec 2.2 puts
-scoring in Plan 8), and the gates it sums are latency, decode rate, span-ladder
+scoring in `analysis/`'s Python; deferring that to Plan 8 is this plan sequence's
+own decision), and the gates it sums are latency, decode rate, span-ladder
 resolvability, restatement rate and engine poisoning. `scoring.verdictMeans`
 states that on the row itself, and `bakeoff.test.ts` pins it as a behaviour:
 two arms with byte-identical throughput, one whose findings match its gold and
@@ -2135,7 +2137,13 @@ one whose identical findings match nothing, get the same value.
 message budget,** and the gates file now says so. `semantic-ir.json` carries
 `latencyBudgetMs: 120000`; the compiler's `DEFAULT_LATENCY_BUDGET_MS` is 5,000,
 and `planBakeoff` refuses any IR without a semantic predicate, so no arm here can
-run at a compiled policy's default. The budget is not a fixture mistake -- at
+run at a compiled policy's default.
+
+> **SUPERSEDED, see the final review round's deviations at the end of this file.**
+> The bolded claim stopped being true when `policies/compiled/p-fin.ir.json` was
+> committed: it declares a semantic predicate too and carries the compiler's own
+> 5,000, so `test/baseline.spec.ts` takes latencies at **1x**. The rest of this
+> paragraph is right about a semantic-ir run and wrong that it is the only kind. The budget is not a fixture mistake -- at
 this plan's measured 4.6 s per call it fires during the first call at 5,000 --
 but the DEGRADATION it hides is measured nowhere: a shorter budget does not slow
 a call, it changes which calls happen. `run.compilerDefaultLatencyBudgetMs` and
@@ -2349,7 +2357,8 @@ scope, `escalate.ts`) landed tests in it. The row now says so.
   in the README and in spec 2.2.
 - "it reaches detection only through a single page API" and "all scoring happens
   separately in Python". The first is two claims and both are loose: the page API
-  is about a dozen functions, and the driver imports `@sih/core` and runs
+  is seventeen functions (this entry said "about a dozen"; corrected in the
+  final round), and the driver imports `@sih/core` and runs
   `segmentText`, `selectSegments` and `runTier0` IN NODE to plan a run. The rule
   that does hold — nothing is forked, stubbed or re-implemented, and every
   MEASURED number comes from the browser — is what it says now. The second
@@ -2357,7 +2366,10 @@ scope, `escalate.ts`) landed tests in it. The row now says so.
   no `.py` file anywhere here.
 - The tier-1 weight total read "1.4 GB across six variants". RECOMPUTED from
   `MODEL_MANIFEST`: 1,512,225,494 bytes of `.onnx` and 1,556,416,373 with the
-  metadata each variant needs, i.e. 1.51/1.56 GB decimal or 1.41 GiB. Stated in
+  metadata each variant needs, i.e. 1.51/1.56 GB decimal or 1.41/1.45 GiB. (The
+  single "1.41 GiB" this line carried is the `.onnx`-only figure; 1,556,416,373
+  / 2^30 is 1.45, and a reader converting the with-metadata number back was out
+  by 45 MB -- in a paragraph whose whole subject is a units confusion.) Stated in
   bytes-derived decimal GB now, and the tier-2 figure — 7.49 GB — is now the
   one this pass measured off `navigator.storage.estimate()` during a real run.
 
@@ -2413,8 +2425,18 @@ logits cannot all sit in the `[-0.36, -0.16]` band the collapse story quotes.
 That band is Task 11's, over a different short message, and it is left standing
 as that measurement rather than restated as this one's. The three `wrong`
 verdicts are unaffected: they rest on the magnitude of the logit differences, and
-every rung marked wrong returns different spans and labels from wasm on every
-run.
+every rung marked wrong returns different spans and different confidences from
+wasm on every run.
+
+**CORRECTED 2026-09-01: "and labels" was wrong and was written into four places
+by the truth pass itself.** No rung can return a different LABEL. The divergence
+cases run under the page's default IR, `apps/eval/fixtures/minimal-ir.json`,
+which declares exactly one tier-1 entityType (`client-name`), and the specs pass
+`config: {tier0: false, tier1: true, tier2: false}` -- so every finding in all
+eight arrays, on both providers, is labelled `client-name`. Spans differ,
+confidences differ, labels are identical and cannot differ under that IR. Fixed
+in `README.md`, `apps/eval/src/driver/main.ts`, `apps/eval/README.md` and
+`apps/eval/test/tier1.spec.ts`.
 
 **Two things this pass could NOT settle**, recorded rather than resolved. Task
 11's `[-30.46, +2.05]` / `[-0.36, -0.16]` logit ranges were taken by a scratch
@@ -2426,3 +2448,125 @@ fp16" for `gliner-pii-edge-v1.0`) match the manifest's BASE variant
 90,845,497). That is a 2026-08-13 research figure and could be a mislabelled
 model card rather than a mistake in this repository, so it is reported and left
 alone.
+
+---
+
+## Deviations — the final review round (2026-09-01)
+
+Three lenses reviewed the round's last three commits and found 29 items; every
+one was checked against the code before anything was changed. What follows is
+what was wrong, not what was proposed.
+
+**The largest single defect was one false premise repeated in eleven places:
+"`apps/eval/fixtures/semantic-ir.json` is the only IR here a tier-2 arm can
+run".** It has not been true since `policies/compiled/p-fin.ir.json` was
+committed: p-fin declares one semantic predicate, it is registered in the page's
+`IR_FIXTURES`, and `test/baseline.spec.ts` drives `runBakeoff` against it. Two
+consequences travelled with it and were the reason the premise mattered:
+
+- **"Every latency this bake-off can produce is taken at 24× a shipped policy's
+  budget."** `semantic-ir.json` carries `latencyBudgetMs: 120000`;
+  `p-fin.ir.json` carries the compiler's own 5,000. So the multiple is 24 on one
+  and **1** on the other, and `baseline.spec.ts` had asserted the 1 in the same
+  round the docblocks asserted the 24 unconditionally. The heading of an
+  `apps/eval/README.md` section, two docblocks in `bakeoff.ts`, and the p95-ttft
+  gate's own `detail` string all told a reader that the only bake-off this
+  repository has run produces untransferable latencies. It produces the
+  transferable kind. The gate detail is now conditional on the multiple.
+- **`goldEntityTypesNotInIr` "is empty today".** It is not: p-fin declares
+  neither `aws-key` nor `generic-secret`, both of which the smoke corpus's gold
+  carries, so the head-to-head populates it. MEASURED on that run's own
+  three-item slice and now pinned in `bakeoff-run.test.ts`:
+  `["aws-key", "generic-secret"]`, `goldSpansByTier {0: 1, 1: 0, 2: 0}`.
+
+**"All three rungs return different spans, different labels and different
+confidences from WASM" — the headline result's own paragraph — was false in the
+label half, and the truth pass wrote it.** See the correction above; no rung can
+return a different label under the IR the divergence specs run.
+
+**A run that died partway left the one artifact with no caveat on it.** The gates
+file was written after the last arm, justified by "every verdict in this file is
+recomputable from" the JSONL. `GateReportInput`'s own docblocks say otherwise
+three times over — `entityTypes`, `itemTimeoutMs`/`latencyBudgetMs` and the load
+costs are each documented as something no record carries — so a run that failed
+on arm 2 left arm 1's complete, schema-valid, fully scoreable file with no
+`scoring`, no `cannotScore` and no `experimentScope` anywhere: exactly the silent
+zero-precision arm the round set out to make impossible. Each arm's gates row is
+now appended as that arm finishes.
+
+**`experimentScope` overstated the run it travelled with.** It was a constant
+naming "the four pinned arms" and four methods whatever ran, so
+`SIH_BAKEOFF=1 … pnpm -C apps/eval bakeoff` — whose `DEFAULT_FAMILIES` is
+`["compiled"]` alone — put a claim of a compiled-versus-Approach-B head-to-head
+on every row of a one-method run, in the field whose whole purpose is to stop a
+reader concluding more than the run supports. It is now computed from the plan,
+and its gold clause points at the row's own `scoring.cannotScore` instead of
+restating a corpus property a different corpus would falsify.
+
+**The scoring boundary detected one of the two ways the tier/gold join comes back
+empty.** Gold at a tier NO arm ran had no field and no sentence. On the shipped
+corpus that is 2 of 7 gold spans (`client-name`, tier 1, off on every planned
+arm), so every arm's recall over `record.gold` was capped at 5/7 with nothing
+saying so. New field `tiersWithGoldThisArmDidNotRun`, with the bound stated in
+prose. `tiersThisCorpusCannotScore` was renamed `tiersTheseRowsCannotScore`,
+because it counts over this arm's rows and both specs that produce it run a
+SLICE.
+
+**"The harness computes no metric", written three times into `README.md` by the
+truth pass, is wrong**: `gateReport` computes five gates with thresholds and
+verdicts and writes them to a file. It computes no *accuracy* metric, which is
+what was meant. Corrected everywhere, with the five named.
+
+**`spec 2.2 … puts scoring in Plan 8` is an invented citation.** Spec §2.2 is
+titled "Repository layout"; it makes the TS/Python boundary a JSONL file and puts
+scoring in `analysis/`'s Python, and the string "Plan 8" appears zero times in
+the whole spec. The substance is true and the authority was not. Corrected in
+`bakeoff.ts` (including `VERDICT_MEANS`, which ships on every row), both READMEs
+and this plan. Spec §4.2 kept a stranded "Measured per arm: span P/R/F1 against
+gold" inside the VRAM correction paragraph, which is where `VERDICT_MEANS` points
+a reader; it is now its own line and marked as a requirement not yet implemented.
+
+**Six refusals added this round had no negative test on any machine**, GPU or
+not: the page-policy digest cross-check, and `loadBaseline`'s four report checks
+(`policyDocSha256`, `irPolicyHash`, `servedModelId`, `callBudgetMs`). Deleting any
+of them left the whole suite green. `runArm`'s entire Approach-B branch — the
+detector routing, `isBaseline`, the `baselineStatus()` read and the 14-field
+projection — was likewise exercised only by `baseline.spec.ts`, which skips
+without WebGPU and still exits 0. All of it now runs in vitest against
+`bakeoff-run.test.ts`'s scripted page, over the real p-fin/document pair.
+
+**One suggested remedy was declined.** `GateReportInput.entityTypes` is untied to
+`irHash`, and the reviewer's implied fix — have `gateReport` hash the IR text and
+compare — would make every unit test of the gate arithmetic depend on a fixture
+file's exact bytes for a reason unrelated to what it tests. The docblock already
+states the limitation honestly and `runBakeoff` passes the IR it has proved is
+the page's; what was added instead is the end-to-end assertion that it does.
+
+**One defect cannot be fixed in place: commit 6e39bdd's subject line reads
+"fix(eval): refuse to score a tier the corpus cannot score" and the commit
+deliberately implements no refusal** — its own body says "the run is NOT
+refused", and `ArmScoringBoundary`'s docblock argues at length why a refusal
+would be wrong (its only remedy would be editing the corpus). Only the subject
+survives into `git log --oneline` and a PR title. Rewriting it means rewriting
+three commits' history, which is a worse trade than this note; the subject should
+have read "name the tiers a corpus cannot score".
+
+**Smaller corrections:** `BakeoffOptions.policyName` documented a default
+(`"policyName`'s basename minus `.md`"`) that neither parses nor matches the code
+(it defaults from `irName`) — all three fallback levels are now exercised, since
+only the innermost was and hardcoding the whole expression survived;
+`P95_EQUALS_MAX_BELOW`'s value is now computed from `percentile` in a test rather
+than merely quoted as "COMPUTED" (any value in 3..20 passed before, and the
+sentence it feeds is emitted on the real 18-call run); the message-unit branch of
+`segmentSizeDistribution` — Approach B's — had chars, bytes and words checked
+only against another distribution computed the same way, so swapping bytes for
+chars survived; the engine-poisoning walk's first-stop latch had no fixture with
+two stopping items; `DetectorSchema`'s enum could be replaced by
+`z.string().min(1)` undetected; `slateBakeoffOptions`'s `Number`-not-`parseInt`
+decision and the empty-string half of its runId guard were unexercised;
+`scripts/compile-policies.ts` was imported by no test at all, so nothing pinned
+that the regeneration path stays fixture-only and offline; the tier-1 weight
+total's "1.41 GiB" is the `.onnx`-only figure and the with-metadata one is 1.45;
+the README's "about a dozen" page functions are seventeen; and
+`docs/assets/webgpu-divergence.svg` still carried the unqualified collapse story
+that the prose three lines below it now hedges twice.

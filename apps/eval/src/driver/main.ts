@@ -55,7 +55,13 @@ import { runArm } from "./run.js";
  * NONE OF WHICH WEAKENS THE TABLE. The three rungs marked `agrees: false`
  * disagree by 8.352, 8.134 and 30.154 -- three to four orders of magnitude
  * above that jitter -- and end to end at threshold 0.02 all three return
- * different spans and labels from wasm on every run. (The "collapse of the whole
+ * different spans and different CONFIDENCES from wasm on every run. Not
+ * different LABELS, which this comment claimed until 2026-09-01: the divergence
+ * cases run under the default `minimal-ir.json`, whose only tier-1 entityType
+ * is `client-name`, so every finding on every rung on both providers carries
+ * that one label and a label difference is not expressible there at all.
+ * MEASURED -- `test/tier1.spec.ts`'s own eight arrays are labelled
+ * `client-name` throughout. (The "collapse of the whole
  * logit range" this comment used to assert of all three is characterised on ONE:
  * see `test/tier1.spec.ts`, where the confidences the three actually produce are
  * measured and are not the same pattern.) And `gliner-pii-base` stays usable for

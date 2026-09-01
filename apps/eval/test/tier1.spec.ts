@@ -238,6 +238,14 @@ for (const backend of TIER1_BACKENDS) {
  * and is left standing as that measurement rather than restated as this one's.
  * The verdicts do not depend on it.
  *
+ * WHAT DIFFERS AND WHAT CANNOT. The three wrong rungs return different spans and
+ * different confidences from wasm on every run. They do NOT return different
+ * LABELS, and the README, `driver/main.ts` and this file all said they did:
+ * these cases run under the page's default IR, `apps/eval/fixtures/minimal-ir.json`,
+ * whose only tier-1 entityType is `client-name`, so every finding in all eight
+ * arrays above carries that one label. A label difference is not expressible
+ * under this IR; the multi-class case below is where labels are the subject.
+ *
  * Nothing reports this. Session creation succeeds, `run` resolves, the logits
  * are finite and correctly shaped. `gliner-pii-base` agreeing to 0.000 under the
  * same page code and the same readback path is the control that says the

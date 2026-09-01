@@ -249,8 +249,10 @@ const TIER2_FINISH_REASONS = Object.keys({
  * is bounded. There are TWO bounds, one per arm family, because escalation runs
  * under two conditions and the bake-off runs both -- MEASURED HERE over the only
  * corpus in this repository (`corpora/fixtures/smoke.jsonl`, 13 items) against
- * the only IR a tier-2 arm can run (`apps/eval/fixtures/semantic-ir.json`;
- * `planBakeoff` throws on any IR with no `semanticPredicates`):
+ * `apps/eval/fixtures/semantic-ir.json`, one of the two IRs a tier-2 arm can run
+ * (`planBakeoff` throws on any IR with no `semanticPredicates`;
+ * `policies/compiled/p-fin.ir.json` is the other, and its rules and predicate
+ * differ, so its bounds are its own):
  *
  *   - WITHOUT tier-0 priors -- the `compiled-tier2-only` family -- 17 selected
  *     segments at `perItem: {p50: 1, p95: 2, max: 2, min: 1}`. With the pinned

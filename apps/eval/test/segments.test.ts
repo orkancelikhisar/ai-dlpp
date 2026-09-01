@@ -440,3 +440,77 @@ describe("the measured distribution over corpora/fixtures/smoke.jsonl", () => {
     expect(d.perItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
   });
 });
+
+describe("the message unit, which is Approach B's", () => {
+  /**
+   * Three independent quantities, asserted against three independent
+   * expectations, on input where they DISAGREE.
+   *
+   * The message branch computes chars, bytes and words, and none of the three
+   * was checked against anything but another distribution computed the same
+   * way: `bakeoff.test.ts` compares a B report's `segments.chars` with a
+   * B+tier0 report's, so any mutation moves both sides identically. Measured
+   * one mutant at a time: swapping `utf8Length(item.text)` for
+   * `item.text.length`, swapping it the other way, and hardcoding
+   * `words.push(1)` all survived the whole suite.
+   *
+   * The shipped corpus cannot separate them: exactly two of its thirteen
+   * messages are non-ASCII and neither lands on a percentile rank, so its char
+   * and byte SizeStats are identical (p50 78, p95 153, max 153, min 48) even
+   * though the underlying samples differ. `segments.ts`'s own header argues
+   * that the UTF-8 BYTE count is what ceilings a token count, and
+   * `apps/eval/README.md` publishes the byte distribution as a measurement, so
+   * a wrong byte figure understates B's prompt size on exactly the non-ASCII
+   * input where the distinction matters -- against a p95 TTFT gate whose
+   * derivation is quoted in kB.
+   */
+  const EMOJI = "héllo wörld 🚀"; // 14 UTF-16 units, 18 UTF-8 bytes, 3 words
+  const ASCII = "a bb cc ddd eeee"; // 16 units, 16 bytes, 5 words
+
+  it("measures characters, UTF-8 bytes and words as three different things", () => {
+    // The two messages are chosen so that the three samples ORDER DIFFERENTLY:
+    // by characters the emoji message is the SMALLER of the two and by bytes it
+    // is the LARGER, so a byte count computed with `String.length` (or the
+    // reverse) moves every statistic below rather than none of them. Verified
+    // here against the platform's own counters, not against `segments.ts`'s.
+    expect(EMOJI.length).toBe(14); // the rocket is one surrogate PAIR
+    expect(Buffer.byteLength(EMOJI, "utf8")).toBe(18); // é and ö are 2 each, 🚀 is 4
+    expect(ASCII.length).toBe(16);
+    expect(Buffer.byteLength(ASCII, "utf8")).toBe(16);
+
+    const d = segmentSizeDistribution([item("a", EMOJI), item("b", ASCII)], { unit: "message" });
+    expect(d.unit).toBe("message");
+    // One sample per MESSAGE however many segments the text has: B makes one
+    // call per message and never escalates.
+    expect(d.count).toBe(2);
+    expect(d.perItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
+    // chars [14, 16] and bytes [18, 16]: the minima differ, the maxima differ,
+    // and swapping the two produces neither pair.
+    expect(d.chars).toEqual({ p50: 14, p95: 16, max: 16, min: 14 });
+    expect(d.bytes).toEqual({ p50: 16, p95: 18, max: 18, min: 16 });
+    expect(d.words).toEqual({ p50: 3, p95: 5, max: 5, min: 3 });
+  });
+
+  it("counts the whole message, not the segments it would have been split into", () => {
+    // FENCED is three segments under the segment unit and one sample here, and
+    // its 55 characters are the whole string rather than any part of it.
+    const d = segmentSizeDistribution([item("f", FENCED)], { unit: "message" });
+    expect(d.count).toBe(1);
+    expect(d.chars).toEqual({ p50: FENCED.length, p95: FENCED.length, max: FENCED.length, min: FENCED.length });
+    expect(FENCED.length).toBe(55);
+    const bySegment = segmentSizeDistribution([item("f", FENCED)], { hasPredicates: true });
+    expect(bySegment.count).toBeGreaterThan(1);
+    // And no escalation call is made at all on this branch: priors supplied
+    // here change nothing, because B is shown the message whatever tier 0 found.
+    const withPriors = segmentSizeDistribution([item("f", FENCED)], {
+      unit: "message",
+      priorFindings: () => [UNCERTAIN_IN_FENCE],
+    });
+    expect(withPriors.chars).toEqual(d.chars);
+    expect(withPriors.count).toBe(1);
+    // `hasPriors` still records that a caller supplied them, which is what tells
+    // a B+tier0 arm's row from a plain B arm's.
+    expect(withPriors.escalation.hasPriors).toBe(true);
+    expect(d.escalation.hasPriors).toBe(false);
+  });
+});

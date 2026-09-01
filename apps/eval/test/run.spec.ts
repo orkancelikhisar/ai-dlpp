@@ -722,6 +722,33 @@ test("refuses an arm whose config names a different backend than the arm does", 
   ).rejects.toThrow(/one arm cannot measure two runtimes/);
 });
 
+test("refuses an Approach-B arm carrying an escalation threshold", async ({ page }) => {
+  // The sibling of the check above and checked in the same place, before the
+  // page is touched. B judges the WHOLE MESSAGE in one call and never
+  // escalates, so `uncertainBelow` selected nothing: a row carrying it would
+  // name a knob that turned nothing, which is the intent-as-fact defect
+  // arriving through a field that happens to be available.
+  //
+  // Refused rather than deleted, because deleting it silently would let a
+  // caller believe it had varied an experiment variable this arm has no
+  // equivalent of. `runBakeoff` cannot reach this throw -- `planBakeoff` omits
+  // the threshold on a family whose `runsCompiledJudge` is false, and
+  // `bakeoff-run.test.ts` asserts that -- so this is the only test of it, and
+  // without it deleting the whole guard leaves the suite green.
+  await expect(
+    runArm(page, {
+      runId: "test-run",
+      arm: "baselineB-model",
+      backend: "webgpu",
+      detector: "approach-b",
+      provider: "claude",
+      config: { tier0: false, tier1: false, tier2: true, uncertainBelow: 0.6 },
+      itemTimeoutMs: 10_000,
+      items: [{ id: "a", text: "hello", policy: "p-fin", gold: [] }],
+    }),
+  ).rejects.toThrow(/the row would name a knob that turned nothing/);
+});
+
 test("stamps the tier-1 config it was given onto every record, and nothing when given none", async ({
   page,
 }) => {

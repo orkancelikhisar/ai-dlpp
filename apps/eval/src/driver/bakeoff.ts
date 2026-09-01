@@ -46,12 +46,13 @@ import {
  * measured this corpus's escalation and Plan 5 measured the per-call cost: at
  * 4.6 s per call on the CHEAPEST pinned arm, a message that escalates two
  * segments costs 9.2 s against `ir.latencyBudgetMs` -- and the compiler's
- * `DEFAULT_LATENCY_BUDGET_MS` is 5,000, which is what `minimal-ir.json` and
- * `multiclass-ir.json` carry. (`semantic-ir.json` raises it to 120,000 and its
- * own comment says why: at 5,000 the deadline fires during the first call of
- * every tier-2 spec, so nothing would ever exercise a completed judgement. That
- * is a lifecycle fixture's number, not a claim that tier 2 fits 5 s.) So tier 2
- * expires
+ * `DEFAULT_LATENCY_BUDGET_MS` is 5,000, which is what `minimal-ir.json`,
+ * `multiclass-ir.json` and the repository's one COMPILED policy IR,
+ * `policies/compiled/p-fin.ir.json`, all carry. (`semantic-ir.json` raises it
+ * to 120,000 and its own comment says why: at 5,000 the deadline fires during
+ * the first call of every tier-2 spec, so nothing would ever exercise a
+ * completed judgement. That is a lifecycle fixture's number, not a claim that
+ * tier 2 fits 5 s.) So tier 2 expires
  * mid-run on most messages that escalate more than one segment WHATEVER arm
  * wins. A rule keyed on that would kill all four arms for a reason that is not
  * about capability -- which is exactly why the spec's original gates were
@@ -60,8 +61,11 @@ import {
  *
  * ## What this module does not compute
  *
- * Any accuracy number. Per spec 2.2 the JSONL file is the whole boundary and
- * scoring is Plan 8's Python. The gates here are all properties of the RUN --
+ * Any accuracy number. Spec 2.2 makes the TS/Python boundary a JSONL file and
+ * puts scoring in `analysis/`'s Python; the spec never mentions plan numbering,
+ * and it is this repository's plan sequence, not the spec, that defers writing
+ * that Python to Plan 8. Neither the directory nor the plan exists yet. The
+ * gates here are all properties of the RUN --
  * latency, decode rate, how often the span ladder could place a quote, how often
  * an answer was a restatement of one already given -- and every one of them is
  * readable off a record without a gold label. That is deliberate: the smoke
@@ -78,10 +82,12 @@ import {
  *      corpus TEXT satisfies the tier-2 predicate, so a scorer joining a
  *      record's `findings` to its `gold` counts every CORRECT tier-2 finding as
  *      a false positive and ranks the arm that found nothing first. Every gates
- *      row now names the tiers this corpus cannot score, and why, in
- *      `scoring.tiersThisCorpusCannotScore` and `scoring.cannotScore`. The
- *      remedy is a named result rather than a refusal to run, and rather than
- *      new gold; `ArmScoringBoundary` argues both.
+ *      row now names the tiers ITS OWN ROWS cannot score, and why, in
+ *      `scoring.tiersTheseRowsCannotScore` and `scoring.cannotScore` -- and the
+ *      mirror case, gold at a tier this arm did NOT run, in
+ *      `scoring.tiersWithGoldThisArmDidNotRun`. The remedy is a named result
+ *      rather than a refusal to run, and rather than new gold;
+ *      `ArmScoringBoundary` argues both.
  *   2. **A verdict that reads as a selection.** `killed` was renamed
  *      `killedOnRunGates` and `scoring.verdictMeans` states the boundary on the
  *      row, because a reader of a gates file has no other way to learn that
@@ -123,11 +129,20 @@ export const GATES = {
    * difference is not drift: Plan 5 states them "with the one semantic
    * predicate the repo's compiled extraction fixture carries", whose id and
    * `nlPredicate` are 74 characters longer than `semantic-ir.json`'s. The same
-   * measurement reproduces both numbers exactly, one predicate each. This
-   * driver is hard-required to run `semantic-ir.json` -- `planBakeoff` throws on
-   * any IR with no `semanticPredicates` and its own error names that file as
-   * the only one here that has one -- so 1,105/1,196 describe work no arm of
-   * this bake-off can perform.
+   * measurement reproduces both numbers exactly, one predicate each. The
+   * fixture Plan 5 measured is `policies/compiled/p-fin.ir.json`, whose one
+   * predicate `pred:client-relationship-disclosure` is 194 characters of id
+   * plus `nlPredicate` against `semantic-ir.json`'s 120 -- MEASURED, and 74 is
+   * the difference.
+   *
+   * CORRECTED. This paragraph used to end "so 1,105/1,196 describe work no arm
+   * of this bake-off can perform", on the premise that `semantic-ir.json` is
+   * the only IR here with a semantic predicate. It is not. `p-fin.ir.json`
+   * declares one too, it is registered in the page's `IR_FIXTURES`, and
+   * `test/baseline.spec.ts` drives `runBakeoff` against it. So both pairs are
+   * live: 1,031/1,122 on a semantic-ir arm and 1,105/1,196 on a p-fin arm, and
+   * which pair this gate's ceiling should be read against is decided by
+   * `run.irHash` on the row.
    *
    * MEASURED HERE too, through `test/bakeoff.spec.ts` on Qwen3.5-2B over a
    * two-item slice of that corpus: the engine reported 245-256 prompt TOKENS for
@@ -521,8 +536,13 @@ export interface ItemDeadlineBound {
  *
  * ## What the number comes out as here, and why the plan's literal is wrong
  *
- * `apps/eval/fixtures/semantic-ir.json` is the only IR in this repository a
- * tier-2 arm can run, and it carries `latencyBudgetMs: 120_000`. The page's
+ * `apps/eval/fixtures/semantic-ir.json` carries `latencyBudgetMs: 120_000`,
+ * and the arithmetic below is that IR's. It is NOT the only IR a tier-2 arm can
+ * run: `policies/compiled/p-fin.ir.json` declares a semantic predicate too, at
+ * the compiler's own 5,000 ms default, and this function is called with
+ * whichever one the run loaded -- at 5,000 (a) is 5,020 against the same
+ * 360,120 for (b), so the message budget binds far harder and the bound is
+ * 6,020 with the default allowance. The page's
  * `DEFAULT_TIER2_CALL_BUDGET_MS` is 60,000 and the smoke corpus selects at most
  * 3 segments per message under that IR on the default `compiled` family --
  * MEASURED here, and it is 3 rather than 2 because that family runs tier 0,
@@ -674,8 +694,18 @@ export interface BakeoffOptions {
    */
   readonly policyPath?: string;
   /**
-   * The page's policy-registry name for that document, defaulting to
-   * `policyName`'s basename minus `.md`.
+   * The page's policy-registry name for that document. Defaults to `irName`,
+   * and to `DEFAULT_IR_NAME` when that is unset too.
+   *
+   * CORRECTED: this said it defaults to "`policyName`'s basename minus `.md`",
+   * which is neither what the code does nor a sentence that parses -- a field
+   * cannot default from itself, and `policyPath` is the only path here. The
+   * real default is `irName`, because the page's two registries are keyed by
+   * the SAME names for the two halves of one compile: `useIr("p-fin")` and the
+   * policy fixture "p-fin". `planBakeoff`'s own inline comment said so while
+   * this one said otherwise, and nothing detected the disagreement because no
+   * caller in this repository sets this field -- `bakeoff.test.ts` pins the
+   * three-level fallback explicitly for that reason.
    *
    * A NAME rather than the text, for the reason `irName` is one: a page that
    * accepted arbitrary policy text would make half a run's provenance
@@ -711,9 +741,10 @@ export interface PlannedArm {
    * flags, and that is worth stating because it was wrong for one commit.
    * Task 9's priors condition was measured with the findings `minimal-ir.json`'s
    * `entropy-rule` produces on this corpus's code fence at confidence 0.7, which
-   * re-admit that fence to escalation. `semantic-ir.json` -- the only IR a
-   * tier-2 arm can run, since `planBakeoff` throws on any IR with no
-   * `semanticPredicates` -- shipped `rules: []` for one commit, so `runTier0`
+   * re-admit that fence to escalation. `semantic-ir.json` -- one of the two IRs
+   * a tier-2 arm can run, since `planBakeoff` throws on any IR with no
+   * `semanticPredicates`, and `policies/compiled/p-fin.ir.json` is the other
+   * one here that has one -- shipped `rules: []` for one commit, so `runTier0`
    * found nothing, no segment was uncertain, and a tier-0 arm's distribution was
    * IDENTICAL to a tier-2-only arm's. It now carries the same three rules, and
    * MEASURED HERE against it the two conditions are what Task 9 recorded: with
@@ -827,8 +858,10 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
     throw new Error(
       `the IR this bake-off would run declares no semanticPredicates, so WebLlmJudge returns ` +
         `an empty verdict before it touches the engine and every arm would write a complete, ` +
-        `schema-valid file of zero model calls. Point --ir at a policy with a semantic clause ` +
-        `(apps/eval/fixtures/semantic-ir.json is the only one here that has one).`,
+        `schema-valid file of zero model calls. Point --ir at a policy with a semantic clause; ` +
+        `two here have one -- apps/eval/fixtures/semantic-ir.json, a hand-written fixture at a ` +
+        `120,000ms message budget, and policies/compiled/p-fin.ir.json, real compiler output at ` +
+        `the compiler's 5,000ms default and the only one that can be paired with a document.`,
     );
   }
 
@@ -1059,15 +1092,19 @@ export const DEFAULT_TIER2_CALL_BUDGET_MS = 60_000;
  * compiler's own literal out of its SOURCE and compares it with this one, which
  * is what keeps the copy honest; this comment is not.
  *
- * WHY A GATES ROW NEEDS IT. Every latency this bake-off can produce is taken
- * under `semantic-ir.json`'s `latencyBudgetMs` of 120,000 -- 24x this number --
- * and that budget is not a detail of the fixture, it is the deadline the
- * orchestrator arms over the WHOLE `judge()` call. So under a compiled policy's
- * default the same arm would judge fewer segments per message and file more
- * `budget-exhausted` notices, and this run measures none of that. See the module
- * header for the arithmetic (Plan 5's measured 4.6 s per call on the cheapest
- * arm, against a 5,000 ms message budget) and `ArmRunContext.latencyBudgetMs`
- * for what it would take to measure the degradation instead of caveating it.
+ * WHY A GATES ROW NEEDS IT. `ir.latencyBudgetMs` is not a detail of a fixture,
+ * it is the deadline the orchestrator arms over the WHOLE `judge()` call -- and
+ * the two IRs a bake-off can run here sit 24x apart on it.
+ * `apps/eval/fixtures/semantic-ir.json` carries 120,000;
+ * `policies/compiled/p-fin.ir.json` carries this number, because the compiler
+ * emits it for a policy that names no budget. So the multiple belongs on the
+ * row rather than in a reader's head: `run.latencyBudgetTimesCompilerDefault`
+ * is 24 on a semantic-ir run, whose latencies therefore do NOT transfer to a
+ * shipped configuration, and 1 on a p-fin run, whose latencies do. See the
+ * module header for the arithmetic (Plan 5's measured 4.6 s per call on the
+ * cheapest arm, against a 5,000 ms message budget) and
+ * `ArmRunContext.latencyBudgetMs` for what each of the two conditions measures
+ * and what it leaves unmeasured.
  */
 export const COMPILER_DEFAULT_LATENCY_BUDGET_MS = 5_000;
 
@@ -1139,20 +1176,27 @@ export interface ArmRunContext {
    * `ir.latencyBudgetMs`: the message deadline the orchestrator armed, and the
    * number every latency on this report has to be read against.
    *
-   * THE CAVEAT, and it applies to every arm this driver can run. `planBakeoff`
-   * refuses any IR with no `semanticPredicates` and names `semantic-ir.json` as
-   * the only one in this repository that has one, and that fixture carries
-   * 120,000 -- 24x `COMPILER_DEFAULT_LATENCY_BUDGET_MS`, which is what the
-   * compiler emits for a policy that does not name a budget and what
-   * `minimal-ir.json` and `multiclass-ir.json` carry. So a bake-off run here is
-   * run at a budget no compiled policy would ship with, and it is not a
-   * mistake in the fixture: at 5,000 the deadline fires during the first call
-   * of every tier-2 spec, so nothing would exercise a completed judgement (see
-   * the module header, and Plan 5's measured 4.6 s per call on the CHEAPEST
-   * arm against a 5,000 ms whole-message budget).
+   * THE CAVEAT, AND WHICH RUNS IT APPLIES TO. `planBakeoff` refuses any IR with
+   * no `semanticPredicates`, and TWO IRs here have one:
+   * `apps/eval/fixtures/semantic-ir.json` at 120,000 -- 24x
+   * `COMPILER_DEFAULT_LATENCY_BUDGET_MS` -- and
+   * `policies/compiled/p-fin.ir.json` at 5,000, which is what the compiler
+   * emits for a policy that does not name a budget and what `minimal-ir.json`
+   * and `multiclass-ir.json` carry too.
+   * `run.latencyBudgetTimesCompilerDefault` on this row says which of the two
+   * produced it, and the caveat below is the 24x one's alone.
    *
-   * What that costs, stated rather than hidden: the DEGRADATION a shipped
-   * policy's budget would cause is not measured anywhere in this run. The
+   * The fixture's 120,000 is not a mistake: at 5,000 the deadline fires during
+   * the first call of every tier-2 spec, so nothing would exercise a completed
+   * judgement (see the module header, and Plan 5's measured 4.6 s per call on
+   * the CHEAPEST arm against a 5,000 ms whole-message budget). And a p-fin run
+   * is the other side of the same coin -- its latencies ARE taken at a shipped
+   * policy's budget, and what it under-samples is completed judgements.
+   * `test/baseline.spec.ts` runs that condition over three items and asserts
+   * the multiple is 1.
+   *
+   * What a 24x run costs, stated rather than hidden: the DEGRADATION a shipped
+   * policy's budget would cause is not measured anywhere in it. The
    * per-call numbers (`ttftMs`, `decodeTokPerSec`) are per-call and a shorter
    * message budget does not slow a call, but it changes WHICH calls happen --
    * the orchestrator's one deadline cuts the message off mid-judgement, so a
@@ -1162,13 +1206,17 @@ export interface ArmRunContext {
    * observable from this file.
    *
    * WHAT IT WOULD TAKE to measure it instead, since it is cheap and this
-   * comment should not be the end of it. One second fixture -- `semantic-ir.json`
-   * with `latencyBudgetMs` at 5,000 and nothing else changed -- plus one line in
-   * `IR_FIXTURES` in `apps/eval/src/page/main.ts`, and then a second
-   * `runBakeoff` under a different `runId` and `irName`, with an `itemTimeoutMs`
-   * matching the much smaller bound `planBakeoff` derives at that budget. The
-   * degradation rate is then the ratio of `ladder.unitsJudged` and of
-   * `degradedNotices["budget-exhausted"]` between the two gates rows. It is
+   * comment should not be the end of it. Running p-fin is NOT it: p-fin is at
+   * 5,000 but carries a different predicate and a different entityType
+   * vocabulary, so the difference between its rows and a semantic-ir run's is
+   * two variables at once. The single-variable version is one second fixture --
+   * `semantic-ir.json` with `latencyBudgetMs` at 5,000 and nothing else changed
+   * -- plus one line in `IR_FIXTURES` in `apps/eval/src/page/main.ts`, and then
+   * a second `runBakeoff` under a different `runId` and `irName`, with an
+   * `itemTimeoutMs` matching the much smaller bound `planBakeoff` derives at
+   * that budget. The degradation rate is then the ratio of
+   * `ladder.unitsJudged` and of `degradedNotices["budget-exhausted"]` between
+   * the two gates rows. It is
    * deliberately NOT a per-arm dimension of one run: `armName` is
    * `<familySlug>-<modelId>` and a file is named by runId, family and model, so
    * two budgets inside one run would collide on a file name -- `planBakeoff`
@@ -1183,9 +1231,13 @@ export interface ArmRunContext {
    * `latencyBudgetMs / compilerDefaultLatencyBudgetMs`, to two decimals.
    *
    * A DERIVED number on the row rather than a division left to the reader,
-   * because the thing it is evidence for -- "these latencies do not transfer to
-   * a shipped configuration" -- is invisible while the two numbers sit in
-   * different files. 24 on every run this driver can currently perform.
+   * because the thing it is evidence for -- WHETHER these latencies transfer to
+   * a shipped configuration -- is invisible while the two numbers sit in
+   * different files. Both values occur on runs this driver performs today: 24
+   * against `apps/eval/fixtures/semantic-ir.json`, and 1 against
+   * `policies/compiled/p-fin.ir.json`, whose budget IS the compiler's default
+   * because `p-fin.md` names none. `test/baseline.spec.ts` asserts the 1 on
+   * every row of the four-family head-to-head; `bakeoff.test.ts` asserts the 24.
    */
   readonly latencyBudgetTimesCompilerDefault: number;
   /**
@@ -1335,9 +1387,10 @@ export interface ArmScoringBoundary {
    * than a comment so a reader of the gates file learns it from the file.
    *
    * Spec 4.2 says "task accuracy must be the primary gate". No accuracy gate
-   * exists here and none should: per spec 2.2 the JSONL file is the whole
-   * boundary and scoring is Plan 8's Python. Every gate on this report is a
-   * property of the run.
+   * exists here and none should: spec 2.2 makes the TS/Python boundary a JSONL
+   * file and puts scoring in `analysis/`'s Python, which this repository has
+   * not written (the spec says nothing about plan numbering; deferring it to
+   * Plan 8 is ours). Every gate on this report is a property of the run.
    */
   readonly accuracyGated: false;
   /** Per tier: whether this arm ran it, and what gold there is to score it with. */
@@ -1347,24 +1400,54 @@ export interface ArmScoringBoundary {
   /** `goldSpans` by tier, so a reader does not have to walk `tiers`. */
   readonly goldSpansByTier: Readonly<Record<Tier, number>>;
   /**
-   * Tiers this arm RAN that its rows carry no gold for.
+   * Tiers this arm RAN that ITS ROWS carry no gold for.
    *
    * NON-EMPTY MEANS THIS ARM'S FINDINGS AT THOSE TIERS CANNOT BE SCORED against
-   * this corpus, in either direction: no recall, because there is nothing to
+   * these rows, in either direction: no recall, because there is nothing to
    * recall, and no precision, because every finding is unmatched. `[2]` on
    * every arm of a bake-off run against the shipped corpus today.
+   *
+   * NAMED FOR THE ROWS AND NOT FOR THE CORPUS, which is what it used to be
+   * called. `scoringBoundary` counts over `records` -- this arm's rows -- and
+   * on the real path those are 1:1 with the corpus items (an errored row still
+   * carries its `gold`, see run.ts). They are NOT 1:1 when a caller runs a
+   * SLICE, which `test/bakeoff.spec.ts` and `test/baseline.spec.ts` both do:
+   * three items of a thirteen-item corpus whose other ten carry most of the
+   * gold. A field named for the corpus would then assert that a corpus with
+   * five tier-0 gold spans cannot score tier 0.
    */
-  readonly tiersThisCorpusCannotScore: readonly Tier[];
+  readonly tiersTheseRowsCannotScore: readonly Tier[];
+  /**
+   * Tiers this arm did NOT run that its rows DO carry gold for, ascending.
+   *
+   * THE MIRROR of the field above, and it was missing: the join comes back
+   * empty in two directions and only one of them had a name. Gold at a tier no
+   * arm ran is not a precision problem -- there are no findings to be wrong --
+   * it is a RECALL DENOMINATOR problem, and it is silent, because every count
+   * a scorer needs is present and nothing says the arm could not have filled it.
+   *
+   * `[1]` on every arm of a bake-off run against the shipped corpus today:
+   * `smoke.jsonl` carries two `client-name` spans, `client-name` is tier 1 in
+   * both runnable IRs, and `planBakeoff` sets `tier1: false` on every arm it
+   * plans. So a recall computed over `record.gold` is capped at 5/7 on the
+   * whole corpus for every arm here, for a reason that is about the run's
+   * configuration and not about the model. `cannotScore` carries the sentence.
+   */
+  readonly tiersWithGoldThisArmDidNotRun: readonly Tier[];
   /**
    * Gold entityTypes the IR that ran declares no tier for, sorted.
    *
-   * A different way the same join comes back empty, and one this corpus is a
-   * standing candidate for: its items are labelled `policy: "minimal-fixture"`
-   * while the bake-off's only runnable IR is `semantic-ir.json`. It happens
-   * that every id in the shipped gold IS declared there, so this is empty
-   * today -- but a relabelled corpus or a recompiled policy changes that
-   * silently, and a span in no tier bucket would otherwise vanish from the
-   * counts above rather than show up as unmatchable.
+   * A different way the same join comes back empty, and on this corpus it is
+   * not a standing candidate, it is already the case. `smoke.jsonl`'s items are
+   * labelled `policy: "minimal-fixture"` and their gold ids are `in-pan`,
+   * `aws-key`, `generic-secret` and `client-name`. `semantic-ir.json` declares
+   * all four, so a run against that fixture leaves this empty --
+   * `policies/compiled/p-fin.ir.json` declares neither `aws-key` nor
+   * `generic-secret`, so the compiled head-to-head `test/baseline.spec.ts`
+   * runs populates it. MEASURED on that run's three-item slice: it is
+   * `["aws-key", "generic-secret"]` on all four rows. A span in no tier bucket
+   * would otherwise vanish from the counts above rather than show up as
+   * unmatchable.
    */
   readonly goldEntityTypesNotInIr: readonly string[];
   /** The distinct `policy` names the rows' gold was labelled under, sorted. */
@@ -1388,18 +1471,20 @@ export interface ArmGateReport {
   /** What this arm ran under; see ArmRunContext for why it is on the gates file. */
   readonly run: ArmRunContext;
   /**
-   * What this report's verdicts are and are not, and which tiers this corpus
-   * can score at all. Read it before reading `killedOnRunGates`.
+   * What this report's verdicts are and are not, and which tiers THIS ARM'S
+   * ROWS can be scored at. Read it before reading `killedOnRunGates`.
    */
   readonly scoring: ArmScoringBoundary;
   /**
-   * Which axes of spec 6.3's experiment matrix a run of this driver moves along,
-   * and which it holds fixed at one point.
+   * Which axes of spec 6.3's experiment matrix THIS RUN moves along, and which
+   * it holds fixed at one point.
    *
    * On the row for the same reason `scoring.verdictMeans` is: a gates file is
    * read by someone who does not have the spec open, and the single most
-   * available misreading of it is that it answers the research question. See
-   * `EXPERIMENT_SCOPE`.
+   * available misreading of it is that it answers the research question. The
+   * model and method points are read off the PLAN rather than asserted, so the
+   * default one-family slate does not claim a four-way head-to-head; see
+   * `experimentScope`.
    */
   readonly experimentScope: string;
   /**
@@ -1576,7 +1661,8 @@ export interface ArmGateReport {
    * resolvability, restatement rate and engine poisoning, and not one of them
    * looks at whether the arm was RIGHT. Spec 4.2's stated primary criterion is
    * task accuracy and no accuracy metric exists in this repository -- spec 2.2
-   * makes the JSONL file the whole boundary and puts scoring in Plan 8. So an
+   * makes the JSONL file the whole TS/Python boundary and puts scoring in
+   * `analysis/`'s Python, which nobody has written here. So an
    * arm can pass every gate here and be the worst model on the slate, and an
    * arm can fail one for being slow while being the only one that answers the
    * predicate. `scoring.verdictMeans` says this on the row itself.
@@ -1630,6 +1716,29 @@ export interface GateReportInput {
    * can check that, exactly as nothing can check `entityTypes`.
    */
   readonly load: ArmLoadCost;
+  /**
+   * The axes the WHOLE run crosses, which no single arm's rows can show.
+   *
+   * The sixth thing no record carries, and the reason it is here rather than
+   * inferred: a gates row names one arm, and "which methods did this run
+   * compare" is a question about the other rows. `experimentScope` used to
+   * answer it from a constant that named four methods and four models whatever
+   * ran, which on the default slate -- `DEFAULT_FAMILIES` is `["compiled"]` --
+   * was every row of a one-method run claiming a compiled-versus-Approach-B
+   * head-to-head that did not happen.
+   */
+  readonly slate: SlateAxes;
+}
+
+/**
+ * What one `runBakeoff` crosses, straight off `BakeoffPlan.arms`.
+ *
+ * DISTINCT VALUES in plan order, not the arm list: four arms of one family are
+ * one point on the method axis, and the sentence this feeds is about points.
+ */
+export interface SlateAxes {
+  readonly models: readonly string[];
+  readonly families: readonly ArmFamily[];
 }
 
 /**
@@ -1688,50 +1797,95 @@ const VERDICT_MEANS =
   "after a deadline expiry. None of them reads a gold label, so none of them can say whether this " +
   "arm was RIGHT. Spec 4.2 makes task accuracy the primary criterion for this slate; no accuracy " +
   "metric is computed anywhere in this repository, because spec 2.2 makes the JSONL file the whole " +
-  "boundary and puts scoring in Plan 8. An arm can pass every gate here and be the worst model on " +
-  "the slate.";
+  "TS/Python boundary and puts scoring in analysis/'s Python -- a directory this repository does " +
+  "not have. (Spec 2.2 is titled 'Repository layout' and says nothing about plan numbering: " +
+  "deferring that Python to Plan 8 is this project's own sequencing, not the spec's.) What IS " +
+  "computed here and written to this file is five run gates -- p95-ttft, decode-rate, " +
+  "resolvable-rate, duplicate-rate, non-empty-after-stop -- each with a threshold, an observation " +
+  "and a verdict. An arm can pass every one of them and be the worst model on the slate.";
+
+/** The METHOD axis's four points, in prose, so a scope sentence can name the real ones. */
+const FAMILY_PROSE: Readonly<Record<ArmFamily, string>> = {
+  compiled: "tier 0 + compiled judge",
+  "compiled-tier2-only": "compiled judge",
+  "baseline-b": "Approach B",
+  "baseline-b-tier0": "B + tier 0",
+};
 
 /**
- * Which axes of spec 6.3's experiment matrix a run of this driver moves along.
+ * Which axes of spec 6.3's experiment matrix THIS run moves along.
  *
- * A CONSTANT and not a template, for the reason `VERDICT_MEANS` is one: nothing
- * in it varies per arm, and a per-report sentence is a sentence two rows of one
- * file can disagree on. Everything it asserts is a property of this driver or of
- * what is committed here, checkable without running anything:
+ * COMPUTED PER RUN and not a constant, which is the correction. It used to be a
+ * constant, on the argument that nothing in it varies per arm and a per-report
+ * sentence is one two rows of a file can disagree on. The second half of that
+ * is right and the first half was false three times over, and each falsification
+ * was reachable from the shipped command:
  *
- *   - the model axis is the only one a single `runBakeoff` crosses freely --
- *     `options.models` and `options.families` -- and both are in `BakeoffPlan`;
+ *   - it claimed the run crosses the METHOD axis at four points. `slateBakeoffOptions`
+ *     leaves `families` unset, `DEFAULT_FAMILIES` is `["compiled"]`, so
+ *     `SIH_BAKEOFF=1 ... pnpm -C apps/eval bakeoff` crosses ONE method and every
+ *     row of its gates file claimed four -- overstating the project's central
+ *     claim (does compiling help?) in the field that exists to stop a reader
+ *     concluding more than the run supports;
+ *   - it claimed "the four pinned arms" regardless of `SIH_BAKEOFF_MODELS`;
+ *   - it ended "the corpus carries no gold for the tier every arm here runs",
+ *     a property of `options.corpus`, which `SIH_BAKEOFF_CORPUS` makes free and
+ *     which Plan 7 exists to change. On a labelled corpus the same ROW would
+ *     have said `scoring.tiersTheseRowsCannotScore: []` and, in prose, that
+ *     there is no gold -- two contradictory statements in one record.
+ *
+ * So the varying parts are read off the plan and off this row's own `scoring`,
+ * and the fixed parts stay fixed. Two rows of ONE file still cannot disagree on
+ * the model and method axes: both come from the plan, which is the same object
+ * for every arm. They CAN differ on the scoring clause, and should -- two
+ * families run different tier sets, so what their rows can score differs.
+ *
+ * What stays a constant is what no run can change:
+ *
  *   - the backend axis has ONE point because this driver refuses to run at all
  *     without WebGPU (see `runBakeoff`), and web-llm has no second backend;
  *   - the policy axis has one usable point because `planBakeoff` throws on any
  *     IR with no `semanticPredicates` and `policies/compiled/` holds one policy
  *     of the three, `p-fin`, `scripts/compile-policies.ts` reporting on every run
- *     that `p-med` and `p-corp` have no fixture answering their prompts;
- *   - there is no accuracy metric in this repository, which is spec 2.2's
- *     boundary and is what `scoring` on this row is about.
+ *     that `p-med` and `p-corp` have no fixture answering their prompts. (Two
+ *     IRs are runnable -- `apps/eval/fixtures/semantic-ir.json` is the other --
+ *     but only one of them is a compiled POLICY, and only a compiled policy can
+ *     be paired with the document Approach B is shown.)
  *
  * The machine sentence is the one thing here that no code can check, and it is
  * the reason the paragraph exists: a gates file names no hardware anywhere, and
  * every latency and every load time in it is one GPU's.
  */
-const EXPERIMENT_SCOPE =
-  "SCOPE OF THIS RUN, against spec 6.3's matrix. This driver crosses the MODEL axis (the four " +
-  "pinned arms) and the METHOD axis (compiled judge, tier 0 + compiled judge, Approach B, B + " +
-  "tier 0). It holds three axes at a single point and cannot cross them: the BACKEND axis, " +
-  "because tier 2 is WebGPU or absent and this driver refuses to run without it, so no WASM " +
-  "comparison exists at this tier; the POLICY axis, because it refuses an IR with no semantic " +
-  "predicate and one of the three policy documents has a compiled artifact; and the HARDWARE " +
-  "axis, because a run is one machine and one GPU and no field of this file names either. " +
-  "Against the project's research question -- 'how well can policy-conditioned, fully-local " +
-  "models prevent confidential-data leakage in LLM prompts, and at what latency/hardware cost?' " +
-  "-- a run answers this much: the models are policy-conditioned (at one policy) and fully local " +
-  "(every arm runs in the page and no prompt leaves the browser); the latency cost is per-call " +
-  "TTFT and decode rate on one machine, at the message budget in run.latencyBudgetMs rather than " +
-  "at a shipped policy's; and the hardware cost is engineLoadMs, engineWarmupMs and " +
-  "originStorageBytes on that one GPU. It answers NOTHING about 'how well ... prevent leakage': " +
-  "no leak-prevention rate, over-blocking rate, span P/R/F1, policy-adaptivity delta or utility " +
-  "number is computed anywhere in this repository, and none can be, because there is one policy " +
-  "and the corpus carries no gold for the tier every arm here runs.";
+function experimentScope(slate: SlateAxes, scoring: ArmScoringBoundary): string {
+  const models = [...slate.models];
+  const families = [...slate.families];
+  return (
+    `SCOPE OF THIS RUN, against spec 6.3's matrix. This run crosses the MODEL axis at ` +
+    `${models.length} point(s) (${models.join(", ")}) and the METHOD axis at ` +
+    `${families.length} point(s) (${families.map((f) => FAMILY_PROSE[f]).join(", ")}). ` +
+    "It holds three axes at a single point and cannot cross them: the BACKEND axis, " +
+    "because tier 2 is WebGPU or absent and this driver refuses to run without it, so no WASM " +
+    "comparison exists at this tier; the POLICY axis, because it refuses an IR with no semantic " +
+    "predicate and one of the three policy documents has a compiled artifact; and the HARDWARE " +
+    "axis, because a run is one machine and one GPU and no field of this file names either. " +
+    "Against the project's research question -- 'how well can policy-conditioned, fully-local " +
+    "models prevent confidential-data leakage in LLM prompts, and at what latency/hardware cost?' " +
+    "-- a run answers this much: the models are policy-conditioned (at one policy) and fully local " +
+    "(every arm runs in the page and no prompt leaves the browser); the latency cost is per-call " +
+    "TTFT and decode rate on one machine, at the message budget in run.latencyBudgetMs, which " +
+    "run.latencyBudgetTimesCompilerDefault compares with the budget the compiler emits for a " +
+    "policy that names none; and the hardware cost is engineLoadMs, engineWarmupMs and " +
+    "originStorageBytes on that one GPU. It answers NOTHING about 'how well ... prevent leakage': " +
+    "no leak-prevention rate, over-blocking rate, span P/R/F1, policy-adaptivity delta or utility " +
+    "number is computed anywhere in this repository, and none can be from this run, because there " +
+    "is one policy and because " +
+    (scoring.cannotScore.length === 0
+      ? "scoring.cannotScore on this row is empty, so the only thing missing is the scorer"
+      : `scoring.cannotScore on this row names ${String(scoring.cannotScore.length)} way(s) ` +
+        `these rows cannot be joined to gold`) +
+    "."
+  );
+}
 
 /**
  * Which tiers this arm ran, and whether its rows carry gold to score them with.
@@ -1781,6 +1935,13 @@ function scoringBoundary(
   }));
   const tiersRun = tiers.filter((t) => t.ran).map((t) => t.tier);
   const unscorable = tiers.filter((t) => t.ran && t.goldSpans === 0).map((t) => t.tier);
+  // The mirror, and it is a SEPARATE filter rather than a negation of the one
+  // above because the two describe different damage: `unscorable` is findings
+  // with nothing to match, this is gold with nothing that could have matched
+  // it. Both can be non-empty on the same arm -- they are on every arm of a
+  // bake-off run against the shipped corpus, [2] and [1] respectively.
+  const goldNotRun = tiers.filter((t) => !t.ran && t.goldSpans > 0).map((t) => t.tier);
+  const goldSpansTotal = TIERS.reduce<number>((sum, t) => sum + counts[t], 0);
   const goldEntityTypesNotInIr = [...notInIr].sort();
   const goldPolicies = [...policies].sort();
 
@@ -1801,6 +1962,18 @@ function scoringBoundary(
         `corpus is not this driver's job -- do not add gold to make this line go away.`,
     );
   }
+  for (const tier of goldNotRun) {
+    const coverage = tiers[tier]!;
+    cannotScore.push(
+      `the ${records.length} row(s) here carry ${coverage.goldSpans} gold span(s) at tier ` +
+        `${tier} (${coverage.goldEntityTypes.join(", ")}) and this arm did NOT run tier ${tier}, ` +
+        `so nothing it produced can match them. That is a RECALL DENOMINATOR this arm is ` +
+        `structurally incapable of filling: a recall taken over record.gold is bounded above by ` +
+        `${goldSpansTotal - coverage.goldSpans}/${goldSpansTotal} here whatever the model does, ` +
+        `and an otherwise identical run with tier ${tier} switched on is not comparable with ` +
+        `this one. Score per tier, or restrict the denominator to tiersRun.`,
+    );
+  }
   if (goldEntityTypesNotInIr.length > 0) {
     cannotScore.push(
       `gold entityType(s) ${goldEntityTypesNotInIr.join(", ")} are not declared by the IR this arm ` +
@@ -1815,7 +1988,8 @@ function scoringBoundary(
     tiers,
     tiersRun,
     goldSpansByTier: counts,
-    tiersThisCorpusCannotScore: unscorable,
+    tiersTheseRowsCannotScore: unscorable,
+    tiersWithGoldThisArmDidNotRun: goldNotRun,
     goldEntityTypesNotInIr,
     goldPolicies,
     cannotScore,
@@ -1940,6 +2114,11 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         `a gate computed over two arms' rows describes neither`,
     );
   }
+  // Computed BEFORE `run` because `experimentScope` reads it: the scope
+  // sentence's accuracy clause points at this row's own `cannotScore` rather
+  // than restating a corpus property, which is how the two stopped being able
+  // to contradict each other on one row.
+  const scoring = scoringBoundary(records, input.entityTypes);
   // Read off the ROWS, never off the plan: the subject of this file is what the
   // arm did, and the plan states what it meant to do. `uniform` refuses a set
   // that disagrees rather than reporting the first row's value for all of them.
@@ -2210,9 +2389,18 @@ export function gateReport(input: GateReportInput): ArmGateReport {
             `taken at`
           : ``) +
         `; and beside run.latencyBudgetTimesCompilerDefault, because these calls were ` +
-        `${budgetTaken} -- so the SET of calls in this sample is not the set a compiled policy's ` +
-        `budget would produce, and the degradation that difference causes is measured nowhere in ` +
-        `this run`,
+        `${budgetTaken}` +
+        // CONDITIONAL, because the clause is only true above 1x. A run against
+        // `policies/compiled/p-fin.ir.json` is AT the compiler's default, so
+        // its sample IS the set a compiled policy's budget produces and the
+        // caveat would be a false qualification on the more transferable of the
+        // two conditions. `test/baseline.spec.ts` runs exactly that.
+        (run.latencyBudgetTimesCompilerDefault === 1
+          ? ` -- that IS a compiled policy's own default budget, so this sample is the set of ` +
+            `calls such a policy produces`
+          : ` -- so the SET of calls in this sample is not the set a compiled policy's budget ` +
+            `would produce, and the degradation that difference causes is measured nowhere in ` +
+            `this run`),
     }),
     numericGate({
       gate: "decode-rate",
@@ -2263,8 +2451,8 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     family,
     modelId,
     run,
-    scoring: scoringBoundary(records, input.entityTypes),
-    experimentScope: EXPERIMENT_SCOPE,
+    scoring,
+    experimentScope: experimentScope(input.slate, scoring),
     engineLoadMs: input.load.engineLoadMs,
     engineWarmupMs: input.load.engineWarmupMs,
     originStorageBytes: input.load.originStorageBytes,
@@ -2833,34 +3021,78 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
       throw cause;
     }
     written.push(arm.path);
-    reports.push(
-      gateReport({
-        arm: arm.arm,
-        family: arm.family,
-        modelId: arm.modelId,
-        records,
-        segments: arm.segments,
-        corpus: options.corpus,
-        itemTimeoutMs: plan.itemTimeoutMs,
-        latencyBudgetMs: plan.ir.latencyBudgetMs,
-        // The parsed IR this function already proved is the page's, by
-        // comparing its own sha256 of `irPath` with the digest `useIr`
-        // returned. So the tier each gold entityType is scored at comes from
-        // the same artifact every record's `irHash` names.
-        entityTypes: ir.entityTypes,
-        // The hardware half of the research question, off the SAME load report
-        // whose `servedModelId`, `contextWindowSize` and `callBudgetMs` were
-        // checked above -- so these three numbers describe the engine that
-        // produced the rows beside them, not a later or an earlier one. Before
-        // this the page measured all three and the driver dropped them, and
-        // neither output file could answer "at what hardware cost".
-        load: {
-          engineLoadMs: load.loadMs,
-          engineWarmupMs: load.warmupMs,
-          originStorageBytes: load.storageUsageBytes,
-        },
-      }),
-    );
+    const report = gateReport({
+      arm: arm.arm,
+      family: arm.family,
+      modelId: arm.modelId,
+      records,
+      segments: arm.segments,
+      corpus: options.corpus,
+      itemTimeoutMs: plan.itemTimeoutMs,
+      latencyBudgetMs: plan.ir.latencyBudgetMs,
+      // The parsed IR this function already proved is the page's, by
+      // comparing its own sha256 of `irPath` with the digest `useIr`
+      // returned. So the tier each gold entityType is scored at comes from
+      // the same artifact every record's `irHash` names.
+      entityTypes: ir.entityTypes,
+      // Off the PLAN and not off `options`: `options.families` is optional and
+      // `DEFAULT_FAMILIES` fills it in, so reading the options would let the
+      // default slate's row claim a method it never planned. `plan.arms` is
+      // what was actually built.
+      slate: {
+        models: [...new Set(plan.arms.map((a) => a.modelId))],
+        families: [...new Set(plan.arms.map((a) => a.family))],
+      },
+      // The hardware half of the research question, off the SAME load report
+      // whose `servedModelId`, `contextWindowSize` and `callBudgetMs` were
+      // checked above -- so these three numbers describe the engine that
+      // produced the rows beside them, not a later or an earlier one. Before
+      // this the page measured all three and the driver dropped them, and
+      // neither output file could answer "at what hardware cost".
+      load: {
+        engineLoadMs: load.loadMs,
+        engineWarmupMs: load.warmupMs,
+        originStorageBytes: load.storageUsageBytes,
+      },
+    });
+    reports.push(report);
+    // APPENDED HERE, as the arm finishes, and this is a correction of a real
+    // hazard rather than a tidier place to put it. The gates file used to be
+    // written after the LAST arm, on the argument that "a run interrupted
+    // partway leaves the JSONL files -- which spec 2.2 makes the whole boundary
+    // -- and every verdict in this file is recomputable from them". That
+    // argument was false and this file said so three times over:
+    // `GateReportInput` documents `entityTypes` as "the fourth thing no record
+    // carries", `itemTimeoutMs` and `latencyBudgetMs` as three of the first
+    // three, and the load costs as the fifth. Without them `scoring.tiers`,
+    // `scoring.goldSpansByTier` and `scoring.tiersTheseRowsCannotScore` cannot
+    // be recomputed AT ALL.
+    //
+    // So a run that died on arm 2 left arm 1's complete, schema-valid, fully
+    // scoreable JSONL on disk with no `scoring`, no `cannotScore` and no
+    // `experimentScope` anywhere -- the silent zero-precision arm this module's
+    // header calls the first of the two things absence must not look like, in
+    // the one artifact that survives a partial run. Reachable from every throw
+    // between here and the end: the next arm's four load-report refusals, its
+    // four Approach-B refusals, its all-items-failed refusal, its invalid-record
+    // refusal, `gateReport`'s own `uniform` refusals, and any `page.evaluate`
+    // failure. Now every JSONL on disk has its row beside it.
+    //
+    // "ax" on the FIRST row and "a" after it, which is the race guard the
+    // single write had: the pre-flight `existsSync` above catches a repeated
+    // runId, and this catches a file created between that check and now -- an
+    // hour later, on a machine where another process may have started the same
+    // run. Plain "a" would silently append this run's rows to that one's.
+    try {
+      writeFileSync(plan.gatesPath, JSON.stringify(report) + "\n", {
+        flag: reports.length === 1 ? "ax" : "a",
+      });
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`${plan.gatesPath} was created while this bake-off was running`, { cause });
+      }
+      throw cause;
+    }
 
     // The arm is finished, so its engine is released HERE rather than left to
     // the next `page.goto`. `loadTier2` already unloads before replacing an arm
@@ -2880,15 +3112,9 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
     await page.evaluate(() => window.__sih!.unloadTier2());
   }
 
-  // After every arm, and losing it costs nothing: `gateReport` is pure and takes
-  // records, so a run interrupted partway leaves the JSONL files -- which spec
-  // 2.2 makes the whole boundary -- and every verdict in this file is
-  // recomputable from them. It is written last rather than incrementally for
-  // that reason: a half-written gates file beside a complete set of records
-  // would be the more confusing artifact.
-  writeFileSync(plan.gatesPath, reports.map((r) => JSON.stringify(r)).join("\n") + "\n", {
-    flag: "wx",
-  });
+  // Nothing to write here any more; every row landed with its arm. A run with
+  // zero arms cannot reach this point -- `planBakeoff` refuses an empty model
+  // list and an empty family list -- so the file always exists by now.
   return { written, gatesPath: plan.gatesPath, reports, plan };
 }
 

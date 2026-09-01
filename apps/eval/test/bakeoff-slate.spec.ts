@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { TIER2_MODELS } from "@sih/tier2";
-import { runBakeoff, slateBakeoffOptions, type ArmGateReport } from "../src/driver/bakeoff.js";
+import {
+  assertItemTimeoutMs,
+  itemDeadlineBound,
+  runBakeoff,
+  slateBakeoffOptions,
+  type ArmGateReport,
+} from "../src/driver/bakeoff.js";
 import { expect, openHarness, test } from "./tier2-profile.js";
 
 /**
@@ -67,6 +73,41 @@ test("the entry point's defaults are the four-arm slate, not a one-model smoke r
   // file's name and `runBakeoff` refuses to overwrite one, so a timestamp
   // default would make a repeat of one experiment look like two.
   expect(() => slateBakeoffOptions({})).toThrow(/SIH_BAKEOFF_RUN_ID is required/);
+  // The EMPTY-STRING half of that guard, which is the reachable one: an unset
+  // shell variable and one set to "" are the same thing to a caller and
+  // different things to `env[...]`. Without this half the refusal still
+  // happens, but from `assertFileSafe` deep inside `planBakeoff`, with a
+  // message about file names rather than about why the id is required.
+  expect(() => slateBakeoffOptions({ SIH_BAKEOFF_RUN_ID: "" })).toThrow(
+    /SIH_BAKEOFF_RUN_ID is required/,
+  );
+
+  // `Number` and not `parseInt`, which is the one decision in this function
+  // whose comment argues for it and which nothing checked: `parseInt("250s")`
+  // is 250, and a silently truncated timeout that still runs is worse than one
+  // that refuses. `Number("250s")` is NaN, which falls through to
+  // `assertItemTimeoutMs` naming the field and the reason.
+  const fatFingered = slateBakeoffOptions({
+    SIH_BAKEOFF_RUN_ID: "check",
+    SIH_BAKEOFF_ITEM_TIMEOUT_MS: "250s",
+  });
+  expect(Number.isNaN(fatFingered.itemTimeoutMs)).toBe(true);
+  const bound = itemDeadlineBound({
+    latencyBudgetMs: 120_000,
+    callBudgetMs: 60_000,
+    maxCallsPerItem: 6,
+    lowerTierAllowanceMs: 1_000,
+  });
+  expect(() => assertItemTimeoutMs(fatFingered.itemTimeoutMs, bound)).toThrow(/itemTimeoutMs/);
+  // The control: the SAME bound accepts the number a clean string produces, so
+  // the throw above is about NaN and not about the bound being unsatisfiable.
+  expect(() => assertItemTimeoutMs(400_000, bound)).not.toThrow();
+  // And a clean numeric string with surrounding whitespace still parses, so the
+  // stricter reader has not made the common case fail.
+  expect(
+    slateBakeoffOptions({ SIH_BAKEOFF_RUN_ID: "check", SIH_BAKEOFF_ITEM_TIMEOUT_MS: " 300000 " })
+      .itemTimeoutMs,
+  ).toBe(300_000);
 
   // And every field is really read from the environment. Without a second value
   // per field, "reads the env" and "returns the default" are the same test --
