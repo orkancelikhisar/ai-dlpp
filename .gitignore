@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 test-results/
 playwright-report/
+# Bake-off output: one JSONL per arm plus a gates file, written by
+# `pnpm -C apps/eval bakeoff`. Measurements, not sources.
+runs/

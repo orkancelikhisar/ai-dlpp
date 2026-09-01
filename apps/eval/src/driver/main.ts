@@ -54,8 +54,12 @@ import { runArm } from "./run.js";
  *
  * NONE OF WHICH WEAKENS THE TABLE. The three rungs marked `agrees: false`
  * disagree by 8.352, 8.134 and 30.154 -- three to four orders of magnitude
- * above that jitter, and a collapse of the whole logit range rather than noise
- * on it. And `gliner-pii-base` stays usable for the reason it always did:
+ * above that jitter -- and end to end at threshold 0.02 all three return
+ * different spans and labels from wasm on every run. (The "collapse of the whole
+ * logit range" this comment used to assert of all three is characterised on ONE:
+ * see `test/tier1.spec.ts`, where the confidences the three actually produce are
+ * measured and are not the same pattern.) And `gliner-pii-base` stays usable for
+ * the reason it always did:
  * nothing that is SCORED moves. Running the whole 13-item smoke corpus through
  * both providers at 0.02 gives identical spans and labels on every item, with
  * confidences differing by ~1e-7 typically and up to 2.6e-4 on the two

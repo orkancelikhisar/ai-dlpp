@@ -210,17 +210,33 @@ for (const backend of TIER1_BACKENDS) {
  *   gliner-pii-base         markerV0      max |wasm - webgpu| = 0.000
  *   gliner-pii-base-uint8   markerV0      max |wasm - webgpu| = 30.154
  *
- * The shape of the disagreement is a COLLAPSE rather than drift, which is what
- * makes these three verdicts safe despite the jitter recorded above:
- * base-uint8's logits span [-30.46, +2.05] on wasm and [-0.36, -0.16] on
- * webgpu, whose sigmoid is ~0.46 for everything -- exactly the "every word
- * scores 0.44-0.47" pattern the findings below show. Three to four orders of
- * magnitude separates that from the ~5e-3 webgpu varies by between two runs of
- * the same input, so no re-run could turn a "wrong" verdict into an "exact"
- * one. An earlier version of this comment claimed the four numbers were
- * "bit-identical over two independent full re-runs, so it is deterministic
- * rather than numerical noise"; the determinism half of that is false and the
- * scale argument, which is what the verdicts actually rest on, is not.
+ * What makes these three verdicts safe despite the jitter recorded above is the
+ * MAGNITUDE: three to four orders of magnitude separates 8.352 / 8.134 / 30.154
+ * from the ~5e-3 webgpu varies by between two runs of the same input, so no
+ * re-run could turn a "wrong" verdict into an "exact" one. An earlier version of
+ * this comment claimed the four numbers were "bit-identical over two independent
+ * full re-runs, so it is deterministic rather than numerical noise"; the
+ * determinism half of that is false and the scale argument, which is what the
+ * verdicts actually rest on, is not.
+ *
+ * That same version said the disagreement is "a COLLAPSE rather than drift:
+ * base-uint8's logits span [-30.46, +2.05] on wasm and [-0.36, -0.16] on webgpu,
+ * whose sigmoid is ~0.46 for everything -- exactly the 'every word scores
+ * 0.44-0.47' pattern the findings below show". The last clause is WRONG and the
+ * tests in this file are what disprove it. MEASURED twice, byte-identical, at
+ * threshold 0.02 on MESSAGE below:
+ *
+ *   gliner-pii-edge         webgpu confidences 0.103 .. 0.204
+ *   gliner-pii-edge-uint8   webgpu confidences 0.341 .. 0.475  <- the 0.44-0.47 run
+ *   gliner-pii-base-uint8   webgpu confidences 0.023 .. 0.066
+ *
+ * So the 0.44-0.47 pattern is EDGE-uint8's, not base-uint8's. And on a markerV0
+ * rung `confidence` is `sigmoid(logit)` with nothing in between (decode.ts), so
+ * a 0.023 needs a logit near -3.75 and base-uint8's webgpu logits cannot all lie
+ * in [-0.36, -0.16] on this message. That range is Task 11's, over the raw
+ * tensor on a different short message; it is not re-derivable from this suite
+ * and is left standing as that measurement rather than restated as this one's.
+ * The verdicts do not depend on it.
  *
  * Nothing reports this. Session creation succeeds, `run` resolves, the logits
  * are finite and correctly shaped. `gliner-pii-base` agreeing to 0.000 under the

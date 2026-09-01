@@ -56,7 +56,7 @@ await engine.chat.completions.create({
 - **One engine per arm.** Swapping models in one page leaks VRAM.
 - **`context_window_size: 8192` loads fine** on the shipped lib (1.7 s warm) and prefills a 4,360-token prompt at 452 tok/s. The 4096 default is a WebLLM override and is liftable — raise it for **both** tier 2 and Approach B so B does not fail on long messages for a reason unrelated to its design.
 
-  **Task 9 measured what actually needs the window, and it is not tier 2.** A tier-2 prompt is the fixed 776-character system turn plus the predicates plus one SEGMENT, and over `corpora/fixtures/smoke.jsonl` the largest selected segment is 153 characters — a whole prompt of **1,196 characters**, 1,105 at the median. The ceiling on tokens is the UTF-8 BYTE count, not the character count — a byte-level BPE tokenizes bytes, and measured against a real one, 20 U+1F389 are 40 UTF-16 code units and 60 tokens. Here the two barely differ: that prompt's segment and the fixed system turn are both ASCII (measured: the largest selected segment is 153 code units and 153 bytes; `judge.ts` contains no non-ASCII character), and only the interpolated predicate text could add any, at most a byte or two per em dash. So the byte ceiling is ~1,196 and tier 2 fits the unlifted 4096 with 3.4x headroom, nowhere near 8192. Re-derive it in BYTES on any other corpus. The window lift is therefore justified by **Approach B alone**, whose prompt carries the whole policy (`policies/p-fin.md` is 5,320 characters) plus the whole message rather than one segment. Keep the lift — the two arms must share a window or the head-to-head measures context rather than method, which is this bullet's original argument and is unaffected — but stop attributing the requirement to tier 2, and note that the load-only 8192 probe this plan still owes is a probe for B's benefit.
+  **Task 9 measured what actually needs the window, and it is not tier 2.** A tier-2 prompt is the fixed 776-character system turn plus the predicates plus one SEGMENT, and over `corpora/fixtures/smoke.jsonl` the largest selected segment is 153 characters — a whole prompt of **1,196 characters**, 1,105 at the median. The ceiling on tokens is the UTF-8 BYTE count, not the character count — a byte-level BPE tokenizes bytes, and measured against a real one, 20 U+1F389 are 40 UTF-16 code units and 60 tokens. Here the two barely differ: that prompt's segment and the fixed system turn are both ASCII (measured: the largest selected segment is 153 code units and 153 bytes; `judge.ts` contains no non-ASCII character), and only the interpolated predicate text could add any, at most a byte or two per em dash. So the byte ceiling is ~1,196 and tier 2 fits the unlifted 4096 with 3.4x headroom, nowhere near 8192. Re-derive it in BYTES on any other corpus. The window lift is therefore justified by **Approach B alone**, whose prompt carries the whole policy (`policies/p-fin.md` is **5,272 characters** and 5,320 UTF-8 bytes — this line said 5,320 characters, which is the byte count wearing the character label, the exact confusion the sentence before it is about) plus the whole message rather than one segment. Keep the lift — the two arms must share a window or the head-to-head measures context rather than method, which is this bullet's original argument and is unaffected — but stop attributing the requirement to tier 2, and note that the load-only 8192 probe this plan still owes is a probe for B's benefit.
 
   **But that was measured on `Qwen3.5-2B` ONLY.** The other three arms each ship their own `overrides.context_window_size: 4096` and are **unmeasured at 8192**. Before Task 12 commits four arms to it, probe each remaining model at 8192 and record what happens — a model that refuses the larger window, or that loads but thrashes, is a finding, and discovering it as three failed arms mid-bake-off would waste a full run. If a model cannot take 8192, the honest options are to run that arm at 4096 and **report the asymmetry**, or to drop the arm; silently mixing window sizes across arms would make the comparison measure context rather than method.
 
@@ -78,17 +78,28 @@ Measured consequence, driving the repo's own module in real Chrome:
 
 **Two consequences for later tasks:**
 
-- **Task 12 must assert the call following any expiry returns a NON-EMPTY body.** The plan's own Step 4 check — "the second call returns" — would have passed against the broken implementation, because it did return, in 0 ms, empty. `clearInterrupt` writes a field TypeScript marks `private`; if upstream renames it the clear silently no-ops and the poisoning returns with a fully green unit suite. No Node test can catch that; the bake-off assertion is the cheapest real guard.
+- **Task 12 must assert the call following any expiry returns a NON-EMPTY body.** The plan's own Step 4 check — "the second call returns" — would have passed against the broken implementation, because it did return, in 0 ms, empty. `clearInterrupt` writes a field TypeScript marks `private`; if upstream renames it the clear silently no-ops and the poisoning returns with a fully green unit suite. No Node test can catch that.
+
+  **CORRECTED once the gate existed: the bake-off assertion is NOT the guard, and calling it "the cheapest real guard" was wrong.** `GATES.assertNonEmptyAfterExpiry` becomes the `non-empty-after-stop` gate, and `stopGate` reports `not-measured` unless some item in the arm was actually stopped by a budget expiry or a caller abort — which in a healthy run never happens. MEASURED on a real one-arm run of the shipped driver over two corpus items: `non-empty-after-stop=not-measured(n=0)`. A check that only fires once something else has already gone wrong is not a guard against that thing going wrong.
+
+  The real guard is a Playwright spec that FORCES the expiry: `apps/eval/test/tier2.spec.ts`, "the engine survives a deadline expiry", drives `detectWithBudget` at a 50 ms per-call budget against the real engine on real weights, asserts the expiry happened (`deadlineExpiries === 1` plus the `call-budget-exhausted` notice — without which the test would pass against a budget that never fired) and then asserts the NEXT call answered: `abortedResponses === 0`, `failedClosed === 0`, `segmentsJudged === 1`. It runs on every suite pass. Keep the bake-off gate anyway: it is the one that would notice a latch during a long slate run, where nothing else is watching.
 - **Reentrancy was broken and is now serialized per engine.** Measured: two overlapping calls, and the second was silently killed by the first's timeout — resolving with `abort` and 0 characters. The judge calls this per segment, so that was not hypothetical. Note `budgetMs` excludes queue time by design; a caller needing a bound on total elapsed time must pass the `outer` signal, which is honoured while queued.
 
 ### The bake-off slate is four arms
 
-| Model | Size | Note |
+| Model | VRAM | Note |
 |---|---|---|
-| `Qwen3.5-2B-q4f16_1-MLC` | 2245 MB | Fastest; recommended primary. Decode 33-46 tok/s |
-| `Phi-4-mini-instruct-q4f16_1-MLC` | 3438 MB | No thinking mode. Decode 20-29 tok/s |
-| `Qwen3-4B-q4f16_1-MLC` | 3432 MB | Likely killed on throughput |
-| `Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC` | 2864 MB | Weak: returned **empty** findings on a message full of secrets |
+| `Qwen3.5-2B-q4f16_1-MLC` | 2,245 MB | Fastest; recommended primary. Decode 33-46 tok/s |
+| `Phi-4-mini-instruct-q4f16_1-MLC` | 3,438 MB | No thinking mode. Decode 20-29 tok/s |
+| `Qwen3-4B-q4f16_1-MLC` | 3,432 MB | Likely killed on throughput |
+| `Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC` | 2,864 MB | Weak: returned **empty** findings on a message full of secrets |
+
+**That column said "Size" and it is not one.** It is `vram_required_MB` from `prebuiltAppConfig`
+— the only per-model figure the library reports offline — and `manifest.ts` names the field
+`vramRequiredMb` for exactly that reason. MEASURED through `navigator.storage.estimate()` on a
+profile holding all four arms: they occupy **7,490 MB** at that origin against the 11,979 MB
+these four numbers sum to. A reader budgeting disk from a column headed "Size" was out by more
+than a third.
 
 **Note on that id:** the first draft of this plan wrote it without the `-q4f16_1-MLC` suffix. That is a strict PREFIX of the real `prebuiltAppConfig` entry, and `MLCEngine` resolves ids by string equality — so the arm would have thrown at load with an error reading like a bug in our code, exactly the way the dropped `gemma3-4b` would. **Verify every model id against the installed `prebuiltAppConfig` rather than against this plan.**
 
@@ -2020,8 +2031,14 @@ better.
 
 - **Model capability is the live failure, not backend correctness.** Measured, these models miss most entities, duplicate findings, and one false-positived `"The weather is nice today."` as a secret. Expect the bake-off to be a search for *any* usable arm rather than a ranking of good ones.
 - **xgrammar issue #807** (`Invalid token id` on Apple Silicon) did not reproduce in 36 constrained calls, which does not retire an intermittent bug. Instrument the dev-slice run with an error counter over at least 200 constrained calls; if it fires, fall back to unconstrained JSON plus the repair retry, which is the regime the original kill rule was written for.
+
+  **STILL UNBUILT, and this corpus cannot reach the threshold anyway — recorded here rather than left to be discovered.** Nothing in `packages/tier2` or `apps/eval` counts a constrained-decoding error: `grep -r 807` finds no counter, and no field of `RunRecordSchema`, `JudgeStats` or `ArmGateReport` carries one. And the arithmetic says the dev slice this risk was written for does not exist yet. MEASURED over `corpora/fixtures/smoke.jsonl` with core's own segmenter and escalation policy: 13 items, 19 segments, of which a tier-0 family selects 18 and a tier-2-only family 17. So the four-model slate at the default `["compiled"]` family is **4 × 18 = 72** constrained calls, at most 144 if every one took its repair retry — against a 200-call threshold. Even all four families crossed with all four models is 4 × (18 + 17 + 13 + 13) = 244, and that is not a configuration anyone has proposed running. The counter and the 200 calls are Plan 7 corpus work; what is owed HERE is the record that neither exists.
 - **One unexplained determinism break.** In one session three identical constrained calls at temperature 0 returned 175 / 588 / 599 completion tokens. Three later sessions were 26/26 byte-identical. Unexplained is not benign — log completion-token counts per call so a recurrence is visible.
 - **Upstream issue #844** (prefill over 120 tokens throwing) did not reproduce here across 36 calls at 1,480-4,360 prompt tokens, but was reported on integrated AMD/Windows. It is a portability risk, not a local one.
+
+- **`SemanticPredicate.scope: "message"` is declared by the IR and not honoured by the judge, and it is the scope the only compiled real policy uses.** `WebLlmJudge` evaluates every predicate against one SEGMENT and returns `scopesJudged: ["segment"]` whatever the predicate declares, so the orchestrator files a `scope-unjudged` notice per message. `judge.ts` says this in its own docblock; what nothing said is how much it costs. MEASURED: `policies/compiled/p-fin.ir.json` — the one compiled artifact in this repository, and the only IR here that can be paired with the document it came from — declares exactly one semantic predicate, `client-relationship-disclosure`, with `scope: "message"`. `apps/eval/fixtures/semantic-ir.json`, the hand-written fixture every bake-off arm runs against by default, declares its one predicate as `scope: "segment"`. So the bake-off is judgeable today only because it runs the fixture: moving it onto the real compiled policy files **100% of the tier-2 work as unjudged**, and the arms would still produce complete, schema-valid files.
+
+  Nothing is missing from the interface. `JudgeRequest.text` already carries the whole message verbatim, and core's own docblock says it exists for precisely this — "a message-scoped predicate whose evidence spans two segments is invisible to a judge that only sees segments". So the work is in `judge.ts` and needs no change to core, to the record schema or to the IR.
 
 **Next plans:** 6 — the extension; 7 — corpus pipeline; 8 — evaluation and analysis.
 
@@ -2288,3 +2305,124 @@ Approach-B record, so all four of `RunRecordSchema`'s new refines could be
 replaced by `() => true` with a green suite, and `normalizeArmStats` could map
 `unitsJudged` to `deadlineExpiries`. `record.test.ts` and `bakeoff.test.ts`
 gained the fixtures that close them.
+
+### Documentation truth pass: what a reader of the results would have read
+
+A pass over the three documents a reader of these results actually reads
+— the root `README.md`, this plan, and `docs/superpowers/specs/2026-08-13-ai-dlpp-design.md`
+— against what the code and the machine actually do. Every number below was
+RECOMPUTED here rather than copied from another document; where a claim handed to
+this pass turned out to be wrong, that is recorded too.
+
+**One finding handed to this pass was wrong, and it was the highest-priority
+one.** It said `README.md` is "a Plan-4-era document never updated for Plan 5",
+that "it tells a reader the tier-2 judge does not exist", and that "every count
+in it is wrong". That describes the README at commit `836d1cc`, not at HEAD:
+`d0dadd5` rewrote it, and the version in the tree has a `packages/tier2` row, a
+Plan-5 status row, the head-to-head command and a five-package count. RECOMPUTED
+by running `pnpm -r test` BEFORE this pass changed anything: core 352, tier2 255,
+tier1 219, eval 217, compiler 137 = 1,180 vitest, plus 79 Playwright, plus "clean
+across five projects" from `pnpm -r typecheck`'s own "5 of 6 workspace projects".
+Every one of those matched the README. (The README's totals moved afterwards,
+because this pass added tests of its own: 1,185 vitest and 81 Playwright, one of
+the latter skipped by default.) Exactly ONE count in it was stale, and it was a subtler thing than a
+stale total: "Plans 1 + 2 are `packages/core`, 276 tests between them". 276 was
+right when Plan 2 closed — MEASURED by extracting `packages/core` at `696f2f4`
+into a scratch tree and running its own vitest: 20 files, 276 tests — and core
+holds 352 now, because six commits of Plan 5 work (the degraded channel, message
+scope, `escalate.ts`) landed tests in it. The row now says so.
+
+**Corrected in the README.**
+
+- The headline WebGPU finding quoted "every word scores ~0.46" for all three
+  divergent rungs. That number is `gliner-pii-base-uint8`'s raw logit range, and
+  the SVG beside the sentence scopes it correctly, so the README contradicted its
+  own figure. It now states the three logit differences (8.352 / 8.134 / 30.154
+  against a control at 0.000) and scopes the ~0.46 to the one rung.
+- "lint- and test-enforced" on `packages/core`. VERIFIED: there is no linter in
+  this repository at all — no config, no `lint` script, zero matches for `eslint`
+  in `pnpm-lock.yaml`. The boundary IS enforced, by two mechanisms that split the
+  job: `"lib": ["ES2022"]` with no `DOM` in `packages/core/tsconfig.json` makes
+  `document`/`window`/`chrome` typecheck errors, and
+  `packages/core/test/firewall.test.ts` catches `node:` imports, `process.` and
+  `Buffer`, which `@types/node` would otherwise let through. Both are named now,
+  in the README and in spec 2.2.
+- "it reaches detection only through a single page API" and "all scoring happens
+  separately in Python". The first is two claims and both are loose: the page API
+  is about a dozen functions, and the driver imports `@sih/core` and runs
+  `segmentText`, `selectSegments` and `runTier0` IN NODE to plan a run. The rule
+  that does hold — nothing is forked, stubbed or re-implemented, and every
+  MEASURED number comes from the browser — is what it says now. The second
+  describes machinery that does not exist: there is no `analysis/` directory and
+  no `.py` file anywhere here.
+- The tier-1 weight total read "1.4 GB across six variants". RECOMPUTED from
+  `MODEL_MANIFEST`: 1,512,225,494 bytes of `.onnx` and 1,556,416,373 with the
+  metadata each variant needs, i.e. 1.51/1.56 GB decimal or 1.41 GiB. Stated in
+  bytes-derived decimal GB now, and the tier-2 figure — 7.49 GB — is now the
+  one this pass measured off `navigator.storage.estimate()` during a real run.
+
+**Added to the README, because they were true and unstated:** that the four-model
+bake-off has never been run and there is now a command for it; that
+`scope: "message"` is unhonoured and is the compiled policy's only scope; that
+the gates' p95 is a maximum at this corpus size; that the xgrammar #807 counter
+does not exist and this corpus cannot reach its threshold; and a scope section
+naming which clauses of the research question a run of this repository answers.
+
+**Corrected in this plan.** `policies/p-fin.md` is 5,272 characters and 5,320
+UTF-8 bytes; the Task 9 paragraph stated the byte count under the character
+label, in a paragraph whose whole subject is that distinction. The slate table's
+"Size" column is VRAM, which `manifest.ts` fixed and this plan did not. And the
+claim that the bake-off's `non-empty-after-stop` assertion is "the cheapest real
+guard" against the interrupt latch is wrong: MEASURED on a real one-arm run of
+the shipped driver, that gate reports `not-measured(n=0)`, because `stopGate`
+only measures when something already stopped an item. The real guard is
+`tier2.spec.ts`'s "the engine survives a deadline expiry", which forces the
+expiry at a 50 ms per-call budget and asserts the next call answers.
+
+**Three code changes, all in service of the same audit.**
+
+- `ArmGateReport` gained `engineLoadMs`, `engineWarmupMs` and
+  `originStorageBytes`, off the `Tier2LoadReport` `runBakeoff` already held and
+  already checked three other fields of. The "hardware cost" half of this
+  project's research question was being measured by the page and dropped by the
+  driver, so neither output file could answer it. `bakeoff-run.test.ts`'s
+  scripted page now returns three values that share no digits, so a report that
+  invented them or copied one field into another is a red test.
+- `ArmGateReport` gained `experimentScope`, the constant that names which axes of
+  spec 6.3's matrix a run crosses and which three it holds at one point. It sits
+  beside `scoring.verdictMeans` for the same reason that field exists: a gates
+  file is read by someone who does not have the spec open.
+- `slateBakeoffOptions` plus `test/bakeoff-slate.spec.ts` and a `bakeoff` script,
+  so a command exists:
+  `SIH_BAKEOFF=1 SIH_BAKEOFF_RUN_ID=<name> pnpm -C apps/eval bakeoff`. The slate
+  run is skipped unless `SIH_BAKEOFF=1`; the option-building half is not gated and
+  asserts on every suite run that the defaults are still the four-model slate.
+  EXERCISED end to end, narrowed to one model over two items, which is what
+  produced the `not-measured` stop-gate observation above — **the four-arm
+  slate itself has still not been run, and nothing here claims it has.**
+
+**And one defect this pass found while checking another.** `apps/eval/README.md`
+and `tier1.spec.ts` both said base-uint8's collapse is "exactly what the
+end-to-end findings show, every word scoring 0.44-0.47 in monotone order".
+RE-MEASURED twice, byte-identical, by running the shipped divergence specs: the
+0.44-0.47 run is `gliner-pii-edge-uint8`'s (0.341 .. 0.475), while
+`gliner-pii-base-uint8`'s webgpu findings score 0.023 .. 0.066 and
+`gliner-pii-edge`'s 0.103 .. 0.204. On a markerV0 rung `confidence` is
+`sigmoid(logit)` with nothing in between, so on that message base-uint8's webgpu
+logits cannot all sit in the `[-0.36, -0.16]` band the collapse story quotes.
+That band is Task 11's, over a different short message, and it is left standing
+as that measurement rather than restated as this one's. The three `wrong`
+verdicts are unaffected: they rest on the magnitude of the logit differences, and
+every rung marked wrong returns different spans and labels from wasm on every
+run.
+
+**Two things this pass could NOT settle**, recorded rather than resolved. Task
+11's `[-30.46, +2.05]` / `[-0.36, -0.16]` logit ranges were taken by a scratch
+harness on an unnamed short message, and nothing committed here re-derives them;
+the finding-level numbers above are the only reproducible evidence about the
+shape of the divergence. And spec 4.2's tier-1 sizes ("197 MB uint8 / 330 MB
+fp16" for `gliner-pii-edge-v1.0`) match the manifest's BASE variant
+(196,757,174 and 332,958,160 bytes), not its EDGE one (45,820,894 and
+90,845,497). That is a 2026-08-13 research figure and could be a mislabelled
+model card rather than a mistake in this repository, so it is reported and left
+alone.

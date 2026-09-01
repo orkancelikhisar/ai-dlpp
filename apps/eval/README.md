@@ -61,7 +61,20 @@ below for where the profile lives and why it has to be a persistent one.
 pnpm -C apps/eval test        # vitest run && playwright test
 pnpm -C apps/eval typecheck   # tsc --noEmit
 pnpm -C apps/eval dev         # vite dev server on :5178, for poking by hand
+
+# The four-model bake-off. NOT part of `test`: four model loads, hours of GPU time.
+SIH_BAKEOFF=1 SIH_BAKEOFF_RUN_ID=<name> pnpm -C apps/eval bakeoff
 ```
+
+`runBakeoff` had no caller outside the test suite until that script existed, and
+**the four-arm slate has still never been run.** What has run is two
+pipe-integrity checks that are easy to mistake for it: `bakeoff.spec.ts` (one
+model, two items) and `baseline.spec.ts` (one model, four method families, three
+items). `test/bakeoff-slate.spec.ts` is the slate, `slateBakeoffOptions` builds
+its `BakeoffOptions` from `SIH_BAKEOFF_*`, and the spec skips unless
+`SIH_BAKEOFF=1` — a skip, not a pass. The Node-side half of that file is not
+gated and asserts on every suite run that the defaults are still the four-model
+slate.
 
 Two runners, one script, vitest first: it needs no browser and finishes in under
 a second, so a broken schema fails before Playwright spends time launching
@@ -505,10 +518,28 @@ raw `logits` element by element:
 
 The disagreement is a **collapse**, not drift: `gliner-pii-base-uint8` logits
 span `[-30.46, +2.05]` on wasm and `[-0.36, -0.16]` on webgpu, whose sigmoid is
-≈0.46 for everything — which is exactly what the end-to-end findings show, every
-word scoring 0.44–0.47 in monotone order. That scale, not a re-run, is what the
-three **wrong** verdicts rest on: they are three to four orders of magnitude
-above anything WebGPU varies by on its own (below).
+≈0.46 for everything. That scale, not a re-run, is what the three **wrong**
+verdicts rest on: they are three to four orders of magnitude above anything
+WebGPU varies by on its own (below).
+
+**The clause that used to end that sentence was wrong, and it is worth keeping
+the correction visible.** It read "which is exactly what the end-to-end findings
+show, every word scoring 0.44–0.47 in monotone order", attributing that pattern
+to `gliner-pii-base-uint8`. RE-MEASURED twice, byte-identical, by running the
+shipped `test/tier1.spec.ts` divergence cases at threshold 0.02 on this file's
+message: the 0.44–0.47 pattern is **`gliner-pii-edge-uint8`'s** webgpu output
+(0.341, 0.439, 0.443, 0.457, 0.469, 0.473, 0.475), while
+`gliner-pii-base-uint8`'s webgpu findings score **0.023–0.066** and
+`gliner-pii-edge`'s score 0.103–0.204.
+
+On a markerV0 rung `confidence` *is* `sigmoid(logit)` with nothing in between
+(`decode.ts`), so on this message base-uint8's webgpu logits cannot all lie in
+`[-0.36, -0.16]`; a 0.023 needs about −3.75. The `[-0.36, -0.16]` figure is Task
+11's, over the raw tensor on a different short message, and it is **not
+reproducible from this suite** — which is a gap in the characterisation, not in
+the verdicts. The verdicts rest on the magnitude of the logit differences
+(8.352 / 8.134 / 30.154 against ~5e-3 of self-jitter), and every rung marked
+**wrong** returns different spans and labels from wasm on every run.
 
 **Nothing reports this.** Session creation succeeds, `run` resolves, the logits
 are finite and correctly shaped. `gliner-pii-base` agreeing under the same page
@@ -991,6 +1022,37 @@ run still happens: every gate here is a property of the run and needs no label,
 so refusing to run would throw the measurement away to prevent a misreading a
 field can prevent — and a refusal that can only be cleared by editing the data is
 a machine for producing edited data.
+
+## Two more things every gates row carries
+
+**`experimentScope`.** Spec §6.3 defines a matrix over arms × backends ×
+policies; a run of this driver is one point on most of those axes. It crosses the
+MODEL axis (four pinned arms) and the METHOD axis (four families) and holds three
+fixed and uncrossable: backend, because tier 2 is WebGPU or absent and the driver
+refuses to run without it; policy, because it refuses an IR with no semantic
+predicate and one of the three policy documents has a compiled artifact; and
+hardware, because a run is one machine and one GPU and no field of any file names
+either. The string spells out which clauses of the project's research question a
+run answers — *policy-conditioned* (at one policy) and *fully-local* yes, latency
+and hardware cost partly, *prevent confidential-data leakage* not at all. It is a
+constant, so two rows of one file cannot disagree about it.
+
+**`engineLoadMs`, `engineWarmupMs`, `originStorageBytes`.** The hardware half of
+"at what latency and hardware cost?", read off the page's `Tier2LoadReport` —
+the same object whose `servedModelId`, `contextWindowSize` and `callBudgetMs`
+`runBakeoff` refuses the arm on. Before these, the page measured all three and
+the driver dropped them, so no output file could say what an arm cost to stand
+up: every other latency in the file is a per-CALL number taken once the model is
+already resident.
+
+Two of the three need reading with care, and their docblocks say so.
+`engineLoadMs` is a load, not necessarily a *cold* load — the persistent profile
+means it is usually a cache read plus a shader compile. `originStorageBytes` is
+`navigator.storage.estimate().usage` for the whole origin, so it is cumulative
+over every model the profile has ever cached and is **not** this model's
+footprint; on a slate run cheapest-first it climbs monotonically and the last arm
+reports the whole slate. For a per-model size read `TIER2_MODELS[].vramRequiredMb`,
+which is `prebuiltAppConfig`'s VRAM figure and is not a download size either.
 
 ## Latency here is measured at 24× a shipped policy's budget
 

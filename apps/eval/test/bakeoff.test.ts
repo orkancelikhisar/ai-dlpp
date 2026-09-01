@@ -211,6 +211,11 @@ const RUN_CONTEXT = {
   // to, which only an IR knows. `runBakeoff` passes the IR it verified against
   // the page's own digest, so this is that array.
   entityTypes: SEMANTIC_IR.entityTypes,
+  // The fifth, and the only one of the five the PAGE produces rather than the
+  // driver: `runBakeoff` reads all three off the same `Tier2LoadReport` whose
+  // `servedModelId` it has already refused the arm on. Three values that share
+  // no digits, so a report that copied one field into another is a red test.
+  load: { engineLoadMs: 1_234, engineWarmupMs: 567, originStorageBytes: 8_900_000_000 },
 } as const;
 
 /**
@@ -769,6 +774,38 @@ describe("the p95 gate is the 95th percentile and not a neighbour of it", () => 
     expect(tail.ttftMs!.max).toBe(9000);
     expect(tail.killedOnRunGates).toBe(false);
   });
+
+  it("says on a small sample that the p95 it reports is the maximum", () => {
+    // The fact above is true of every run this repository can currently take --
+    // 13 items, at most 18 calls on a compiled arm and 13 on a B arm -- and it
+    // was recorded nowhere a reader of the number would meet it. A ceiling
+    // called "p95" that is really a ceiling on the single slowest call is a
+    // different gate, and one slow first call kills the arm under it.
+    const small = report([judged([call({ ttftMs: 100 }), call({ ttftMs: 900 })])]);
+    expect(outcome(small, "p95-ttft").sample).toBe(2);
+    expect(outcome(small, "p95-ttft").observed).toBe(900);
+    expect(outcome(small, "p95-ttft").detail).toContain("nearest-rank p95 IS THE MAXIMUM");
+
+    // And it stops saying it once the sample is big enough for the two to
+    // differ, rather than being a fixed sentence. 20 is the first such size.
+    const twenty = report([judged(Array.from({ length: 20 }, (_, i) => call({ ttftMs: (i + 1) * 10 })))]);
+    expect(outcome(twenty, "p95-ttft").sample).toBe(20);
+    expect(outcome(twenty, "p95-ttft").observed).toBe(190);
+    expect(twenty.ttftMs!.max).toBe(200);
+    expect(outcome(twenty, "p95-ttft").detail).not.toContain("IS THE MAXIMUM");
+  });
+
+  it("names the prompt-size mismatch only on the arm that has one", () => {
+    // The clause used to read "so on a message-judged arm (judgedUnit
+    // \"segment\")" on EVERY row -- a sentence contradicting the value it quotes,
+    // on the one line a reader checks a gate's derivation against. The ceiling
+    // was derived at a whole prompt built from one SEGMENT, so the mismatch is
+    // real on a B arm and absent on a compiled one, and the detail now says
+    // which of the two this row is.
+    expect(outcome(report([judged([call()])]), "p95-ttft").detail).not.toContain(
+      "judged per MESSAGE",
+    );
+  });
 });
 
 describe("every ladder counter reaches the report", () => {
@@ -1104,6 +1141,49 @@ describe("what a gate report says about the run itself", () => {
     ]);
     expect(narrow.run.tier2Config?.contextWindowSize).toBe(4096);
     expect(narrow.run.tier2Config?.callBudgetMs).toBe(30_000);
+  });
+
+  it("states what the arm cost to stand up, from the caller's load report", () => {
+    // WHY. Every other latency on this report is a per-CALL number taken once
+    // the model is resident, so nothing in either output file said what getting
+    // it there cost -- and "at what latency AND HARDWARE COST" is half the
+    // question this project exists to answer. The page measures all three and
+    // `runBakeoff` already holds the report they come from.
+    const r = report([rec()]);
+    expect(r.engineLoadMs).toBe(1_234);
+    expect(r.engineWarmupMs).toBe(567);
+    expect(r.originStorageBytes).toBe(8_900_000_000);
+
+    // A SECOND load, because a report that hardcoded the first set -- or that
+    // wrote `engineLoadMs` into all three -- would satisfy the block above.
+    const other = report([rec()], "compiled", {
+      load: { engineLoadMs: 90_001, engineWarmupMs: 2, originStorageBytes: 33 },
+    });
+    expect(other.engineLoadMs).toBe(90_001);
+    expect(other.engineWarmupMs).toBe(2);
+    expect(other.originStorageBytes).toBe(33);
+  });
+
+  it("names the axes of the experiment a run of this driver cannot cross", () => {
+    // A gates file is read by someone without the spec open, and the available
+    // misreading is that it answers the research question. It does not: the
+    // backend, policy and hardware axes of spec 6.3's matrix are one point each
+    // here, and no accuracy metric exists in this repository at all.
+    //
+    // Pinned as CONTENT rather than as a non-empty string, because a sentence
+    // that stopped saying the load-bearing half would still be a sentence.
+    const scope = report([rec()]).experimentScope;
+    expect(scope).toContain("WebGPU or absent");
+    expect(scope).toContain("one of the three policy documents has a compiled artifact");
+    expect(scope).toContain("one machine and one GPU");
+    expect(scope).toContain("It answers NOTHING about 'how well ... prevent leakage'");
+    // Identical across arms: it is a property of the driver rather than of an
+    // arm, and two rows of one gates file disagreeing about what the run
+    // measured would be the worse artifact. (Both arms here run the compiled
+    // judge; the Approach-B families are covered by the end-to-end run in
+    // `bakeoff-run.test.ts`, whose gates file is compared line by line with the
+    // reports this function returned.)
+    expect(report([rec()], "compiled-tier2-only").experimentScope).toBe(scope);
   });
 
   it("refuses records that disagree about the settings they ran under", () => {
@@ -2193,7 +2273,11 @@ describe("the gate report over an Approach-B arm", () => {
     expect(r.answeredCalls).toBe(1);
     expect(outcome(r, "p95-ttft").verdict).toBe("fail");
     expect(outcome(r, "p95-ttft").detail).toContain("judgedUnitChars");
-    expect(outcome(r, "p95-ttft").detail).toContain('judgedUnit "message"');
+    // The mismatch clause, which appears on a message-judged arm and not on a
+    // segment-judged one -- see "names the prompt-size mismatch only on the arm
+    // that has one". It used to be printed on both, quoting a `judgedUnit` that
+    // contradicted the sentence around it.
+    expect(outcome(r, "p95-ttft").detail).toContain("this arm is judged per MESSAGE");
     expect(r.promptTokens).toEqual({ p50: 1433, p95: 1433, max: 1433, min: 1433 });
     expect(outcome(r, "resolvable-rate").observed).toBe(1);
   });

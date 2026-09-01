@@ -44,7 +44,7 @@ The load-bearing constraint: **the eval harness must execute the exact same dete
 ```
 sih/
 ├── packages/
-│   ├── core/          # zero DOM, zero chrome.* — runs in Node AND browser (lint-enforced)
+│   ├── core/          # zero DOM, zero chrome.* — runs in Node AND browser (see §2.2 note)
 │   │   ├── policy/      # IR types, schema validator, resolver (provider-override merge)
 │   │   ├── segment/     # text → segments (code-fence / prose / kv-pair aware)
 │   │   ├── detect/      # tier0 rules · tier1 span tagger · tier2 judge · orchestrator · baselineB
@@ -59,7 +59,14 @@ sih/
 └── policies/          # policy documents (markdown) + compiled IRs
 ```
 
-TS/Python boundary is a **JSONL file**, never a shared library. `packages/core` importing `chrome.*` or `document` is a lint-enforced build error.
+TS/Python boundary is a **JSONL file**, never a shared library.
+
+**CORRECTED 2026-09-01 against what shipped.** This paragraph said `packages/core` importing `chrome.*` or `document` was a "lint-enforced build error". There is no linter in this repository — no ESLint/Biome/oxlint config, no `lint` script in any package, nothing in the lockfile — and the boundary is enforced two other ways, both of which run in `pnpm -r test` and `pnpm -r typecheck`:
+
+- **DOM and `chrome.*`: the typechecker.** `packages/core/tsconfig.json` sets `"lib": ["ES2022"]` with no `DOM`, so those are unresolved names in that package and `tsc --noEmit` fails.
+- **Node-only APIs: a test.** `@types/node` *is* in core's `types`, so `tsc` would accept `process`, `Buffer` and `node:` imports. `packages/core/test/firewall.test.ts` walks every `.ts` under `src/` and fails on all three.
+
+Neither mechanism covers the other's half. Adding a linter later is fine; describing one that does not exist is not.
 
 ### 2.3 Data flow (send path)
 
@@ -156,7 +163,9 @@ Tier 1:
 
 Tier 2 — **two-stage selection, not a fixed pick** (user decision: model family is itself an experiment variable):
 
-- **Stage 1 bake-off** (dev slice ~200 segments) — **AMENDED 2026-08-30 after measurement on `@mlc-ai/web-llm@0.2.84` in real Chrome.** Slate is **four** arms, not five: `Qwen3.5-2B` (2245 MB, fastest, recommended primary), `Phi-4-mini` (3438 MB), `Qwen3-4B` (3432 MB), `Ministral-3-3B` (2864 MB) — all q4f16_1 prebuilt MLC builds, each **executed end to end**, not merely present in the registry. Measured per arm: span P/R/F1 against gold, TTFT, decode tok/s, VRAM, cold-load, plus the reporting requirements below.
+- **Stage 1 bake-off** (dev slice ~200 segments) — **AMENDED 2026-08-30 after measurement on `@mlc-ai/web-llm@0.2.84` in real Chrome.** Slate is **four** arms, not five: `Qwen3.5-2B` (2,245 MB, fastest, recommended primary), `Phi-4-mini` (3,438 MB), `Qwen3-4B` (3,432 MB), `Ministral-3-3B` (2,864 MB) — all q4f16_1 prebuilt MLC builds, each **executed end to end**, not merely present in the registry.
+
+  **Those four numbers are VRAM, not download size, and this line used to read as though they were sizes.** They are `vram_required_MB` from `prebuiltAppConfig`, which is the only per-model figure the shipped library reports offline; `packages/tier2/src/manifest.ts` corrected the field's name to `vramRequiredMb` and this spec was not updated with it. A reader budgeting disk from them is out by more than a third: MEASURED through `navigator.storage.estimate()` on a profile holding all four arms, they occupy **7,490 MB** at that origin against 11,979 MB of VRAM figures, and on the one model measured alone a cold load of `Qwen3.5-2B` leaves 1,079 MB against its 2,245. Measured per arm: span P/R/F1 against gold, TTFT, decode tok/s, VRAM, cold-load, plus the reporting requirements below.
 
   **`Gemma-3-4b-it` is dropped.** Its weights exist (2.22 GB) but **no WebGPU lib is compiled** and it is absent from `prebuiltAppConfig`, so the shipped runtime cannot execute it. The only Gemma-3 build is `gemma3-1b-it`, a different weight class. Substitute `Qwen2.5-3B-Instruct` or `Qwen3-8B` if a fifth arm is wanted.
 

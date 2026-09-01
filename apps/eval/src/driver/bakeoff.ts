@@ -149,6 +149,32 @@ export const GATES = {
    * document, so `judgedUnit` on the report is what says the threshold was set
    * for different work. A reader who finds either one out of line with the
    * derivation knows the gate was applied to different work.
+   *
+   * ## AT THIS CORPUS SIZE THIS IS A MAXIMUM, NOT A p95
+   *
+   * `percentile` in `segments.ts` is nearest-rank: `rank = ceil(0.95 * n)`, and
+   * COMPUTED over every n, that rank IS n for all n <= 19 -- n = 20, which is
+   * `P95_EQUALS_MAX_BELOW` below, is the first sample size at which a p95 can
+   * fall under the maximum. So on any sample of 19 calls or fewer this threshold
+   * is applied to the arm's SLOWEST call, and one slow first call kills the arm.
+   *
+   * The samples this driver can currently produce are all under that. MEASURED
+   * over `corpora/fixtures/smoke.jsonl` with core's own segmenter and escalation
+   * policy: 13 items, 19 segments, of which the tier-0 families select 18 and
+   * the tier-2-only families 17 -- so at most 18 engine calls per compiled arm
+   * and 13 per Approach-B arm, before the repair retry. Every one of those is a
+   * sample size where p95 and max are the same number.
+   *
+   * This is stated rather than fixed, and both halves are deliberate. It is not
+   * fixed by switching to an interpolating percentile, which would invent a
+   * number between two observations on a 13-point sample; and it is not fixed by
+   * relaxing the gate, because the threshold's derivation (the ~1.1 kB prompt
+   * above) is unaffected by how the sample is summarised. What a reader needs is
+   * the sample size beside the verdict, and `GateOutcome.sample` carries it on
+   * the row: read `p95-ttft` with that number, and below 20 read the observed
+   * value as "the slowest call this arm made". The `p95-ttft` gate's own
+   * `detail` says so in words on any row where it is true, so a reader who never
+   * opens this file is told too.
    */
   maxP95TtftMs: 1500,
   /**
@@ -220,6 +246,22 @@ export const GATES = {
    */
   assertNonEmptyAfterExpiry: true,
 } as const;
+
+/**
+ * The sample size at which a nearest-rank p95 first differs from the maximum.
+ *
+ * COMPUTED, not chosen: `percentile` in `segments.ts` takes
+ * `rank = ceil(percent * n / 100)`, and `ceil(0.95 * n) === n` for every n from
+ * 1 to 19, first falling to n - 1 at n = 20. So on any sample smaller than this,
+ * "p95" and "max" are the same observation and `GATES.maxP95TtftMs` is a ceiling
+ * on the arm's slowest call.
+ *
+ * It lives here rather than inline because two places need it and they must not
+ * disagree: `GATES.maxP95TtftMs`'s docblock, where a reader checks what the
+ * threshold means, and the `p95-ttft` gate's `detail`, where a reader meets the
+ * number itself.
+ */
+const P95_EQUALS_MAX_BELOW = 20;
 
 /**
  * How far past its budget an interrupted call has been measured to settle.
@@ -1160,6 +1202,70 @@ export interface ArmRunContext {
   readonly tier2Config: RunRecord["tier2Config"];
 }
 
+/**
+ * The HARDWARE-COST half of the research question, taken off the load report.
+ *
+ * WHY THIS EXISTS. The project's stated deliverable is an answer to "how well
+ * can policy-conditioned, fully-local models prevent confidential-data leakage
+ * in LLM prompts, and at what latency AND HARDWARE COST?" -- and until this
+ * type, the hardware half was produced and thrown away. `Tier2LoadReport`
+ * carries all three of these numbers, `runBakeoff` already holds one per arm
+ * and asserts three other fields of it, and then nothing wrote them anywhere: no
+ * field of a record and no field of a gates row could answer "what did this arm
+ * cost to stand up". Every latency this bake-off reports is a per-CALL number
+ * measured after the model is already resident, so none of them contains the
+ * cost of getting it there.
+ *
+ * Three numbers and not four: `Tier2LoadReport.storageQuotaBytes` is a property
+ * of the browser profile and the machine's free disk (Chrome derives it from
+ * free space and it moves), not a cost this arm paid, so it is not here.
+ */
+export interface ArmLoadCost {
+  /**
+   * `Tier2LoadReport.loadMs`: wall clock for `CreateMLCEngine` alone.
+   *
+   * NOT NECESSARILY A COLD LOAD, and the name says `load` rather than
+   * `coldLoad` for that reason. web-llm caches weights in the Cache API under
+   * the page's origin, so this is a download plus a shader compile on a profile
+   * that has never held the model and a cache read plus a shader compile on one
+   * that has -- and the tier-2 specs run against a persistent profile precisely
+   * so the second is the usual case. Nothing in the load report distinguishes
+   * them; `originStorageBytes` below is the only signal in this block that the
+   * cache was already populated, and it is a weak one. Read a bake-off's
+   * numbers as the arm's WARM stand-up cost unless the profile was fresh.
+   */
+  readonly engineLoadMs: number;
+  /**
+   * `Tier2LoadReport.warmupMs`: wall clock for the one throwaway completion
+   * `loadTier2` makes before it returns.
+   *
+   * Separate from `engineLoadMs` because it is a different cost with a different
+   * cause -- the first generation on a freshly compiled pipeline -- and folding
+   * the two into one "startup" number would hide which half a slow arm paid.
+   */
+  readonly engineWarmupMs: number;
+  /**
+   * `Tier2LoadReport.storageUsageBytes`: `navigator.storage.estimate().usage`
+   * after this arm's load, in bytes.
+   *
+   * CUMULATIVE OVER THE ORIGIN, and therefore NOT this model's footprint. Every
+   * model the profile has ever cached is in this number, so across a slate run
+   * cheapest-first it climbs monotonically and the arm that ran last reports the
+   * whole slate. It is a footprint measurement of the PROFILE at the moment this
+   * arm loaded, which is the thing that actually runs out (`tier2-profile.ts`
+   * measured an ordinary Playwright context reporting a 3,221 MB quota against
+   * 7.49 GB of weights for the four pinned arms) -- and it is the only footprint
+   * number the browser exposes at all.
+   *
+   * For a per-MODEL size, read `TIER2_MODELS[].vramRequiredMb`, which is
+   * `prebuiltAppConfig`'s `vram_required_MB`. That is not copied here on
+   * purpose: it is a constant from the library, not an observation of this run,
+   * and `manifest.ts` records that it is 2.1x to 3.4x away from the download
+   * size on the two models where both were measured.
+   */
+  readonly originStorageBytes: number;
+}
+
 /** One tier's answer to "did this arm run it, and is there anything to score it with". */
 export interface TierGoldCoverage {
   readonly tier: Tier;
@@ -1286,6 +1392,27 @@ export interface ArmGateReport {
    * can score at all. Read it before reading `killedOnRunGates`.
    */
   readonly scoring: ArmScoringBoundary;
+  /**
+   * Which axes of spec 6.3's experiment matrix a run of this driver moves along,
+   * and which it holds fixed at one point.
+   *
+   * On the row for the same reason `scoring.verdictMeans` is: a gates file is
+   * read by someone who does not have the spec open, and the single most
+   * available misreading of it is that it answers the research question. See
+   * `EXPERIMENT_SCOPE`.
+   */
+  readonly experimentScope: string;
+  /**
+   * What this arm cost to stand up, off the page's own load report.
+   *
+   * The three fields below are the hardware half of "at what latency and
+   * hardware cost?", and every other number on this report is measured after
+   * the model is already resident. See `ArmLoadCost` for what each one is and,
+   * in two cases, what it is not.
+   */
+  readonly engineLoadMs: number;
+  readonly engineWarmupMs: number;
+  readonly originStorageBytes: number;
   readonly items: number;
   /** Items whose detection THREW. Their counters are absent, not zero. */
   readonly itemsErrored: number;
@@ -1491,6 +1618,18 @@ export interface GateReportInput {
    * on the real path the tie is as strong as `irHash` itself.
    */
   readonly entityTypes: PolicyIr["entityTypes"];
+  /**
+   * What the arm cost to stand up, as the PAGE reported it.
+   *
+   * The fifth thing no record carries, and the one that breaks the pattern of
+   * the four above: those are numbers this driver chose, and these three are
+   * observations the page made. `runBakeoff` holds the `Tier2LoadReport` they
+   * come from -- it already reads `servedModelId`, `config` and `callBudgetMs`
+   * off the same object and refuses the arm on any of the three -- so on the
+   * real path they are the load that produced the rows below them. Nothing here
+   * can check that, exactly as nothing can check `entityTypes`.
+   */
+  readonly load: ArmLoadCost;
 }
 
 /**
@@ -1551,6 +1690,48 @@ const VERDICT_MEANS =
   "metric is computed anywhere in this repository, because spec 2.2 makes the JSONL file the whole " +
   "boundary and puts scoring in Plan 8. An arm can pass every gate here and be the worst model on " +
   "the slate.";
+
+/**
+ * Which axes of spec 6.3's experiment matrix a run of this driver moves along.
+ *
+ * A CONSTANT and not a template, for the reason `VERDICT_MEANS` is one: nothing
+ * in it varies per arm, and a per-report sentence is a sentence two rows of one
+ * file can disagree on. Everything it asserts is a property of this driver or of
+ * what is committed here, checkable without running anything:
+ *
+ *   - the model axis is the only one a single `runBakeoff` crosses freely --
+ *     `options.models` and `options.families` -- and both are in `BakeoffPlan`;
+ *   - the backend axis has ONE point because this driver refuses to run at all
+ *     without WebGPU (see `runBakeoff`), and web-llm has no second backend;
+ *   - the policy axis has one usable point because `planBakeoff` throws on any
+ *     IR with no `semanticPredicates` and `policies/compiled/` holds one policy
+ *     of the three, `p-fin`, `scripts/compile-policies.ts` reporting on every run
+ *     that `p-med` and `p-corp` have no fixture answering their prompts;
+ *   - there is no accuracy metric in this repository, which is spec 2.2's
+ *     boundary and is what `scoring` on this row is about.
+ *
+ * The machine sentence is the one thing here that no code can check, and it is
+ * the reason the paragraph exists: a gates file names no hardware anywhere, and
+ * every latency and every load time in it is one GPU's.
+ */
+const EXPERIMENT_SCOPE =
+  "SCOPE OF THIS RUN, against spec 6.3's matrix. This driver crosses the MODEL axis (the four " +
+  "pinned arms) and the METHOD axis (compiled judge, tier 0 + compiled judge, Approach B, B + " +
+  "tier 0). It holds three axes at a single point and cannot cross them: the BACKEND axis, " +
+  "because tier 2 is WebGPU or absent and this driver refuses to run without it, so no WASM " +
+  "comparison exists at this tier; the POLICY axis, because it refuses an IR with no semantic " +
+  "predicate and one of the three policy documents has a compiled artifact; and the HARDWARE " +
+  "axis, because a run is one machine and one GPU and no field of this file names either. " +
+  "Against the project's research question -- 'how well can policy-conditioned, fully-local " +
+  "models prevent confidential-data leakage in LLM prompts, and at what latency/hardware cost?' " +
+  "-- a run answers this much: the models are policy-conditioned (at one policy) and fully local " +
+  "(every arm runs in the page and no prompt leaves the browser); the latency cost is per-call " +
+  "TTFT and decode rate on one machine, at the message budget in run.latencyBudgetMs rather than " +
+  "at a shipped policy's; and the hardware cost is engineLoadMs, engineWarmupMs and " +
+  "originStorageBytes on that one GPU. It answers NOTHING about 'how well ... prevent leakage': " +
+  "no leak-prevention rate, over-blocking rate, span P/R/F1, policy-adaptivity delta or utility " +
+  "number is computed anywhere in this repository, and none can be, because there is one policy " +
+  "and the corpus carries no gold for the tier every arm here runs.";
 
 /**
  * Which tiers this arm ran, and whether its rows carry gold to score them with.
@@ -2009,13 +2190,29 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         "take a percentile of; that is not a slow arm, it is an unmeasured one",
       measured: (observed) =>
         `p95 time-to-first-token over ${ttft.length} answered call(s) was ${observed.toFixed(0)}ms ` +
-        `against a ${GATES.maxP95TtftMs}ms ceiling; read it beside promptTokens and ` +
-        `judgedUnitChars, because the ceiling was derived at a ~1.1 kB prompt built from ONE ` +
-        `SEGMENT -- so on a message-judged arm (judgedUnit "${segments.unit}") it is not the ` +
-        `prompt size this number was taken at -- and beside ` +
-        `run.latencyBudgetTimesCompilerDefault, because these calls were ${budgetTaken} -- so the ` +
-        `SET of calls in this sample is not the set a compiled policy's budget would produce, and ` +
-        `the degradation that difference causes is measured nowhere in this run`,
+        `against a ${GATES.maxP95TtftMs}ms ceiling. ` +
+        // AT THIS SAMPLE SIZE THE p95 IS THE MAXIMUM, said where the number is
+        // read rather than only in `GATES.maxP95TtftMs`'s docblock. `percentile`
+        // is nearest-rank, `ceil(0.95 * n)` equals n for every n <= 19, and this
+        // corpus produces at most 18 calls per compiled arm and 13 per B arm --
+        // so on it this gate is applied to the arm's slowest call and one slow
+        // call kills the arm. The condition is on the SAMPLE and not on the
+        // corpus, so a run big enough for the two to differ stops saying it.
+        (ttft.length < P95_EQUALS_MAX_BELOW
+          ? `Over ${ttft.length} call(s) the nearest-rank p95 IS THE MAXIMUM -- ` +
+            `ceil(0.95*n) = n for every n < ${P95_EQUALS_MAX_BELOW} -- so this is the slowest ` +
+            `call this arm made, not a number with its tail trimmed. `
+          : "") +
+        `Read it beside promptTokens and judgedUnitChars, because the ceiling was derived at a ` +
+        `~1.1 kB prompt built from ONE SEGMENT` +
+        (segments.unit === "message"
+          ? `, and this arm is judged per MESSAGE, so that is not the prompt size this number was ` +
+            `taken at`
+          : ``) +
+        `; and beside run.latencyBudgetTimesCompilerDefault, because these calls were ` +
+        `${budgetTaken} -- so the SET of calls in this sample is not the set a compiled policy's ` +
+        `budget would produce, and the degradation that difference causes is measured nowhere in ` +
+        `this run`,
     }),
     numericGate({
       gate: "decode-rate",
@@ -2067,6 +2264,10 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     modelId,
     run,
     scoring: scoringBoundary(records, input.entityTypes),
+    experimentScope: EXPERIMENT_SCOPE,
+    engineLoadMs: input.load.engineLoadMs,
+    engineWarmupMs: input.load.engineWarmupMs,
+    originStorageBytes: input.load.originStorageBytes,
     items: records.length,
     itemsErrored,
     itemsAbandonedWorkInFlight: itemsAbandoned,
@@ -2246,6 +2447,102 @@ export function assertPageCanRun(plan: BakeoffPlan): void {
         `there is nothing for it to be shown`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// The entry point
+// ---------------------------------------------------------------------------
+
+/** `<repo>`, from `<repo>/apps/eval/src/driver/bakeoff.ts`. */
+function repoRoot(): string {
+  return join(import.meta.dirname, "..", "..", "..", "..");
+}
+
+/**
+ * The options a SLATE run uses, built from the environment.
+ *
+ * ## Why this exists, and it is not a convenience
+ *
+ * Until it did, `runBakeoff` had no caller outside the test suite and no command
+ * ran it: the four-model bake-off this whole module is for had never been
+ * executed, and the two things that HAVE run -- `bakeoff.spec.ts` (one model,
+ * two items) and `baseline.spec.ts` (one model, four families, three items) --
+ * are pipe-integrity checks that a reader can easily mistake for it. An
+ * apparatus with no way to invoke it is an apparatus nobody can tell apart from
+ * a finished experiment.
+ *
+ * ## The defaults, and what each is
+ *
+ * `models` defaults to every id in `TIER2_MODELS` and `families` is left unset,
+ * so `planBakeoff` applies its own `["compiled"]` -- which together is exactly
+ * the slate spec 4.2 amended to four arms. Everything else defaults to the only
+ * artifact in the repository that fits: the 13-item smoke corpus and the
+ * `semantic` IR, which is the one `runBakeoff` can pair a corpus with unaided
+ * (`policies/compiled/p-fin.ir.json` is the other IR here with a semantic
+ * predicate, and it needs `SIH_BAKEOFF_IR_PATH` and `SIH_BAKEOFF_POLICY_PATH`
+ * together).
+ *
+ * `runId` is REQUIRED and has no default, deliberately. It names a measurement
+ * and it is half of every output file's name; a generated one (a timestamp, say)
+ * would make two runs of the same slate look like two different experiments, and
+ * `runBakeoff` refuses to overwrite an existing file precisely so that a repeat
+ * is a decision rather than an accident.
+ *
+ * `itemTimeoutMs` defaults to 250,000, which is above the 121,020 ms bound
+ * `semantic-ir.json`'s 120,000 ms message budget and the page's 60,000 ms
+ * per-call budget produce -- `assertItemTimeoutMs` re-derives that from the plan
+ * and throws if a caller's number is under it, so this default is checked rather
+ * than trusted. It exists to catch a wedge and is not a latency target.
+ *
+ * ## What it does NOT do
+ *
+ * It validates nothing itself, and that is the point: `planBakeoff` already
+ * refuses an unknown model id (through `resolveTier2Config`), an unknown family
+ * (`familyShape`), an unpaired policy document, an IR with no semantic predicate
+ * and an `itemTimeoutMs` that is not a usable timer value -- all before a model
+ * loads. A second copy of any of those checks here would be a second definition
+ * free to drift from the one the run actually obeys.
+ */
+export function slateBakeoffOptions(env: Record<string, string | undefined>): BakeoffOptions {
+  const runId = env["SIH_BAKEOFF_RUN_ID"];
+  if (runId === undefined || runId === "") {
+    throw new Error(
+      "SIH_BAKEOFF_RUN_ID is required and names the measurement: it is half of every output " +
+        "file's name, and runBakeoff refuses to overwrite a file an earlier run wrote, so a " +
+        "generated id would turn a repeat of one experiment into two that look unrelated",
+    );
+  }
+  const list = (name: string): readonly string[] | undefined => {
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === "") return undefined;
+    return raw.split(",").map((part) => part.trim()).filter((part) => part !== "");
+  };
+  const number = (name: string, fallback: number): number => {
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    // `Number` and not `parseInt`: `parseInt("250s")` is 250, and a truncated
+    // timeout that still runs is worse than one that refuses. NaN falls through
+    // to `assertItemTimeoutMs`, which names the field and the reason.
+    return Number(raw);
+  };
+  const irPath = env["SIH_BAKEOFF_IR_PATH"];
+  const policyPath = env["SIH_BAKEOFF_POLICY_PATH"];
+  return {
+    runId,
+    outDir: env["SIH_BAKEOFF_OUT_DIR"] ?? join(repoRoot(), "runs"),
+    corpus: env["SIH_BAKEOFF_CORPUS"] ?? join(repoRoot(), "corpora", "fixtures", "smoke.jsonl"),
+    provider: env["SIH_BAKEOFF_PROVIDER"] ?? "claude",
+    models: list("SIH_BAKEOFF_MODELS") ?? TIER2_MODELS.map((m) => m.id),
+    // Omitted rather than defaulted, so `DEFAULT_FAMILIES` stays the one
+    // definition of what a slate runs.
+    ...(list("SIH_BAKEOFF_FAMILIES") === undefined
+      ? {}
+      : { families: list("SIH_BAKEOFF_FAMILIES") as readonly ArmFamily[] }),
+    irName: env["SIH_BAKEOFF_IR"] ?? DEFAULT_IR_NAME,
+    ...(irPath === undefined || irPath === "" ? {} : { irPath }),
+    ...(policyPath === undefined || policyPath === "" ? {} : { policyPath }),
+    itemTimeoutMs: number("SIH_BAKEOFF_ITEM_TIMEOUT_MS", 250_000),
+  };
 }
 
 export interface BakeoffResult {
@@ -2551,6 +2848,17 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
         // returned. So the tier each gold entityType is scored at comes from
         // the same artifact every record's `irHash` names.
         entityTypes: ir.entityTypes,
+        // The hardware half of the research question, off the SAME load report
+        // whose `servedModelId`, `contextWindowSize` and `callBudgetMs` were
+        // checked above -- so these three numbers describe the engine that
+        // produced the rows beside them, not a later or an earlier one. Before
+        // this the page measured all three and the driver dropped them, and
+        // neither output file could answer "at what hardware cost".
+        load: {
+          engineLoadMs: load.loadMs,
+          engineWarmupMs: load.warmupMs,
+          originStorageBytes: load.storageUsageBytes,
+        },
       }),
     );
 

@@ -141,11 +141,16 @@ function scriptedPage(script: PageScript = {}): { page: Page; unloads: () => num
       },
       callBudgetMs: script.callBudgetMs ?? options.callBudgetMs,
       servedModelId: script.servedModelId ?? options.modelId,
-      loadMs: 1,
-      warmupMs: 1,
+      // Three values that share no digits, and not the 1/1/0 they were. These
+      // are the hardware-cost half of the research question, and `runBakeoff`
+      // now carries them onto the gates row -- so a report that invented them,
+      // or copied one field into another, has to be a red test rather than a
+      // plausible-looking number in an output file nobody re-derives.
+      loadMs: 4_321,
+      warmupMs: 765,
       warmupFinishReason: "stop",
       warmupCompletionTokens: 5,
-      storageUsageBytes: 0,
+      storageUsageBytes: 9_876_543_210,
       storageQuotaBytes: 0,
     }),
     // COUNTED rather than a bare no-op: `runBakeoff` releases each arm's engine
@@ -266,6 +271,27 @@ describe("runBakeoff, against a scripted page", () => {
     const gates = readFileSync(result.gatesPath, "utf8").trim().split("\n");
     expect(gates).toHaveLength(2);
     expect(JSON.parse(gates[0]!)).toEqual(JSON.parse(JSON.stringify(result.reports[0])));
+  });
+
+  it("carries the page's own load cost onto every gates row", async () => {
+    // The hardware half of "at what latency and hardware cost?". The page
+    // measured all three of these on every arm and this driver dropped them, so
+    // neither output file could answer the question at all -- every other
+    // latency here is a per-CALL number taken once the model is already
+    // resident.
+    //
+    // Asserted against the SCRIPTED page's three distinct values, so this is a
+    // check that the driver reads the load report rather than that it can
+    // produce a plausible number: with 1/1/0 in the fake, a report hardcoding
+    // any of them, or copying `engineLoadMs` into `engineWarmupMs`, passed.
+    const dir = outDir();
+    const { page } = scriptedPage();
+    const result = await runBakeoff(page, bakeoffOptions(dir, { families: ["compiled", "compiled-tier2-only"] }));
+    for (const row of result.reports) {
+      expect(row.engineLoadMs).toBe(4_321);
+      expect(row.engineWarmupMs).toBe(765);
+      expect(row.originStorageBytes).toBe(9_876_543_210);
+    }
   });
 
   it("says on every gates line that this corpus cannot score the tier the arms ran", async () => {

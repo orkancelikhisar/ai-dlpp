@@ -55,9 +55,24 @@ a finding that matters beyond this project:
 ![WebGPU returns wrong logits on 3 of 4 loadable rungs](docs/assets/webgpu-divergence.svg)
 
 `onnxruntime-web`'s WebGPU execution provider **silently returns wrong logits on three of the
-four model variants that load at all**. Not slower, not slightly off — a collapse, where every
-word scores ≈0.46 and no error is raised. It survives review only because one rung agrees
-*exactly* under identical page code, which is what proves the harness is not the cause.
+four model variants that load at all** — by 8.352, 8.134 and 30.154 on the raw logits tensor,
+against a fourth rung that agrees to 0.000 under identical page code. (Those four differences
+are Plan 4's scratch-harness measurement, pinned as `BACKEND_AGREEMENT` in
+`apps/eval/src/driver/main.ts`; nothing in the committed suite re-derives the tensor diff
+itself.) What the suite *does* re-run on every pass is the consequence, and it is not subtle:
+end to end at the same threshold on the same message, all three rungs return different spans,
+different labels and different confidences from WASM, and **no error is raised on any of them**.
+Session creation succeeds, the run resolves, and the logits are finite and correctly shaped.
+
+The ≈0.46 figure in the chart is **one rung's**, and reading it as all three would be reading it
+wrong: it is `gliner-pii-base-uint8`'s raw logit range collapsing from `[−30.46, +2.05]` on WASM
+to `[−0.36, −0.16]` on WebGPU, whose sigmoid is ≈0.46 for every word. That range was taken by a
+scratch harness on a short message and is not re-derivable from the committed suite; what the
+suite does reproduce, byte-identical across runs, is that each divergent rung goes wrong its own
+way — end to end at threshold 0.02, `gliner-pii-edge` scores 0.10–0.20, `gliner-pii-edge-uint8`
+0.34–0.48 and `gliner-pii-base-uint8` 0.02–0.07, against three spans apiece on WASM. What makes
+the finding survive review is the rung that agrees *exactly* under identical page code, which is
+what proves the harness is not the cause.
 
 Anyone benchmarking a transformer in the browser on WebGPU should check this before trusting
 their numbers.
@@ -77,14 +92,25 @@ package. That is a deliberate and expensive choice.
 
 Numbers measured under `onnxruntime-node` would describe **software nobody runs**, and WebGPU
 latency cannot be measured from Node at all. So `apps/eval` may never fork, stub, or
-re-implement any detection logic — it reaches detection only through a single page API, and the
-WebGPU finding above is exactly the class of defect that a Node-only harness would have
-reported as a clean result.
+re-implement any detection logic, and **every number it reports comes from the real packages
+running in real Chrome**, reached through the page API in `src/page/main.ts`. The WebGPU
+finding above is exactly the class of defect that a Node-only harness would have reported as a
+clean result.
 
-The TypeScript/Python boundary is a **JSONL file**, never a shared library. The harness emits
-records; all scoring happens separately in Python. A record carries the findings, the gold
-spans, the timings, the resolved config, the IR hash, and the per-item loss counters — enough
-that a coverage claim can be re-derived from the file alone.
+Two honest qualifications on that rule, because it is easy to state more strongly than it
+holds. The page API is a surface of about a dozen functions, not one call. And the driver does
+import `@sih/core` and run it **in Node** — the segmenter, the escalation policy and `runTier0`
+— to *plan* a run: to size the per-item ceiling and to compute the segment distribution a gate
+is derived from. That is core's own code rather than a second copy of it, and none of it
+produces a measured number; the measurements all come from the browser.
+
+The TypeScript/Python boundary is a **JSONL file**, never a shared library: the harness emits
+records and computes no metric. A record carries the findings, the gold spans, the timings, the
+resolved config, the IR hash, and the per-item loss counters — enough that a coverage claim can
+be re-derived from the file alone. **The Python side does not exist yet.** There is no
+`analysis/` directory and no `.py` file in this repository; spec §2.2 puts scoring in Plan 8,
+and until that plan runs, "scoring happens separately in Python" is a design decision rather
+than a description of anything shipped.
 
 ---
 
@@ -92,7 +118,7 @@ that a coverage claim can be re-derived from the file alone.
 
 | Path | What lives there |
 |---|---|
-| `packages/core` | The detection runtime. Zero DOM, zero Node — lint- and test-enforced, because it runs in both. Policy IR, segmenter, tier-0 rules, merge, action resolution, pseudonymization vault, streaming rehydrator. |
+| `packages/core` | The detection runtime. Zero DOM, zero Node — enforced two ways, because it runs in both (see below). Policy IR, segmenter, tier-0 rules, merge, action resolution, pseudonymization vault, streaming rehydrator. |
 | `packages/compiler` | Policy document → IR. Node-only CLI. The one component allowed to call a frontier model, with an anti-hallucination gate requiring every rule to quote its source clause verbatim. |
 | `packages/tier1` | The GLiNER-class ONNX span tagger. Browser-only. Word splitter, per-word encoder, two decoders (the two model families express spans differently), and the span mapper. |
 | `apps/eval` | Playwright harness: corpus in, JSONL out. Computes no metrics. |
@@ -100,6 +126,22 @@ that a coverage claim can be re-derived from the file alone.
 | `policies/` | Three deliberately disagreeing policy documents (finance, healthcare, generic corporate) plus the provider manifest. `policies/compiled/` holds compiled artifacts — see the caveat below. |
 | `corpora/` | Corpus fixtures and, later, the build pipeline. Never raw third-party data. |
 | `docs/superpowers/` | The design spec and the per-plan implementation plans, including their deviation logs. |
+
+### How core's runtime boundary is actually enforced
+
+**There is no linter in this repository** — no ESLint, Biome or oxlint config, no `lint` script
+in any package, and no linter in the lockfile. Earlier drafts of this file and of the design
+spec called the boundary "lint-enforced"; it is enforced, by two mechanisms that both run in
+`pnpm -r test` and `pnpm -r typecheck`:
+
+- **DOM and `chrome.*` — the typechecker.** `packages/core/tsconfig.json` sets
+  `"lib": ["ES2022"]` with no `DOM`, so `document`, `window` and `chrome` are unresolved names
+  in that package and `tsc --noEmit` fails on them.
+- **Node-only APIs — a test.** `@types/node` *is* in core's `types`, so the typechecker would
+  accept `process`, `Buffer` and `node:` imports. `packages/core/test/firewall.test.ts` walks
+  every `.ts` file under `src/` and fails on any of the three.
+
+Neither covers what the other does, which is why both are named.
 
 ---
 
@@ -110,7 +152,7 @@ Eight plans; four are done.
 | | Plan | State |
 |---|---|---|
 | 1 | Core foundation | **done** |
-| 2 | Vault, pseudonymization, rehydration | **done** — Plans 1&nbsp;+&nbsp;2 are `packages/core`, 276 tests between them |
+| 2 | Vault, pseudonymization, rehydration | **done** — Plans 1&nbsp;+&nbsp;2 built `packages/core`, which held 276 tests when Plan 2 closed. It holds 352 now: Plan 5 added the degraded channel, message scope and the escalation policy to it, so the count is no longer attributable to these two plans. |
 | 3 | Policy compiler + policy suite | **done** offline — 137 tests. The live compile against a frontier model is deferred by choice. |
 | 4 | Tier-1 span tagger + eval harness | **done** — `packages/tier1` 219 tests. `apps/eval` is shared with Plan 5 and its count is no longer attributable to one plan. |
 | 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (255 tests); the compiler-versus-prompting head-to-head runs, see below |
@@ -118,8 +160,10 @@ Eight plans; four are done.
 | 7 | Corpus pipeline | not started |
 | 8 | Evaluation and analysis | not started |
 
-**1,259 tests** — 1,180 vitest (core 352, tier2 255, tier1 219, eval 217, compiler 137) plus 79
-Playwright specs against real Chrome. Typechecking clean across five projects.
+**1,266 tests** — 1,185 vitest (core 352, tier2 255, eval 222, tier1 219, compiler 137) plus 81
+Playwright specs against real Chrome, of which 80 run and **one is skipped by default**: the
+four-model bake-off, which is a deliberate command rather than part of a suite run (see below).
+Typechecking clean across five projects.
 
 ### What is deliberately *not* claimed yet
 
@@ -157,6 +201,70 @@ Playwright specs against real Chrome. Typechecking clean across five projects.
   accuracy in either direction, and says so.
 - **The backend axis of the experiment is compromised** by the WebGPU defect above, and is
   reported as a finding rather than quietly dropped.
+- **The four-model bake-off has never been run.** `runBakeoff` is complete and tested, and as
+  of this commit there is a command for it —
+  `SIH_BAKEOFF=1 SIH_BAKEOFF_RUN_ID=<name> pnpm -C apps/eval bakeoff` — but nothing in this
+  repository has executed the four-arm slate. What *has* run is two pipe-integrity checks that
+  are easy to mistake for it: `bakeoff.spec.ts` (one model, two items) and `baseline.spec.ts`
+  (one model, four method families, three items). The slate spec is skipped unless
+  `SIH_BAKEOFF=1`, and a skipped Playwright suite still exits 0 — "the specs passed" has never
+  meant "the bake-off ran".
+- **`SemanticPredicate.scope: "message"` is declared by the IR and not honoured by the judge**,
+  and this is not a corner case. `WebLlmJudge` evaluates every predicate against one SEGMENT
+  and reports `scopesJudged: ["segment"]`, so a message-scoped predicate produces a
+  `scope-unjudged` notice on every message. The only compiled real policy in this repository,
+  `policies/compiled/p-fin.ir.json`, declares exactly one semantic predicate and its scope is
+  `"message"`. So moving the bake-off off the hand-written `semantic-ir.json` fixture — whose
+  one predicate is segment-scoped — files 100% of the tier-2 work as unjudged. Nothing is
+  missing from the interface: `JudgeRequest.text` already carries the whole message verbatim,
+  precisely so a message-scoped predicate is answerable, and the judge simply does not use it
+  that way yet.
+- **The gates' `p95` is a maximum at this corpus size.** The percentile is nearest-rank, and
+  `ceil(0.95 × n) = n` for every n ≤ 19 — this corpus produces at most 18 engine calls per
+  compiled arm and 13 per Approach-B arm, so `maxP95TtftMs` is a ceiling on an arm's single
+  slowest call and one slow call kills it. Every gate row carries its `sample`, and the
+  `p95-ttft` row says so in words whenever it is true.
+- **The xgrammar #807 counter was never built, and this corpus could not feed it.** The carried
+  risk asks for an error counter over ≥ 200 grammar-constrained calls. No such counter exists,
+  and a four-model slate over the shipped corpus makes 4 × 18 = 72 calls before repair retries.
+  The measurement that risk asks for needs Plan 7's corpus.
+
+---
+
+## What a run of this repository measures — and what it cannot
+
+Spec §6.3 defines an experiment matrix over arms × backends × policies, on a full test set. A
+run of what is in this repository today is **a single point on most of those axes**, and that is
+worth stating plainly beside any number it produces. The same paragraph is on every row of the
+gates file a bake-off writes, as `ArmGateReport.experimentScope`, so it travels with the data.
+
+What a run **does** cross: the **model** axis (the four pinned tier-2 arms) and the **method**
+axis (compiled judge, tier 0 + compiled judge, Approach B, B + tier 0). Those are real
+comparisons and they are the point of the apparatus.
+
+What it holds at one point and cannot cross:
+
+- **Backend.** Tier 2 is WebGPU or absent — `web-llm` throws at init without an adapter and the
+  driver refuses to run — so there is no WASM comparison at this tier at all. (Tier 1 *is*
+  measured on both, which is how the divergence above was found.)
+- **Policy.** The bake-off refuses an IR with no semantic predicate, and one of the three policy
+  documents has a compiled artifact. The policy-adaptivity metric, which is the project's
+  novel claim, needs all three.
+- **Hardware.** One machine, one GPU. No field of any output file names either.
+- **Corpus.** 13 items, 19 segments, seven gold spans — five at tier 0, two at tier 1, **none at
+  tier 2**, which is the tier every bake-off arm runs.
+
+Against the research question — *how well can policy-conditioned, fully-local models prevent
+confidential-data leakage in LLM prompts, and at what latency and hardware cost?* — a run
+answers this much:
+
+| Clause | Answered? |
+|---|---|
+| *policy-conditioned* | Yes, at one policy. The IR's entity classes and predicates really do drive every tier. |
+| *fully-local* | Yes. Every arm runs in the page; no prompt leaves the browser, and the frontier model is used only at compile time. |
+| *prevent confidential-data leakage* | **No.** No leak-prevention rate, over-blocking rate, span P/R/F1 or adaptivity delta is computed anywhere here, and none can be until Plan 7 labels a corpus and Plan 8 scores it. |
+| *at what latency cost* | Partly. Per-call TTFT and decode rate on one machine, taken under whatever `latencyBudgetMs` the IR carries — the default fixture's is 24× the budget the compiler emits for a policy that names none, and the degradation a shipped budget would cause is measured nowhere. |
+| *at what hardware cost* | Partly. Engine load time, warm-up time and origin storage per arm, on that one GPU. |
 
 ---
 
@@ -186,17 +294,28 @@ pnpm -r test          # apps/eval drives real Chrome, and tier 2 drives a real G
 pnpm -r typecheck
 ```
 
-The tier-1 model weights (1.4 GB across six variants) are **not** in this repository. They are
-pinned by content hash — every file each model needs, at an immutable upstream revision — and
-fetched on demand:
+The tier-1 model weights are **not** in this repository: 1.51 GB of `.onnx` across the six
+pinned variants, 1.56 GB with the tokenizer and config files each needs. They are pinned by
+content hash, at an immutable upstream revision, and fetched on demand:
 
 ```bash
 pnpm -C packages/tier1 exec vite-node ../../scripts/fetch-models.ts
 ```
 
-Tests that need weights skip cleanly when they are absent. Tier-2 weights (7.5 GB across four
-pinned arms) are fetched by `@mlc-ai/web-llm` into a browser profile outside the repository;
-tier-2 specs skip when WebGPU is unavailable, which is *absence*, not degradation.
+Tests that need weights skip cleanly when they are absent. Tier-2 weights are fetched by
+`@mlc-ai/web-llm` into a browser profile outside the repository — measured through
+`navigator.storage.estimate()` with all four pinned arms cached, they occupy **7.49 GB** at that
+origin. Tier-2 specs skip when WebGPU is unavailable, which is *absence*, not degradation.
+
+The four-model bake-off is a separate, deliberate command, because it is four model loads and
+hours of GPU time:
+
+```bash
+SIH_BAKEOFF=1 SIH_BAKEOFF_RUN_ID=<name> pnpm -C apps/eval bakeoff
+```
+
+It writes one JSONL file per arm plus a gates file into `runs/`, refuses to overwrite either,
+and computes no metric. It has not been run; see "deliberately not claimed yet" above.
 
 Compiled policy artifacts are regenerated offline, from the committed model-response fixtures
 and with no network call:
