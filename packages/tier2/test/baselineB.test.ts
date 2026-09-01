@@ -457,6 +457,33 @@ describe("createBaselineB: what the prompt carries", () => {
       expect(bPrompt).toContain(line);
     }
     expect(bPrompt).toMatch(/If nothing in the message is restricted by the policy/);
+
+    // THE MIRROR, and until this round there was none. The map above rewrites
+    // the JUDGE's side, so a judge bullet that has ALREADY drifted to B's noun
+    // is left alone by the substitution and then found in B's prompt verbatim
+    // -- the check passed on exactly the change it exists to refuse. MEASURED
+    // on the version before this one: renaming "passage" to "message" in all
+    // four of the judge's remaining rule bullets left the whole tier2 suite
+    // green, and so did renaming it in one. That is the compiled arm being told
+    // to quote from a message it is never shown -- it is handed ONE PASSAGE and
+    // its own task sentence says so -- with no test and no report row recording
+    // the change of method.
+    //
+    // So the same comparison is run the other way: every rule bullet B states
+    // must appear in the judge's with the substitution reversed.
+    const mirrored = bPrompt
+      .split("\n")
+      .filter((line) => line.startsWith("- ") || line.startsWith("  "))
+      .map((line) => line.replaceAll("message", "passage").replaceAll("entityType", "predicateId"));
+    // Same count both ways, which is the third thing neither direction's
+    // containment can see on its own: a rule bullet ADDED to one arm only.
+    expect(mirrored.length).toBe(shared.length);
+    for (const line of mirrored) {
+      // B's half of the one bullet that cannot map, for the same reason.
+      if (line.includes("restricted by the policy")) continue;
+      expect(judgeRules).toContain(line);
+    }
+    expect(judgeRules).toMatch(/If nothing in the passage satisfies any predicate/);
   });
 
   it("lists the entity vocabulary and never the IR's definitions or examples", async () => {

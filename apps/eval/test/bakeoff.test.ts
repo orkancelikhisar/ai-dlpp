@@ -2901,6 +2901,21 @@ describe("a gates row reports the unit its arm was actually judged on", () => {
     // This arm DOES have a segment loop, so the skip counter is a number again.
     expect(r.ladder.unitsSkipped).toBe(0);
     expect(r.escalation.applies).toBe(true);
+    // The p95 row's unit caveat, on the ONLY unit that gets the half-and-half
+    // wording. Asserted here because the caveat used to interpolate
+    // `segments.unit` and the interpolation was exercised at one value only:
+    // replacing it with the literal "MESSAGE" survived the whole eval suite,
+    // which would have printed "judged per MESSAGE" on an arm judged per
+    // segment AND message -- mislabelling the gate's applicability in the exact
+    // sentence a reader is sent to in order to check it was applied to
+    // comparable work.
+    const detail = outcome(r, "p95-ttft").detail;
+    expect(detail).toContain("this arm is judged per SEGMENT+MESSAGE");
+    // And it does NOT say what the message-only arm's row says: half this arm's
+    // calls ARE the one-segment prompt the ceiling was derived at, so "that is
+    // not the prompt size this number was taken at" is false here.
+    expect(detail).not.toContain("judged per MESSAGE,");
+    expect(detail).toContain("comparable for the segment half of the sample");
     // And neither single-unit distribution is accepted for it.
     for (const wrong of [SEGMENTS_TIER0, MESSAGES_B_TIER0]) {
       expect(() =>

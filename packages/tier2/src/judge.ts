@@ -369,13 +369,19 @@ const ZERO_COUNTERS: Counters = {
  * PINNED in `prompts.test.ts`, against a contract rather than a snapshot: every
  * property this prompt has to state must match some line, and every line must
  * match some property, so a dropped instruction and an added one both fail while
- * a typo fix does not. That file also asserts the fixed-for-every-call claim
- * this first line makes -- the message-scope call, each segment call and the
- * repair retry all carry the identical system turn -- and checks the wire-shape
- * line's keys against `JUDGE_SCHEMA`, which is the grammar the logit mask is
- * compiled from. Read it before rewording anything below: this prompt is one
- * half of the bake-off's independent variable, and until that file existed a
- * wholesale rewrite of it passed the entire suite.
+ * a typo fix does not. Each clause there keys on the words carrying the
+ * instruction's POLARITY and not on the nouns around them, so a rule REVERSED in
+ * place -- which is a dropped instruction that leaves its keywords behind --
+ * fails too; MEASURED before that keying was tightened, "Never invent one." ->
+ * "Invent one where none fits." and "quote must be copied" -> "quote need not be
+ * copied" each survived the whole suite in both arms at once. That file also
+ * asserts the fixed-for-every-call claim this first line makes -- the
+ * message-scope call, each segment call and the repair retry all carry the
+ * identical system turn -- and checks the wire-shape line's keys against
+ * `JUDGE_SCHEMA`, which is the grammar the logit mask is compiled from. Read it
+ * before rewording anything below: this prompt is one half of the bake-off's
+ * independent variable, and until that file existed a wholesale rewrite of it
+ * passed the entire suite.
  *
  * The word floor is interpolated from `MINIMUM_CANDIDATE_WORDS` rather than
  * written out, so a second copy here cannot drift from the one enforced. Same

@@ -28,13 +28,20 @@ import { fakeEngine, predicateIr } from "./helpers.js";
  * What DID exist, and what it covers, since it is easy to over- or under-state.
  * `baselineB.test.ts`'s "asks for a quote under the same rules the compiled arm
  * asks under" reads both system turns off real calls and requires every RULE
- * BULLET of the judge's to appear in B's with two nouns substituted. That is a
- * real assertion and it is RELATIVE: it fires when one arm's bullets drift and
- * the other's do not. It cannot fire on the two arms drifting together, and its
- * filter -- lines starting `"- "` or two spaces -- excludes the task sentences,
- * the JSON-only instruction, the wire-shape line and the `Rules:` header
- * outright. Those seven lines of the judge's prompt and six of B's were pinned
- * by nothing at all.
+ * BULLET of each arm's to appear in the other's with two nouns substituted.
+ * That is a real assertion and it is RELATIVE: it fires when one arm's bullets
+ * drift and the other's do not. It fires in BOTH DIRECTIONS only as of this
+ * round -- it used to normalise the JUDGE's side alone, which made a judge
+ * bullet that had already drifted toward B's noun match B's unchanged: MEASURED,
+ * renaming "passage" to "message" in all four of the judge's remaining rule
+ * bullets left the whole 281-test suite green, and so did doing it to one. It
+ * still cannot fire on the two arms drifting TOGETHER, and its filter -- lines
+ * starting `"- "` or two spaces -- excludes each arm's two task sentences, the
+ * JSON-only instruction, the wire-shape line and the `Rules:` header outright.
+ * COUNTED off both real prompts: 12 non-blank lines each, 7 of them filtered in
+ * and 5 excluded, and those 5 a side were pinned by nothing at all. (An earlier
+ * version of this paragraph said seven and six; neither number was either
+ * prompt's.)
  *
  * ## What is asserted here, and why not a snapshot
  *
@@ -53,11 +60,30 @@ import { fakeEngine, predicateIr } from "./helpers.js";
  * The second half is what makes this a pin rather than a spot-check: the prompt
  * is accounted for line by line, and the account is in English next to the test.
  *
+ * ## Keyed on POLARITY, not on nouns
+ *
+ * Every `carriedBy` below keys on the words that carry the instruction's SENSE
+ * -- "quote must be copied", "never invent", "every span", "satisfies one of",
+ * "is discarded", "from the passage" -- and not on the nouns those words sit
+ * around. Keyed on the nouns alone, which is how this contract read when it
+ * landed, a rule could be REVERSED while keeping every word the clause tested
+ * for; and a reversal is a dropped instruction that leaves its keywords behind,
+ * which is exactly the failure the first half above advertises catching.
+ * MEASURED against that earlier version, each of these survived all 281 tests:
+ * "Never invent one." -> "Invent one where none fits."; "quote must be copied"
+ * -> "quote need not be copied" (both of those applied to BOTH arms, as a real
+ * edit would be, so the cross-arm parity check could not fire either); and
+ * "Report every span of the passage that satisfies one of the predicates." ->
+ * "Report only spans of the passage that satisfies none of the predicates."
+ * Each of the three fails here now.
+ *
  * ## What it does NOT catch, stated so nobody reads it as more than it is
  *
- *   - **Rewording INSIDE a matched line.** "Report every span ... that satisfies
- *     one of the predicates. Be generous." still satisfies the span/satisfies
- *     clause. Only whole added LINES are caught.
+ *   - **An ADDITION inside a matched line.** "Report every span ... that
+ *     satisfies one of the predicates. Be generous." still satisfies that
+ *     clause, because every phrase the clause keys on is still standing. Only
+ *     whole added LINES are caught. What a rewording may NOT do is drop or
+ *     reverse one of those phrases.
  *   - **Order.** The clauses are unordered; a prompt with the same instructions
  *     rearranged passes.
  *   - **Effect.** This is a claim about text, not about how a model answers it.
@@ -65,8 +91,12 @@ import { fakeEngine, predicateIr } from "./helpers.js";
  *     satisfying the same contract can still produce different findings.
  *   - **The two arms against each other.** Deliberately: B is shown a document
  *     and asked about every entityType, the judge is shown predicates and a
- *     passage, and the contracts differ where the methods do. The cross-arm
- *     rule-bullet parity check lives in `baselineB.test.ts` and stays there.
+ *     passage, and the contracts differ where the methods do. What each
+ *     contract DOES pin is its own arm's noun -- the judge's clauses require
+ *     "the passage" and B's "the message" wherever the rule names the thing
+ *     quoted from -- so a one-sided rename fails here too, and not only in the
+ *     cross-arm rule-bullet parity check, which lives in `baselineB.test.ts`
+ *     and stays there.
  *
  * Both prompts are read off REAL calls rather than off the exported constants,
  * so a change that reaches the model has to reach these tests too.
@@ -173,16 +203,21 @@ function assertForbids(label: string, prompt: string, taboos: readonly PromptTab
  */
 const JUDGE_CONTRACT: readonly PromptClause[] = [
   {
-    states: "the task is an AUDIT of ONE PASSAGE against declared POLICY PREDICATES",
-    carriedBy: (l) => /\baudit/i.test(l) && /\bpassage\b/i.test(l) && /\bpredicates?\b/i.test(l),
+    states: "the task is an AUDIT of ONE PASSAGE AGAINST declared POLICY PREDICATES",
+    carriedBy: (l) =>
+      /\baudit\b/i.test(l) &&
+      /\bone passage\b/i.test(l) &&
+      /\bagainst\b/i.test(l) &&
+      /\bpredicates?\b/i.test(l),
   },
   {
-    states: "the answer is every SPAN of that passage that SATISFIES one of them",
-    carriedBy: (l) => /\bspans?\b/i.test(l) && /satisf/i.test(l),
+    states: "the answer is EVERY span of that passage that SATISFIES ONE OF them",
+    carriedBy: (l) =>
+      /\bevery span\b/i.test(l) && /\bof the passage\b/i.test(l) && /satisfies one of/i.test(l),
   },
   {
     states: "the answer is JSON and NOTHING ELSE",
-    carriedBy: (l) => /\bJSON\b/.test(l) && /nothing else/i.test(l),
+    carriedBy: (l) => /answer with JSON/i.test(l) && /nothing else/i.test(l),
   },
   {
     states: "the wire shape, spelled out (its keys are checked against JUDGE_SCHEMA below)",
@@ -193,32 +228,43 @@ const JUDGE_CONTRACT: readonly PromptClause[] = [
     carriedBy: (l) => /^rules:$/i.test(l.trim()),
   },
   {
-    states: "the label must be one of the ids LISTED, and never INVENTED",
-    carriedBy: (l) => /\bids?\b/i.test(l) && /listed/i.test(l) && /invent/i.test(l),
+    states: "the label MUST BE one of the ids listed, and is NEVER INVENTED",
+    carriedBy: (l) =>
+      /must be one of the ids/i.test(l) && /listed/i.test(l) && /never invent/i.test(l),
   },
   {
-    states: "the quote must be COPIED from the passage CHARACTER FOR CHARACTER",
-    carriedBy: (l) => /\bquote\b/i.test(l) && /copied/i.test(l) && /character for character/i.test(l),
+    states: "the quote MUST BE COPIED FROM THE PASSAGE, character for character",
+    carriedBy: (l) =>
+      /\bquote must be copied\b/i.test(l) &&
+      /from the passage/i.test(l) &&
+      /character for character/i.test(l),
   },
   {
-    states: "...including its PUNCTUATION and CAPITALISATION",
-    carriedBy: (l) => /punctuation/i.test(l) && /capitali[sz]ation/i.test(l),
+    states: "...INCLUDING ITS punctuation AND capitalisation",
+    carriedBy: (l) => /\bits punctuation and capitali[sz]ation\b/i.test(l),
   },
   {
-    states: "the quote is the WHOLE CLAUSE and at least the ladder's word floor",
-    carriedBy: (l) => /whole clause/i.test(l) && /at least \d+ words/i.test(l),
+    states: "QUOTE the WHOLE CLAUSE, and AT LEAST the ladder's word floor",
+    carriedBy: (l) =>
+      /^-\s*quote the whole clause\b/i.test(l.trim()) && /at least \d+ words/i.test(l),
   },
   {
-    states: "a quote occurring MORE THAN ONCE is DISCARDED and NOT GUESSED at",
-    carriedBy: (l) => /more than once/i.test(l) && /discarded/i.test(l) && /not guessed/i.test(l),
+    states: "a quote occurring MORE THAN ONCE in the passage IS DISCARDED, NOT GUESSED AT",
+    carriedBy: (l) =>
+      /more than once in the passage/i.test(l) &&
+      /\bis discarded\b/i.test(l) &&
+      /not guessed at/i.test(l),
   },
   {
-    states: "NEVER quote anything that is NOT IN the passage",
-    carriedBy: (l) => /never quote/i.test(l) && /not in the/i.test(l),
+    states: "NEVER quote anything that is NOT IN THE PASSAGE",
+    carriedBy: (l) => /never quote/i.test(l) && /not in the passage/i.test(l),
   },
   {
-    states: "the EMPTY answer has one spelling, and it is the one the parser accepts",
-    carriedBy: (l) => /if nothing in the/i.test(l) && /\{"findings":\[\]\}/.test(l),
+    states: "IF NOTHING in the passage SATISFIES ANY predicate, in the parser's spelling",
+    carriedBy: (l) =>
+      /if nothing in the passage/i.test(l) &&
+      /satisfies any predicate/i.test(l) &&
+      /\{"findings":\[\]\}/.test(l),
   },
 ];
 
@@ -235,15 +281,17 @@ const JUDGE_CONTRACT: readonly PromptClause[] = [
 const BASELINE_CONTRACT: readonly PromptClause[] = [
   {
     states: "the task is an AUDIT of ONE MESSAGE against a POLICY DOCUMENT",
-    carriedBy: (l) => /\baudit/i.test(l) && /\bmessage\b/i.test(l) && /policy document/i.test(l),
+    carriedBy: (l) =>
+      /\baudit\b/i.test(l) && /\bone message\b/i.test(l) && /policy document/i.test(l),
   },
   {
-    states: "the answer is every SPAN of that message THE POLICY RESTRICTS",
-    carriedBy: (l) => /\bspans?\b/i.test(l) && /polic/i.test(l) && /restrict/i.test(l),
+    states: "the answer is EVERY span of that message THE POLICY RESTRICTS",
+    carriedBy: (l) =>
+      /\bevery span\b/i.test(l) && /\bof the message\b/i.test(l) && /the policy restricts/i.test(l),
   },
   {
     states: "the answer is JSON and NOTHING ELSE",
-    carriedBy: (l) => /\bJSON\b/.test(l) && /nothing else/i.test(l),
+    carriedBy: (l) => /answer with JSON/i.test(l) && /nothing else/i.test(l),
   },
   {
     states: "the wire shape, spelled out (its keys are checked against BASELINE_B_SCHEMA below)",
@@ -254,33 +302,41 @@ const BASELINE_CONTRACT: readonly PromptClause[] = [
     carriedBy: (l) => /^rules:$/i.test(l.trim()),
   },
   {
-    states: "the label must be one of the ids LISTED, and never INVENTED",
-    carriedBy: (l) => /\bids?\b/i.test(l) && /listed/i.test(l) && /invent/i.test(l),
-  },
-  {
-    states: "the quote must be COPIED from the message CHARACTER FOR CHARACTER",
-    carriedBy: (l) => /\bquote\b/i.test(l) && /copied/i.test(l) && /character for character/i.test(l),
-  },
-  {
-    states: "...including its PUNCTUATION and CAPITALISATION",
-    carriedBy: (l) => /punctuation/i.test(l) && /capitali[sz]ation/i.test(l),
-  },
-  {
-    states: "the quote is the WHOLE CLAUSE and at least the ladder's word floor",
-    carriedBy: (l) => /whole clause/i.test(l) && /at least \d+ words/i.test(l),
-  },
-  {
-    states: "a quote occurring MORE THAN ONCE is DISCARDED and NOT GUESSED at",
-    carriedBy: (l) => /more than once/i.test(l) && /discarded/i.test(l) && /not guessed/i.test(l),
-  },
-  {
-    states: "NEVER quote anything that is NOT IN the message",
-    carriedBy: (l) => /never quote/i.test(l) && /not in the/i.test(l),
-  },
-  {
-    states: "the EMPTY answer means NOTHING IS RESTRICTED BY THE POLICY, in the parser's spelling",
+    states: "the label MUST BE one of the ids listed, and is NEVER INVENTED",
     carriedBy: (l) =>
-      /if nothing in the/i.test(l) &&
+      /must be one of the ids/i.test(l) && /listed/i.test(l) && /never invent/i.test(l),
+  },
+  {
+    states: "the quote MUST BE COPIED FROM THE MESSAGE, character for character",
+    carriedBy: (l) =>
+      /\bquote must be copied\b/i.test(l) &&
+      /from the message/i.test(l) &&
+      /character for character/i.test(l),
+  },
+  {
+    states: "...INCLUDING ITS punctuation AND capitalisation",
+    carriedBy: (l) => /\bits punctuation and capitali[sz]ation\b/i.test(l),
+  },
+  {
+    states: "QUOTE the WHOLE CLAUSE, and AT LEAST the ladder's word floor",
+    carriedBy: (l) =>
+      /^-\s*quote the whole clause\b/i.test(l.trim()) && /at least \d+ words/i.test(l),
+  },
+  {
+    states: "a quote occurring MORE THAN ONCE in the message IS DISCARDED, NOT GUESSED AT",
+    carriedBy: (l) =>
+      /more than once in the message/i.test(l) &&
+      /\bis discarded\b/i.test(l) &&
+      /not guessed at/i.test(l),
+  },
+  {
+    states: "NEVER quote anything that is NOT IN THE MESSAGE",
+    carriedBy: (l) => /never quote/i.test(l) && /not in the message/i.test(l),
+  },
+  {
+    states: "IF NOTHING in the message is RESTRICTED BY THE POLICY, in the parser's spelling",
+    carriedBy: (l) =>
+      /if nothing in the message/i.test(l) &&
       /restricted by the polic/i.test(l) &&
       /\{"findings":\[\]\}/.test(l),
   },

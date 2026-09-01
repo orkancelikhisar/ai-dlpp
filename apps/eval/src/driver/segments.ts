@@ -202,10 +202,23 @@ export interface SegmentSizeDistribution {
      * unconditionally -- Approach B because it never escalates, a compiled arm
      * on a message-only policy because its one call is about the whole message
      * either way -- so `hasPredicates` and `uncertainBelow` below describe
-     * inputs that decided nothing here. They are still recorded, because they
-     * are what the PAIRED compiled family escalated on and a reader comparing
-     * the two families needs both sides -- but read them as the other arm's
-     * condition, not as this one's.
+     * inputs that decided nothing here.
+     *
+     * They are still recorded, and WHOSE CONDITION THEY ARE depends on the
+     * policy, which is the part this docblock used to get wrong. On a policy
+     * with segment-scoped clauses they are what the PAIRED COMPILED family
+     * escalated on, and a reader comparing the two families needs both sides.
+     * On a MESSAGE-ONLY policy they are nobody's: `judgedUnitFor` answers
+     * "message" for all four families there, so no arm on the run escalated and
+     * there is no paired row whose condition these describe. MEASURED by driving
+     * the real `planBakeoff` over `policies/compiled/p-fin.ir.json` -- the only
+     * compiled policy in this repository and the one the head-to-head runs --
+     * and the three items `test/baseline.spec.ts` uses: all four arms come back
+     * `applies: false`, `hasPredicates: true`, `uncertainBelow: 0.8`. So read
+     * these two as INPUTS that were resolved, never as evidence that an
+     * escalation happened anywhere in the run. `hasPriors` is the one field of
+     * the four that still says something about this arm on every policy,
+     * because it is the FAMILY's condition rather than escalation's.
      *
      * True under `"segment+message"`, and the word is "any" for that case: the
      * segment half of the sample is escalation's, and the one message entry per
@@ -412,7 +425,11 @@ export function segmentSizeDistribution(
     // clause covered on short messages and skipped on long ones). Order is
     // irrelevant to every statistic below -- `percentile` sorts -- and is kept
     // because `samples` is exported for re-derivation and a reader checking it
-    // against a run's call rows should meet the same sequence.
+    // against a run's call rows should meet the same sequence. That second
+    // affordance is the only one order can break, so it is asserted rather than
+    // promised: `segments.test.ts`'s both-scopes case pins `samples.chars` and
+    // `samples.words` element by element. It was a comment alone until this
+    // round, and moving the message entry to the tail passed all 254 tests.
     const passages = unit === "segment+message" ? [item.text] : [];
     for (const segment of selected) passages.push(segment.text);
     perItem.push(passages.length);

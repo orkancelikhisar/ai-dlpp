@@ -552,6 +552,21 @@ describe("the both-scopes unit, which is a compiled arm's on a policy declaring 
     expect(both.bytes).toEqual(both.chars);
     // The corpus fact is counted the same way under every unit.
     expect(both.segmentsTotal).toBe(3);
+    // ORDER, which every statistic above is blind to -- `percentile` sorts --
+    // and which the branch that builds this sample states as a guarantee: the
+    // whole-message entry comes FIRST, in the order `WebLlmJudge.judge` issues
+    // the calls (the message call, then the segment loop). Nothing asserted it:
+    // moving that entry from the head of `passages` to the tail passed all 254
+    // tests, and `bakeoff.test.ts`'s both-scopes oracle sorts before comparing
+    // so it cannot see order at all. `samples` is exported so a percentile can
+    // be re-derived AND so a reader can line the sample up against a run's call
+    // rows, and only the second of those two needs the sequence.
+    //
+    // The segment unit has had this assertion since it was written ("hands back
+    // the samples in encounter order rather than sorted"); this is the same
+    // assertion for the unit that has two kinds of entry to order.
+    expect(both.samples.chars).toEqual([55, 14, 9]);
+    expect(both.samples.words).toEqual([10, 3, 2]);
 
     // THE CONTROL, and the reason this fixture was chosen: the two candidate
     // rules give DIFFERENT answers on it. A both-scopes arm reported under the

@@ -243,9 +243,13 @@ Typechecking clean across five projects.
   a policy declaring only message-scoped clauses makes the compiled arm judge *messages*, not
   segments. `policies/compiled/p-fin.ir.json` is exactly that policy, and `judgedUnitFor()` now
   reads the unit off the family and the IR's declared scopes together, so `judgedUnit`,
-  `judgedUnitChars`, `judgedUnitsPerItem` and `escalation` on a gate report describe the
-  passages the arm's model was really shown; `ladder.unitsJudged` counts both scopes' collected
-  calls; and `gateReport` refuses a distribution measured over any other unit. What that moved
+  `judgedUnitChars` and `judgedUnitsPerItem` on a gate report describe the passages the arm's
+  model was really shown; `ladder.unitsJudged` counts both scopes' collected
+  calls; and `gateReport` refuses a distribution measured over any other unit. `escalation` is
+  deliberately *not* in that list — it describes no passage, it records the inputs escalation was
+  resolved with, and on a message-only policy no arm escalates at all: MEASURED over
+  `p-fin.ir.json`, all four arms report `applies: false`, so the `hasPredicates` and
+  `uncertainBelow` beside it are nobody's condition rather than the paired arm's. What that moved
   on the head-to-head's compiled rows, MEASURED over the same three-item slice `baseline.spec.ts`
   runs and nothing else: `judgedUnit` "segment" → "message", `judgedUnitChars`
   {min 28, p50 45, max 66} on the tier-0 arm and {min 28, p50 45, max 65} on the tier-2-only one
@@ -264,7 +268,10 @@ Typechecking clean across five projects.
   scopes**, so that branch is pinned only by a constructed IR in `bakeoff.test.ts` and has never
   been through a model. Two things a reader should know about it: the union's `judgedUnitChars`
   is a median over a bimodal sample (segment prompts and message prompts in one column), and the
-  p95 TTFT ceiling was derived at neither.
+  p95 TTFT ceiling is comparable for one of the two modes and not the other — it was derived at
+  a whole prompt of the fixed system turn plus **one segment**, which is exactly the shape of the
+  segment half of such an arm's calls and nothing like the message half. The gate row says so in
+  those words; it is the one unit whose caveat is half a caveat.
 - **The gates' `p95` is a maximum at this corpus size.** The percentile is nearest-rank, and
   `ceil(0.95 × n) = n` for every n ≤ 19 — this corpus produces at most 18 engine calls per
   compiled arm (that is the segment-scoped worst case; on `p-fin`, whose one predicate is

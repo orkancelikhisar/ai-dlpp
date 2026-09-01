@@ -1712,9 +1712,11 @@ export interface ArmGateReport {
    * declared scopes make it -- a selected SEGMENT, the whole message, or both.
    *
    * On the report because the two fields below are counted over it and a
-   * character p50 does not say which. Derived by `judgedUnitFor` from the family
-   * and the IR's `semanticPredicates`, and CHECKED against the distribution the
-   * plan measured rather than copied from either -- see `gateReport`.
+   * character p50 does not say which. The value emitted here is the one
+   * `judgedUnitFor` DERIVES from the family and the IR's `semanticPredicates`,
+   * not the one the caller's distribution carries; `gateReport` throws when the
+   * two disagree, so the check is what makes the derived answer also the
+   * distribution's rather than the other way round.
    */
   readonly judgedUnit: JudgedUnit;
   /**
@@ -1753,9 +1755,15 @@ export interface ArmGateReport {
    * `ladder.unitsJudged` (what the model actually saw).
    *
    * What is checked rather than trusted: `gateReport` refuses a distribution
-   * whose unit, escalation condition or item count disagrees with the rows, so
-   * this cannot be the OTHER family's distribution -- the two differ on this
-   * corpus -- or one measured over a different corpus.
+   * whose JUDGED UNIT or ESCALATION CONDITION disagrees with the rows, so this
+   * cannot be the OTHER family's distribution -- the two differ on this corpus.
+   * There are three such guards and no fourth. What is NOT checked is that the
+   * distribution was measured over the same CORPUS SLICE as the rows: neither
+   * side carries a corpus identity, and the obvious proxy -- `segments.items`
+   * against `records.length` -- would be a check on the fixture, for the reason
+   * `gateReport`'s own comment gives at length where the guards are. That
+   * coupling is pinned in `bakeoff.test.ts`'s end-to-end `runBakeoff` case
+   * instead, which asserts each report's distribution IS its own arm's.
    */
   readonly judgedUnitChars: SizeStats | undefined;
   readonly judgedUnitsPerItem: SizeStats | undefined;
@@ -2560,12 +2568,27 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         `Read it beside promptTokens and judgedUnitChars, because the ceiling was derived at a ` +
         `~1.1 kB prompt built from ONE SEGMENT` +
         // CONDITIONAL on the arm's own unit, which is the family AND the
-        // policy: a compiled arm on a message-only policy is judged per message
-        // too, and the clause is as true there as on a B arm.
+        // policy. THREE cases and not two, because the caveat is only wholly
+        // true for one of them. On `"message"` -- a B arm, or a compiled arm on
+        // a message-only policy -- none of the sample is the prompt shape the
+        // ceiling was taken at. On `"segment+message"` HALF of it is: that arm
+        // makes one whole-message call and one call per selected segment, and
+        // the segment calls are exactly the system turn plus one segment the
+        // ~1.1 kB was measured on. Saying "that is not the prompt size" there
+        // would send a reader past the half of the column this ceiling can
+        // legitimately be read against.
+        //
+        // Each branch spells its unit out rather than interpolating
+        // `segments.unit`, because an interpolation is only ever exercised at
+        // the one value that reaches it and reads as coverage of all three.
         (segments.unit === "segment"
           ? ``
-          : `, and this arm is judged per ${segments.unit.toUpperCase()}, so that is not the ` +
-            `prompt size this number was taken at`) +
+          : segments.unit === "message"
+            ? `, and this arm is judged per MESSAGE, so that is not the prompt size this ` +
+              `number was taken at`
+            : `, and this arm is judged per SEGMENT+MESSAGE, so half of these calls ARE that ` +
+              `prompt shape and half are a whole message: this ceiling is comparable for the ` +
+              `segment half of the sample and not for the rest`) +
         `; and beside run.latencyBudgetTimesCompilerDefault, because these calls were ` +
         `${budgetTaken}` +
         // CONDITIONAL, because the clause is only true above 1x. A run against
@@ -2665,7 +2688,12 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     },
     degradedNotices,
     degradedItems,
-    judgedUnit: segments.unit,
+    // The DERIVED unit, not `segments.unit`. The guard above proves the two
+    // equal on every path that reaches here, so this is not a behaviour change;
+    // it is the row being populated from the thing its docblock names, so that
+    // weakening or reordering that guard cannot silently republish whatever
+    // unit a caller's distribution happened to carry.
+    judgedUnit,
     judgedUnitChars: segments.chars,
     judgedUnitsPerItem: segments.perItem,
     escalation: segments.escalation,

@@ -265,10 +265,16 @@ const TIER2_FINISH_REASONS = Object.keys({
  *     the median one.
  *
  * The two BASELINE families are not on either line, and lumping them onto one
- * would have been wrong in the safe-looking direction: `FamilyShape.judgedUnit`
- * is "message" for them, so Approach B makes one call per MESSAGE however many
- * segments the message has -- at most 2 rows whatever the escalation says. They
- * cannot run here at all today (`assertPageCanRun`), which is a separate matter.
+ * would have been wrong in the safe-looking direction: Approach B makes one
+ * call per MESSAGE however many segments the message has -- at most 2 rows
+ * whatever the escalation says. `judgedUnitFor` (`bakeoff.ts`) is where that is
+ * stated, and it answers "message" for both B families WITHOUT consulting the
+ * IR, which is the part that matters here: B's unit is intrinsic to the method
+ * and does not move with the policy, so this bound holds on every policy. It
+ * used to be attributed to a `FamilyShape.judgedUnit` field, which no longer
+ * exists -- the unit stopped being a per-family constant when it started
+ * reading the policy's declared scopes. They cannot run here at all today
+ * (`assertPageCanRun`), which is a separate matter.
  *
  * Both are pinned in test/bakeoff.test.ts, through `planBakeoff` rather than by
  * restating them here, and test/segments.test.ts pins the same two through the

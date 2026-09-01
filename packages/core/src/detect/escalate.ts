@@ -168,10 +168,22 @@ export interface EscalationInput {
  * segment loop without a segment-scoped clause to carry, so on such a policy --
  * `policies/compiled/p-fin.ir.json` is one -- this function still selects every
  * non-code segment and none of them costs a call. The selection is then a list
- * the judge is handed and ignores, which is harmless here and is NOT harmless
- * in `apps/eval`: its per-arm `judgedUnitChars` and `judgedUnitsPerItem` are
- * built from this selection and would describe passages no model was shown.
- * Recorded in the README's carried risks. The branch is wired to
+ * the judge is handed and ignores.
+ *
+ * That USED to be harmless here and harmful one package over: `apps/eval` built
+ * its per-arm `judgedUnitChars` and `judgedUnitsPerItem` from this selection, so
+ * on a message-only policy those columns described passages no model was shown.
+ * It is harmless in both places now, and the fix was not made here -- nothing
+ * about this function changed. `segmentSizeDistribution`
+ * (`apps/eval/src/driver/segments.ts`) returns before calling this function at
+ * all when the arm's judged unit is "message", and `gateReport` refuses a
+ * distribution measured over any other unit than the one the family and the
+ * policy's declared scopes make. VERIFIED by driving the real `planBakeoff` over
+ * that IR and the three items `apps/eval/test/baseline.spec.ts` runs: all four
+ * arms come back unit "message" with a character sample that is the three ITEM
+ * lengths -- {p50: 110, p95: 133, max: 133, min: 48}, against the {p50: 45,
+ * p95: 65, max: 65, min: 28} this selection produces over the same three items
+ * without priors. The branch is wired to
  * a real source anyway (see `uncertainSegmentStarts`) because the alternative
  * is a parameter nobody populates, which reads as a working feature in every
  * test and never fires.
