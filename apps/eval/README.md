@@ -950,6 +950,80 @@ the *gold* to match p-fin is the other way to resolve that, and is deliberately
 not done — that is Plan 7's job, and doing it here would be tuning data to fit a
 claim.
 
+## This corpus cannot score tier 2, and every gates row says so
+
+The bake-off's arms all run tier 2. `smoke.jsonl` carries **seven** gold spans —
+five at tier 0, two at tier 1, **none at tier 2** — while three of its thirteen
+items say things the shipped predicate ("a customer contract, renewal, or
+negotiation that has not been publicly announced") describes almost word for
+word:
+
+| item | the text | its gold |
+| --- | --- | --- |
+| `pos-client-name-prose` | "draft a **contract renewal** email for Tamarind Grocers" | `client-name` |
+| `pos-multiline-pan-and-client` | "The Halcyon Logistics account needs a **renewal quote**" | `client-name`, `in-pan` |
+| `pos-emoji-before-pan` | "🎉🎉 **Deal closed!**" | `in-pan` |
+
+Escalation selects all three segments under both conditions, so the judge really
+sees them. **A model that answers the predicate correctly therefore emits
+findings that no gold span can match**, a scorer joining `findings` to `gold`
+counts each of them a false positive, and the arm that found *nothing* scores as
+the most precise. Nothing about the files looks wrong: they are complete,
+schema-valid and internally consistent.
+
+Two things follow, and both are in the artifact rather than only here.
+
+- **Every gates row carries `scoring`.** `scoring.tiersThisCorpusCannotScore` is
+  `[2]` on every arm today, `scoring.cannotScore` says what that costs a scorer,
+  and `scoring.goldSpansByTier` shows the 5/2/0 split. Read it before you read
+  any number in the row.
+- **`killed` is now `killedOnRunGates`.** It is the disjunction of the gates on
+  the row — latency, decode rate, span-ladder resolvability, restatement rate,
+  engine poisoning — and **not one of them reads a gold label**. Spec §4.2 makes
+  task accuracy the primary criterion for this slate and no accuracy metric
+  exists in this repository (spec §2.2 puts scoring in Plan 8). An arm can pass
+  every gate here and be the worst model on the slate. `scoring.verdictMeans`
+  says exactly this, on the row.
+
+**The fix is not to label the corpus.** That is Plan 7's job, and adding gold to
+make a harness stop complaining is the same move the section above refuses. The
+run still happens: every gate here is a property of the run and needs no label,
+so refusing to run would throw the measurement away to prevent a misreading a
+field can prevent — and a refusal that can only be cleared by editing the data is
+a machine for producing edited data.
+
+## Latency here is measured at 24× a shipped policy's budget
+
+`fixtures/semantic-ir.json` carries `latencyBudgetMs: 120000`. The compiler's
+`DEFAULT_LATENCY_BUDGET_MS` is **5,000**, which is what `minimal-ir.json` and
+`multiclass-ir.json` carry, and `planBakeoff` refuses any IR without a semantic
+predicate — so `semantic-ir.json` is the only IR a bake-off can run and *every*
+latency it can produce is taken at 24× the budget a compiled policy emits.
+
+That budget is not a mistake in the fixture: it arms one deadline over the whole
+`judge()` call, and at Plan 5's measured 4.6 s per call on the cheapest arm a
+5,000 ms budget fires during the first call of every tier-2 spec, so nothing
+would exercise a completed judgement.
+
+What it costs, stated rather than hidden: **the degradation a shipped policy's
+budget would cause is measured nowhere in this run.** A shorter budget does not
+slow a call, but it changes which calls happen — smaller sample, more calls ended
+by an interrupt, far fewer `ladder.segmentsJudged`, far more
+`degradedNotices["budget-exhausted"]`. Each gates row carries
+`run.compilerDefaultLatencyBudgetMs` and
+`run.latencyBudgetTimesCompilerDefault`, and both latency gate details name the
+budget their numbers came from.
+
+Measuring it instead is cheap: one copy of `semantic-ir.json` with
+`latencyBudgetMs: 5000`, one line in `IR_FIXTURES` in `src/page/main.ts`, and a
+second `runBakeoff` under another `runId` and `irName` with an `itemTimeoutMs`
+matching the (much smaller) bound `planBakeoff` derives at that budget. The
+degradation rate is then the ratio of `ladder.segmentsJudged` and of
+`degradedNotices["budget-exhausted"]` between the two gates rows. It is *not* a
+per-arm dimension of one run: a file is named by runId, family and model, so two
+budgets in one run collide on a file name — `planBakeoff` throws on that, loudly,
+but making it work means putting the budget in `armName` and in `PlannedArm`.
+
 ## How big is a segment a tier-2 judge sees?
 
 `src/driver/segments.ts` answers that, and Plan 5's tier-2 wall-clock budget is

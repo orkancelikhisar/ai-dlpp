@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunRecordSchema, type RunRecord } from "../src/driver/record.js";
-import { runBakeoff, type BakeoffOptions } from "../src/driver/bakeoff.js";
+import { runBakeoff, type ArmGateReport, type BakeoffOptions } from "../src/driver/bakeoff.js";
 
 /**
  * `runBakeoff` itself: the guards between a plan and a directory of files.
@@ -249,6 +249,52 @@ describe("runBakeoff, against a scripted page", () => {
     const gates = readFileSync(result.gatesPath, "utf8").trim().split("\n");
     expect(gates).toHaveLength(2);
     expect(JSON.parse(gates[0]!)).toEqual(JSON.parse(JSON.stringify(result.reports[0])));
+  });
+
+  it("says on every gates line that this corpus cannot score the tier the arms ran", async () => {
+    // End to end, over the SHIPPED corpus and the SHIPPED IR, because that is
+    // the pair a bake-off run today would use: `smoke.jsonl` carries seven gold
+    // spans and none of them is at tier 2, while every arm here runs tier 2 and
+    // nothing else. A scorer joining findings to gold would count every correct
+    // tier-2 finding as a false positive and rank the arm that found nothing
+    // first. The run is still taken -- every gate on this report is a property
+    // of the run and needs no label -- and the gap is named in the artifact
+    // instead of left to be discovered downstream.
+    const dir = outDir();
+    const { page } = scriptedPage();
+    const result = await runBakeoff(
+      page,
+      bakeoffOptions(dir, { families: ["compiled", "compiled-tier2-only"] }),
+    );
+
+    const gates = readFileSync(result.gatesPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as ArmGateReport);
+    expect(gates).toHaveLength(2);
+    for (const row of gates) {
+      expect(row.scoring.goldSpansByTier).toEqual({ 0: 5, 1: 2, 2: 0 });
+      // SORTED, not in the order the corpus happens to mention them: the corpus
+      // introduces in-pan, then aws-key, then generic-secret, so an
+      // insertion-ordered list differs here. Two arms' rows are read side by
+      // side and an unstable order makes them look different when they are not.
+      expect(row.scoring.tiers.find((t) => t.tier === 0)!.goldEntityTypes).toEqual([
+        "aws-key",
+        "generic-secret",
+        "in-pan",
+      ]);
+      expect(row.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+      expect(row.scoring.goldPolicies).toEqual(["minimal-fixture"]);
+      expect(row.scoring.cannotScore.join(" ")).toContain("tier 2");
+      expect(row.scoring.accuracyGated).toBe(false);
+      // The verdict does not become "unknown" for it: a run gate is still a run
+      // gate, and dropping the arm is what this driver must never do.
+      expect(row.killedOnRunGates).toBe(false);
+    }
+    // And the tier-0 family's extra tier is read off ITS rows, not off a shared
+    // constant: the two families ran different tier sets.
+    expect(gates.find((g) => g.family === "compiled")!.scoring.tiersRun).toEqual([0, 2]);
+    expect(gates.find((g) => g.family === "compiled-tier2-only")!.scoring.tiersRun).toEqual([2]);
   });
 
   it("refuses when the page's IR is not the file this process planned against", async () => {

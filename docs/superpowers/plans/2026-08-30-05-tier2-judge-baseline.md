@@ -2066,3 +2066,55 @@ plan's own fallback for a model that cannot take 8,192 ("run that arm at 4,096
 and report the asymmetry") was unexpressible in the output. `ArmGateReport`
 gained the matching `run` block for the same reason: the gates file could not be
 joined to the IR, the corpus or the run id it came from.
+
+### Post-plan audit: the bake-off would have reported the wrong answer
+
+**A bake-off run today could not score tier 2, and nothing said so.**
+`corpora/fixtures/smoke.jsonl` carries seven gold spans -- five at tier 0, two
+at tier 1, **none at tier 2** -- while every arm of this bake-off runs tier 2,
+and three of the corpus's thirteen items say things the shipped predicate ("a
+customer contract, renewal, or negotiation that has not been publicly
+announced") describes almost verbatim: `pos-client-name-prose`'s "draft a
+contract renewal email for Tamarind Grocers", `pos-multiline-pan-and-client`'s
+"the Halcyon Logistics account needs a renewal quote", and
+`pos-emoji-before-pan`'s "Deal closed!". Escalation selects all three segments
+under both conditions, so the judge really sees them. So an arm that answers the
+predicate CORRECTLY emits findings no gold span can match, a scorer joining
+`findings` to `gold` counts every one of them a false positive, and the arm that
+found nothing ranks as the most precise. Every file involved is complete,
+schema-valid and internally consistent.
+
+`ArmGateReport` gained `scoring: ArmScoringBoundary`, which names the tiers the
+arm ran (off `config` on its own rows), the gold it has per tier (off `gold` on
+those rows), the tiers with none, and what that costs a scorer. **The corpus was
+not touched, and the fix is deliberately not a refusal to run.** Refusing would
+throw the measurement away to prevent a misreading -- every gate here is a
+property of the run and needs no label -- and, decisively, a refusal keyed on
+"no gold for a tier this arm runs" can only ever be cleared by ADDING GOLD,
+which is Plan 7's job and is exactly the tune-the-data move this project has
+already had to revert once. A rule whose only remedy is to edit the data is a
+machine for producing edited data.
+
+**`ArmGateReport.killed` is now `killedOnRunGates`.** It reads as the bake-off's
+answer to "which model won" and is not one: spec 4.2's stated primary criterion
+is task accuracy, no accuracy metric exists in this repository (spec 2.2 puts
+scoring in Plan 8), and the gates it sums are latency, decode rate, span-ladder
+resolvability, restatement rate and engine poisoning. `scoring.verdictMeans`
+states that on the row itself, and `bakeoff.test.ts` pins it as a behaviour:
+two arms with byte-identical throughput, one whose findings match its gold and
+one whose identical findings match nothing, get the same value.
+
+**Every latency this bake-off can produce is taken at 24x a shipped policy's
+message budget,** and the gates file now says so. `semantic-ir.json` carries
+`latencyBudgetMs: 120000`; the compiler's `DEFAULT_LATENCY_BUDGET_MS` is 5,000,
+and `planBakeoff` refuses any IR without a semantic predicate, so no arm here can
+run at a compiled policy's default. The budget is not a fixture mistake -- at
+this plan's measured 4.6 s per call it fires during the first call at 5,000 --
+but the DEGRADATION it hides is measured nowhere: a shorter budget does not slow
+a call, it changes which calls happen. `run.compilerDefaultLatencyBudgetMs` and
+`run.latencyBudgetTimesCompilerDefault` are on every row and both latency gate
+details name the budget their numbers came from. Measuring the degradation
+instead needs one copy of `semantic-ir.json` at 5,000, one line in `IR_FIXTURES`,
+and a second `runBakeoff` under another `runId`; it is not a per-arm dimension of
+one run, because a file is named by runId, family and model and two budgets would
+collide on a name.

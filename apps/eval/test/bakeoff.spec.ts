@@ -132,6 +132,16 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
       `${JSON.stringify(report.completionTokens)} segmentChars ${JSON.stringify(report.segmentChars)}` +
       ` | degraded ${JSON.stringify(report.degradedNotices)}`,
   );
+  // Printed beside the numbers, not only written into the file: the person
+  // reading this console line is the person who just spent the GPU time, and
+  // `killedOnRunGates` is the field they will otherwise read as a result.
+  console.log(
+    `[bakeoff] ${report.arm}: killedOnRunGates=${report.killedOnRunGates} ` +
+      `(run gates only, accuracyGated=${report.scoring.accuracyGated}); tiers run ` +
+      `[${report.scoring.tiersRun.join(", ")}], this corpus cannot score ` +
+      `[${report.scoring.tiersThisCorpusCannotScore.join(", ")}]` +
+      report.scoring.cannotScore.map((line) => `\n  - ${line}`).join(""),
+  );
   // The model ANSWERED. Without this the file below is a complete, schema-valid
   // transcript of a judge that returned before it touched the engine, and every
   // gate would read "not measured" while the run looked like it happened.
@@ -152,6 +162,15 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
   ]);
   // Tier 1 is off on every bake-off arm, so its `absent` notice is on every row.
   expect(report.degradedNotices["absent"]).toBe(2);
+
+  // And the row says what it cannot say. This slice is the corpus's first two
+  // items, whose four gold spans are all tier 0, while the arm runs tier 0 and
+  // tier 2 -- so every tier-2 finding the model just produced is unmatchable,
+  // and the row names that rather than leaving it to a scorer to discover.
+  expect(report.scoring.tiersRun).toEqual([0, 2]);
+  expect(report.scoring.goldSpansByTier[2]).toBe(0);
+  expect(report.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+  expect(report.scoring.accuracyGated).toBe(false);
 });
 
 test("refuses a second run under the same runId rather than overwriting a measurement", async ({ page }) => {

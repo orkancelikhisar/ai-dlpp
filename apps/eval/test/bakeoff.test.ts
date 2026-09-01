@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { UNCERTAIN_BELOW, loadPolicyIr, runTier0, segmentText, type PolicyIr } from "@sih/core";
 import {
+  COMPILER_DEFAULT_LATENCY_BUDGET_MS,
   DEFAULT_LOWER_TIER_ALLOWANCE_MS,
   DEFAULT_TIER2_CALL_BUDGET_MS,
   GATES,
@@ -17,6 +18,7 @@ import {
   runBakeoff,
   type ArmFamily,
   type BakeoffOptions,
+  type GateReportInput,
 } from "../src/driver/bakeoff.js";
 import { loadCorpus } from "../src/driver/corpus.js";
 import { RECORD_SCHEMA_VERSION, RunRecordSchema, type RunRecord } from "../src/driver/record.js";
@@ -186,10 +188,18 @@ const RUN_CONTEXT = {
   corpus: CORPUS,
   itemTimeoutMs: 250_000,
   latencyBudgetMs: SEMANTIC_IR.latencyBudgetMs,
+  // The fourth thing no record carries: the tier each gold entityType belongs
+  // to, which only an IR knows. `runBakeoff` passes the IR it verified against
+  // the page's own digest, so this is that array.
+  entityTypes: SEMANTIC_IR.entityTypes,
 } as const;
 
 /** The distribution `planBakeoff` would hand `gateReport` for this family. */
-function report(records: readonly RunRecord[], family: ArmFamily = "compiled") {
+function report(
+  records: readonly RunRecord[],
+  family: ArmFamily = "compiled",
+  over: Partial<GateReportInput> = {},
+) {
   return gateReport({
     arm: "tier2-" + MODEL,
     family,
@@ -197,6 +207,7 @@ function report(records: readonly RunRecord[], family: ArmFamily = "compiled") {
     records,
     segments: familyShape(family).runsTier0 ? SEGMENTS_TIER0 : SEGMENTS,
     ...RUN_CONTEXT,
+    ...over,
   });
 }
 
@@ -486,7 +497,7 @@ describe("the p95 time-to-first-token gate", () => {
     const r = report([judged([], {}, { degraded: [{ tier: 2, reason: "budget-exhausted", detail: "spent" }] })]);
     expect(outcome(r, "p95-ttft").verdict).toBe("not-measured");
     expect(outcome(r, "p95-ttft").observed).toBeUndefined();
-    expect(r.killed).toBe(false);
+    expect(r.killedOnRunGates).toBe(false);
   });
 
   it("excludes a call whose engine reported no time-to-first-token", () => {
@@ -520,7 +531,7 @@ describe("the decode-rate gate", () => {
     const r = report([judged([call({ completionTokens: 100, decodeTokPerSec: 20 })])]);
     expect(outcome(r, "decode-rate").observed).toBeCloseTo(20, 6);
     expect(outcome(r, "decode-rate").verdict).toBe("fail");
-    expect(r.killed).toBe(true);
+    expect(r.killedOnRunGates).toBe(true);
   });
 
   it("excludes the 0/0 a call interrupted before its first token leaves", () => {
@@ -556,7 +567,7 @@ describe("the decode-rate gate", () => {
   it("is not measured when no call reported a usable rate", () => {
     const r = report([judged([call({ decodeTokPerSec: null }), call({ decodeTokPerSec: undefined })])]);
     expect(outcome(r, "decode-rate").verdict).toBe("not-measured");
-    expect(r.killed).toBe(false);
+    expect(r.killedOnRunGates).toBe(false);
   });
 });
 
@@ -617,7 +628,7 @@ describe("the semantic gates", () => {
     const primary = report([judged([call()], { rung1: 1, duplicatesDropped: 2 })]);
     expect(outcome(primary, "duplicate-rate").observed).toBeCloseTo(2 / 3, 10);
     expect(outcome(primary, "duplicate-rate").verdict).toBe("pass");
-    expect(primary.killed).toBe(false);
+    expect(primary.killedOnRunGates).toBe(false);
 
     // ... and it still kills the pathology it is for: Plan 5 measured
     // Phi-4-mini looping `"quote": "Halcyon"` about nineteen times until the
@@ -626,7 +637,7 @@ describe("the semantic gates", () => {
     const looping = report([judged([call()], { rung1: 1, duplicatesDropped: 18 })]);
     expect(outcome(looping, "duplicate-rate").observed).toBeCloseTo(18 / 19, 10);
     expect(outcome(looping, "duplicate-rate").verdict).toBe("fail");
-    expect(looping.killed).toBe(true);
+    expect(looping.killedOnRunGates).toBe(true);
   });
 
   it("is not measured on an arm that emitted no finding at all", () => {
@@ -663,7 +674,7 @@ describe("every gate, exactly ON its threshold", () => {
     const onTheLine = report([judged([call({ completionTokens: 50, decodeTokPerSec: GATES.minDecodeTokPerSec })])]);
     expect(onTheLine.sustainedDecodeTokPerSec).toBe(GATES.minDecodeTokPerSec);
     expect(outcome(onTheLine, "decode-rate").verdict).toBe("pass");
-    expect(onTheLine.killed).toBe(false);
+    expect(onTheLine.killedOnRunGates).toBe(false);
 
     const under = report([judged([call({ completionTokens: 50, decodeTokPerSec: 24 })])]);
     expect(outcome(under, "decode-rate").verdict).toBe("fail");
@@ -722,7 +733,7 @@ describe("the p95 gate is the 95th percentile and not a neighbour of it", () => 
     expect(outcome(tail, "p95-ttft").observed).toBe(1000);
     expect(outcome(tail, "p95-ttft").verdict).toBe("pass");
     expect(tail.ttftMs!.max).toBe(9000);
-    expect(tail.killed).toBe(false);
+    expect(tail.killedOnRunGates).toBe(false);
   });
 });
 
@@ -789,7 +800,7 @@ describe("the engine-poisoning assertion", () => {
       judged([call({ finishReason: "abort", completionTokens: 0 })], { failedClosed: 1, abortedResponses: 1 }),
     ]);
     expect(outcome(r, "non-empty-after-stop").verdict).toBe("fail");
-    expect(r.killed).toBe(true);
+    expect(r.killedOnRunGates).toBe(true);
   });
 
   it("flags a poisoned call on EITHER term, not only on both at once", () => {
@@ -916,7 +927,7 @@ describe("the engine-poisoning assertion", () => {
     expect(stop.detail).not.toContain("healthy");
     expect(stop.detail).not.toContain("after-the-stop");
     expect(stop.sample).toBe(0);
-    expect(r.killed).toBe(false);
+    expect(r.killedOnRunGates).toBe(false);
   });
 });
 
@@ -943,7 +954,7 @@ describe("the budget overrun is counted and never gated on", () => {
     expect(r.degradedNotices["scope-unjudged"]).toBe(1);
     expect(r.degradedItems["budget-exhausted"]).toBe(2);
     expect(r.degradedItems["scope-unjudged"]).toBe(1);
-    expect(r.killed).toBe(false);
+    expect(r.killedOnRunGates).toBe(false);
     expect(r.gates.every((g) => g.verdict !== "fail")).toBe(true);
   });
 
@@ -1004,6 +1015,11 @@ describe("what a gate report says about the run itself", () => {
       recordSchemaVersion: RECORD_SCHEMA_VERSION,
       itemTimeoutMs: 250_000,
       latencyBudgetMs: SEMANTIC_IR.latencyBudgetMs,
+      // The caveat AUDIT-10 asked for, in the machine-readable half: every
+      // latency on this report was taken at 24x the budget the compiler emits
+      // for a policy that does not name one.
+      compilerDefaultLatencyBudgetMs: COMPILER_DEFAULT_LATENCY_BUDGET_MS,
+      latencyBudgetTimesCompilerDefault: 24,
       uncertainBelow: UNCERTAIN_BELOW,
       tier2Config: {
         modelId: MODEL,
@@ -1439,11 +1455,11 @@ describe("arm names reach the filesystem", () => {
   });
 });
 
-describe("killed is the disjunction of the failures", () => {
+describe("killedOnRunGates is the disjunction of the failures", () => {
   it("is set by any one failing gate and by no not-measured one", () => {
     const oneFailure = report([judged([call({ ttftMs: 9000 })], { rung1: 10 })]);
     expect(oneFailure.gates.filter((g) => g.verdict === "fail").map((g) => g.gate)).toEqual(["p95-ttft"]);
-    expect(oneFailure.killed).toBe(true);
+    expect(oneFailure.killedOnRunGates).toBe(true);
 
     const twoFailures = report([judged([call({ ttftMs: 9000, completionTokens: 100, decodeTokPerSec: 2 })], { rung1: 1, unresolvedQuotes: 9 })]);
     expect(twoFailures.gates.filter((g) => g.verdict === "fail").map((g) => g.gate).sort()).toEqual([
@@ -1451,11 +1467,11 @@ describe("killed is the disjunction of the failures", () => {
       "p95-ttft",
       "resolvable-rate",
     ]);
-    expect(twoFailures.killed).toBe(true);
+    expect(twoFailures.killedOnRunGates).toBe(true);
 
     const nothingMeasured = report([judged([])]);
     expect(nothingMeasured.gates.every((g) => g.verdict === "not-measured")).toBe(true);
-    expect(nothingMeasured.killed).toBe(false);
+    expect(nothingMeasured.killedOnRunGates).toBe(false);
   });
 
   it("every outcome carries the numbers behind it, so a verdict is checkable", () => {
@@ -1554,5 +1570,322 @@ describe("a stop ends the run, so the stopped item's own calls came before it", 
     // The aborted row belongs to the item that stopped and is not evidence of a
     // latched engine; the healthy call on the next item is.
     expect(outcome(r, "non-empty-after-stop").verdict).toBe("pass");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What this corpus can score, and what it cannot
+// ---------------------------------------------------------------------------
+
+describe("what the shipped corpus can and cannot score", () => {
+  it("carries no gold at all for the tier the bake-off exists to measure", () => {
+    // Established on the two DATA files, not on this module's arithmetic: the
+    // counts below were taken by hand off `corpora/fixtures/smoke.jsonl` and
+    // `apps/eval/fixtures/semantic-ir.json` and are written here as literals, so
+    // a change to either file fails this rather than moving with it.
+    const tierOf = new Map(SEMANTIC_IR.entityTypes.map((e) => [e.id, e.tier]));
+    expect([...tierOf].sort()).toEqual([
+      ["aws-key", 0],
+      ["client-name", 1],
+      ["generic-secret", 0],
+      ["in-pan", 0],
+      ["pred:unannounced-deal", 2],
+    ]);
+
+    const gold = ITEMS.flatMap((item) => item.gold);
+    expect(ITEMS).toHaveLength(13);
+    expect(gold).toHaveLength(7);
+    expect([...new Set(gold.map((g) => g.entityType))].sort()).toEqual([
+      "aws-key",
+      "client-name",
+      "generic-secret",
+      "in-pan",
+    ]);
+    // The IR declares every entityType the gold uses, so the gap is tier 2's
+    // alone and not a corpus labelled against a policy this IR does not know.
+    expect(gold.filter((g) => !tierOf.has(g.entityType))).toEqual([]);
+    // 5 at tier 0, 2 at tier 1, and NONE at tier 2 -- while every arm of this
+    // bake-off runs tier 2 and only tier 2.
+    expect(gold.filter((g) => tierOf.get(g.entityType) === 0)).toHaveLength(5);
+    expect(gold.filter((g) => tierOf.get(g.entityType) === 1)).toHaveLength(2);
+    expect(gold.filter((g) => tierOf.get(g.entityType) === 2)).toEqual([]);
+  });
+
+  it("carries items whose TEXT satisfies the predicate and no label saying so", () => {
+    // The half that makes the missing gold an inversion rather than a blank: a
+    // model that answers the predicate CORRECTLY on these three produces
+    // findings with nothing to match, so a scorer joining findings to gold
+    // counts each of them a false positive and ranks the arm that found nothing
+    // as the most precise. The three readings are mine, from the text:
+    //
+    //   pos-client-name-prose         "draft a contract renewal email for
+    //                                  Tamarind Grocers" -- a customer contract
+    //                                  renewal, in an unsent internal request.
+    //   pos-multiline-pan-and-client  "The Halcyon Logistics account needs a
+    //                                  renewal quote" -- a renewal being priced.
+    //   pos-emoji-before-pan          "Deal closed!" -- a concluded negotiation,
+    //                                  announced to accounts rather than
+    //                                  publicly. The weakest of the three.
+    //
+    // Asserted as SUBSTRINGS of the shipped text rather than as a verdict,
+    // because whether a passage satisfies an NL predicate is the model's
+    // judgement and not a test's. What the test pins is that the words are
+    // there and the label is not.
+    expect(SEMANTIC_IR.semanticPredicates.map((p) => p.id)).toEqual(["unannounced-deal"]);
+    expect(SEMANTIC_IR.semanticPredicates[0]!.nlPredicate).toContain(
+      "customer contract, renewal, or negotiation that has not been publicly announced",
+    );
+    const suspects = [
+      ["pos-client-name-prose", "contract renewal"],
+      ["pos-multiline-pan-and-client", "renewal quote"],
+      ["pos-emoji-before-pan", "Deal closed"],
+    ] as const;
+    for (const [id, phrase] of suspects) {
+      const item = ITEMS.find((i) => i.id === id);
+      expect(item, `corpus no longer carries ${id}`).toBeDefined();
+      expect(item!.text).toContain(phrase);
+      expect(item!.gold.map((g) => g.entityType)).not.toContain("pred:unannounced-deal");
+    }
+  });
+
+  it("escalates each of those to the judge, so the wrongly-scored finding is reachable", () => {
+    // Without this the gap would be theoretical: a segment escalation never
+    // selects is a segment no arm judges, and a finding no arm can produce
+    // cannot be miscounted. Measured through the driver's OWN distribution
+    // function rather than a second copy of the escalation rule.
+    const ids = ["pos-client-name-prose", "pos-multiline-pan-and-client", "pos-emoji-before-pan"];
+    const three = ITEMS.filter((item) => ids.includes(item.id));
+    expect(three).toHaveLength(3);
+    // One prose segment each, and escalation keeps all three under BOTH
+    // conditions -- so this holds for the tier-0 families and the tier-2-only
+    // families alike.
+    const withoutPriors = segmentSizeDistribution(three, { hasPredicates: true });
+    const withPriors = segmentSizeDistribution(three, {
+      hasPredicates: true,
+      priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
+    });
+    expect(withoutPriors.segmentsTotal).toBe(3);
+    expect(withoutPriors.count).toBe(3);
+    expect(withPriors.count).toBe(3);
+  });
+});
+
+describe("a tier the corpus cannot score is a named result, not a silent zero", () => {
+  /** Gold and a finding that agree, on the fixture record's own text. */
+  const PRED = "pred:unannounced-deal";
+  const tier2Gold = { start: 0, end: 5, text: "hello", entityType: PRED, action: "redact" } as const;
+  const tier0Gold = { start: 6, end: 11, text: "world", entityType: "in-pan", action: "block" } as const;
+  const tier2Finding = {
+    start: 0,
+    end: 5,
+    text: "hello",
+    entityType: PRED,
+    severity: "high",
+    tier: 2,
+    source: MODEL,
+    confidence: 0.9,
+    action: "redact",
+  } as const;
+
+  it("names tier 2 unscorable when the arm ran it and the rows carry no gold for it", () => {
+    const r = report([judged([call()], { rung1: 1 }, { gold: [tier0Gold] })]);
+    expect(r.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+    expect(r.scoring.goldSpansByTier).toEqual({ 0: 1, 1: 0, 2: 0 });
+    expect(r.scoring.cannotScore).toHaveLength(1);
+    expect(r.scoring.cannotScore[0]).toContain("tier 2");
+    // The consequence, named in the artifact rather than left to be worked out.
+    expect(r.scoring.cannotScore[0]).toContain("false positive");
+  });
+
+  it("names NO tier unscorable once the rows do carry gold at that tier", () => {
+    // The discriminator. Without it, a field hardcoded to "[2]" -- which is the
+    // right answer for every corpus in this repository -- passes the test above.
+    const r = report([judged([call()], { rung1: 1 }, { gold: [tier0Gold, tier2Gold] })]);
+    expect(r.scoring.tiersThisCorpusCannotScore).toEqual([]);
+    expect(r.scoring.cannotScore).toEqual([]);
+    expect(r.scoring.goldSpansByTier).toEqual({ 0: 1, 1: 0, 2: 1 });
+    expect(r.scoring.tiers.find((t) => t.tier === 2)!.goldEntityTypes).toEqual([PRED]);
+  });
+
+  it("reads which tiers RAN off config on the rows, not off the family label", () => {
+    // Standing rule: a field describing what ran is populated from what ran.
+    // Both reports below are the same family and differ only in the config
+    // `detect` was handed, so a `familyShape(family).runsTier0` implementation
+    // answers identically for the two and fails here.
+    const cfg = (tier0: boolean) => ({
+      tier0,
+      tier1: false,
+      tier2: true,
+      uncertainBelow: UNCERTAIN_BELOW,
+    });
+    const withTier0 = report([judged([call()], { rung1: 1 }, { config: cfg(true), gold: [tier0Gold] })]);
+    const withoutTier0 = report([judged([call()], { rung1: 1 }, { config: cfg(false), gold: [tier0Gold] })]);
+    expect(withTier0.scoring.tiersRun).toEqual([0, 2]);
+    expect(withoutTier0.scoring.tiersRun).toEqual([2]);
+    // And a tier with gold that the arm did NOT run is not a complaint: tier 1
+    // is off on every bake-off arm and gold for it would score nothing here.
+    expect(withoutTier0.scoring.tiers.find((t) => t.tier === 0)!.goldSpans).toBe(1);
+    expect(withoutTier0.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+  });
+
+  it("names a gold entityType the IR declares no tier for, which scores as nothing at all", () => {
+    // The other way a join comes back empty: gold written against a different
+    // policy, which is exactly what `smoke.jsonl`'s `policy: "minimal-fixture"`
+    // warns about. Such a span belongs to no tier bucket, so the per-tier counts
+    // alone would report it as absent rather than as unmatchable.
+    //
+    // TWO strays, in reverse alphabetical order on the row, because one cannot
+    // tell a sorted list from an insertion-ordered one -- and this list is read
+    // by a human comparing two arms' gates rows.
+    const salary = { start: 6, end: 11, text: "world", entityType: "salary", action: "redact" } as const;
+    const codename = { start: 0, end: 5, text: "hello", entityType: "codename", action: "redact" } as const;
+    const r = report([judged([call()], { rung1: 1 }, { gold: [tier2Gold, salary, codename] })]);
+    expect(r.scoring.goldEntityTypesNotInIr).toEqual(["codename", "salary"]);
+    expect(r.scoring.cannotScore.join(" ")).toContain("salary");
+    // Its tier-2 sibling still counts, so this is an addition and not a veto.
+    expect(r.scoring.goldSpansByTier[2]).toBe(1);
+  });
+
+  it("reports the policy the gold was labelled under, off the rows", () => {
+    const r = report([
+      // `p-fin` FIRST, so insertion order is not sorted order: a row a human
+      // compares against another arm's has to be stably ordered.
+      judged([call()], { rung1: 1 }, { itemId: "a", policy: "p-fin" }),
+      judged([call()], { rung1: 1 }, { itemId: "b", policy: "minimal-fixture" }),
+    ]);
+    // A SET, not a single value: a corpus may hold items labelled under two
+    // policies, and refusing that here would be a new rule about corpora rather
+    // than a report of one.
+    expect(r.scoring.goldPolicies).toEqual(["minimal-fixture", "p-fin"]);
+  });
+
+  it("refuses rows that ran DIFFERENT tiers, which describe no single arm", () => {
+    // The same refusal `gateReport` already makes for two IRs or two context
+    // windows, applied to the one setting `scoring.tiersRun` is read from. A
+    // report summing a tier-0 row and a tier-2-only row would state one tier set
+    // for work done under two, and `tiersThisCorpusCannotScore` would be
+    // computed against a tier half the rows never ran.
+    const cfg = (tier0: boolean) => ({
+      tier0,
+      tier1: false,
+      tier2: true,
+      uncertainBelow: UNCERTAIN_BELOW,
+    });
+    expect(() =>
+      report([
+        judged([call()], { rung1: 1 }, { itemId: "a", config: cfg(true) }),
+        judged([call()], { rung1: 1 }, { itemId: "b", config: cfg(false) }),
+      ]),
+    ).toThrow(/disagree on config's tier switches/);
+  });
+});
+
+describe("no verdict on a gate report is a selection", () => {
+  const PRED = "pred:unannounced-deal";
+  const finding = {
+    start: 0,
+    end: 5,
+    text: "hello",
+    entityType: PRED,
+    severity: "high",
+    tier: 2,
+    source: MODEL,
+    confidence: 0.9,
+    action: "redact",
+  } as const;
+  const matching = { start: 0, end: 5, text: "hello", entityType: PRED, action: "redact" } as const;
+
+  it("gives two arms the SAME verdict when only their correctness differs", () => {
+    // The whole of AUDIT-3 in one assertion. Arm A answered the predicate and
+    // its answer is labelled; arm B produced the identical finding against a
+    // corpus that labels nothing. One is right and one is unmatchable, their
+    // throughput is byte-identical, and every gate verdict is identical --
+    // because no gate here reads a gold label. `killedOnRunGates` says so in its
+    // name; `scoring` is the only field that notices the difference.
+    const rows = (gold: readonly (typeof matching)[]) => [
+      judged([call()], { rung1: 1 }, { findings: [finding], gold: [...gold] }),
+    ];
+    const right = report(rows([matching]));
+    const unmatchable = report(rows([]));
+    expect(right.killedOnRunGates).toBe(unmatchable.killedOnRunGates);
+    expect(right.gates).toEqual(unmatchable.gates);
+    expect(right.scoring.tiersThisCorpusCannotScore).toEqual([]);
+    expect(unmatchable.scoring.tiersThisCorpusCannotScore).toEqual([2]);
+  });
+
+  it("carries no gate whose subject is accuracy", () => {
+    const r = report([judged([call()], { rung1: 1 })]);
+    // A list, not a pattern: the property is "every gate is a property of the
+    // run", and a new gate must break this line and force the argument.
+    expect(r.gates.map((g) => g.gate)).toEqual([
+      "p95-ttft",
+      "decode-rate",
+      "resolvable-rate",
+      "duplicate-rate",
+      "non-empty-after-stop",
+    ]);
+    expect(r.scoring.accuracyGated).toBe(false);
+  });
+
+  it("states the boundary in the ARTIFACT, not only in the plan", () => {
+    const r = report([judged([call()], { rung1: 1 })]);
+    // A reader holding only the gates file has to be able to learn that spec
+    // 4.2's primary criterion was never applied. These substrings are the
+    // contract; changing the wording is fine, dropping the facts is not.
+    expect(r.scoring.verdictMeans).toContain("accuracy");
+    expect(r.scoring.verdictMeans).toContain("killedOnRunGates");
+    expect(r.scoring.verdictMeans).toContain("Plan 8");
+    expect(r).not.toHaveProperty("killed");
+  });
+});
+
+describe("the message budget these latencies were taken under", () => {
+  it("is the compiler's own default, so a drift is a failure here", () => {
+    // The same treatment `DEFAULT_TIER2_CALL_BUDGET_MS` gets one layer down, and
+    // for the same reason: `@sih/compiler` is not a dependency of `@sih/eval`
+    // (it is Node-only and shells out to an SDK), so the number cannot be shared
+    // by reference and a copy with nothing comparing it is free to drift.
+    expect(COMPILER_DEFAULT_LATENCY_BUDGET_MS).toBe(5_000);
+    const emitSource = readFileSync(
+      join(REPO_ROOT, "packages", "compiler", "src", "stages", "emit.ts"),
+      "utf8",
+    );
+    const declared = /^export const DEFAULT_LATENCY_BUDGET_MS = ([\d_]+);$/m.exec(emitSource);
+    expect(declared, "the compiler no longer declares DEFAULT_LATENCY_BUDGET_MS").not.toBeNull();
+    expect(Number(declared![1]!.replaceAll("_", ""))).toBe(COMPILER_DEFAULT_LATENCY_BUDGET_MS);
+  });
+
+  it("is reported as a multiple of that default, and read from the run", () => {
+    // TWO budgets, because a report taken only at the fixture's 120,000 cannot
+    // tell "computes the multiple" from "hardcodes 24".
+    const r = report([judged([call({ ttftMs: 700 })], { rung1: 1 })]);
+    expect(r.run.latencyBudgetMs).toBe(120_000);
+    expect(r.run.compilerDefaultLatencyBudgetMs).toBe(5_000);
+    expect(r.run.latencyBudgetTimesCompilerDefault).toBe(24);
+
+    const shipped = report([judged([call({ ttftMs: 700 })], { rung1: 1 })], "compiled", {
+      latencyBudgetMs: 7_500,
+    });
+    expect(shipped.run.latencyBudgetTimesCompilerDefault).toBe(1.5);
+  });
+
+  it("caveats the latency numbers where a reader of them would look", () => {
+    // AUDIT-10: every latency here was taken at 24x the budget a compiled
+    // policy emits, so the degradation a shipped policy would cause is not in
+    // this file. The structured fields above are the machine-readable half; a
+    // reader looking at the p95 itself has to be told beside the number.
+    const r = report([judged([call({ ttftMs: 700 })], { rung1: 1 })]);
+    for (const gate of ["p95-ttft", "decode-rate"]) {
+      const detail = outcome(r, gate).detail;
+      expect(detail, `${gate} does not name the budget its numbers were taken under`).toContain(
+        "120000ms",
+      );
+      expect(detail).toContain("24x");
+    }
+    // And the caveat moves with the budget rather than being a fixed sentence.
+    const shipped = report([judged([call({ ttftMs: 700 })], { rung1: 1 })], "compiled", {
+      latencyBudgetMs: 5_000,
+    });
+    expect(outcome(shipped, "p95-ttft").detail).toContain("1x");
   });
 });
