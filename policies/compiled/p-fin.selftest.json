@@ -1,0 +1,1963 @@
+[
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Can you draft a reply to the customer whose PAN is BQRPK4820M?",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "The tax team needs form 16 reissued for HZTCA1937N before Friday.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "pan_number: MKLPD7264V",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Onboarding record shows AWEFT3518Q as the permanent account number on file.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "I pasted the declaration by mistake; it reads TDNHB6042L in the signature block.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Please verify RJVGS9175K against the income tax portal.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Row 118 of the reconciliation sheet has LXQJP2683C under holder id.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "The scanned card in the ticket shows CFMBN5401D at the top right.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "customer_pan=NPZAK8329R",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Second applicant on the loan file is VUYLT7156G.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Could you check if GHDTM3947P has already been submitted this quarter?",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "The servicing console lists QSNPW6210E for that relationship.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Duplicate entry: ZKBCV4573H appears twice in the upload.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Client sent a photo of the card; the number is FTRPJ8091A.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "holder_pan = DMWFX2364Y",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Compliance flagged XCEHR5738B during the quarterly review.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "The joint holder's permanent account number is PLGBZ9042T.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Draft the correspondence for KRUAQ1687S without changing the address.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "Vendor master shows WBOJN3925F against that empanelment.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "positive",
+    "text": "The rejection notice quotes YNSGD7418M as the mismatched identifier.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "GSTIN 27AABCU9603R1ZM is printed on the vendor invoice.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "TAN on the TDS certificate reads RTKD12345F.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "The batch code ABXDE1234F is stamped on the carton, not a tax id.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Someone typed the value in lowercase as bqrpk4820m in the ticket.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Truncated to nine characters, AAAPZ123C was rejected by the form.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Eleven characters, AAAPZ12345C, does not fit the format either.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Vehicle registration MH12AB1234 appears on the expense claim.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Passport number M1234567 was already redacted by intake.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "The PAN application uses form 49A for residents.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Branch IFSC HDFC0001234 belongs to the branch, not the customer.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Watermark on the sample document reads ZZZZZ0000Z.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Demat account 1234567890123456 was verified separately.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "CIN U72900MH2015PTC123456 identifies the company itself.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Aadhaar 5284 3190 7265 was masked before it was uploaded.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Employee code SVCPL2024A is used by the payroll vendor.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Form 60 was submitted instead, because no permanent account number exists.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Both the TAN and PAN fields were left blank on this submission.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "Acknowledgement 881000123456789 was issued for the pending application.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "A surname such as SHARMA followed by 1234X is not a single token.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-pan",
+    "kind": "negative",
+    "text": "The ITR-V barcode string 0123456789ABCDEF is not an identifier we hold.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "The resident's Aadhaar is 5284 3190 7265 as printed on the letter.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "e-KYC failed for 610273845910; can you tell me why?",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "aadhaar_number: 9041 8273 6456",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Customer read out 2738 1940 5625 over the call for verification.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "The UIDAI record for 489201765337 shows a different address.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Scanned copy in the ticket shows 8361-0294-7587 in the top field.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "uid: 562018493729",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Please reissue the e-Aadhaar for 7209 4618 3509.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Row 42 of the upload carries 391827460524 against that applicant.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "The consent form lists 6473 0291 8457 as the resident identifier.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Biometric authentication failed twice for 850419263748.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "aadhaar = 2193 8475 0618",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Second applicant on the file is 4758 2013 9268.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "The seeding request quotes 930274615838 for the subsidy account.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Front desk typed 5819 4027 3614 into the wrong field.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Mismatch between the name on record and 763401928577.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "The masked copy was rejected, so they sent 2947 1058 6347 in full.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Offline XML was generated for 6820 5931 4708 yesterday.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "resident_uid=317490285616",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "positive",
+    "text": "Aadhaar 8492 0371 6458 is already seeded to the account.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "The test file uses 1234 5678 9012, which is not a real allotment.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "UAN 100234567890 belongs to the provident fund account.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Mobile number 9876543210 was captured at the branch.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Someone transposed two digits and entered 5284 3190 7266 instead.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "The typo 610273845911 was rejected by the portal.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Virtual ID 9152 8837 6540 1122 was shared instead of the number itself.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Bank account 50100234567890 is not an Aadhaar number.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Masked as XXXX XXXX 7265 in the acknowledgement slip.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "The ration card number 1122 3344 5566 is a different scheme entirely.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "PAN BQRPK4820M was quoted alongside on the same form.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "EPF member id MHBAN00123450000012345 appears on the passbook.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Invoice reference 202604180001 is twelve digits but means nothing here.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Voter EPIC number ABC1234567 was submitted as proof instead.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Driving licence MH0320180012345 was accepted for address proof.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "The enrolment id 1234/56789/01234 is not the allotted number.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Only the last four digits, 6458, were quoted in the email.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "GSTIN 27AABCU9603R1ZM appears on the vendor record.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "The OTP 483920 was entered within the validity window.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Sequence 000000000000 came from a corrupted export.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "in-aadhaar",
+    "kind": "negative",
+    "text": "Their passport file number IN1234567890 is not a UIDAI identifier.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Beneficiary branch IFSC is ICIC0004321 for that transfer.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "The salary credit went to A/C No. 50100234567890 last night.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "UPI collect failed for arjun.mehta@okaxis this morning.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "beneficiary_account: 034501500123",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Please confirm the account number 911010027845632 on the mandate.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "The customer's VPA is meera.iyer@ybl and the app shows a timeout.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "NEFT returned unapplied for IFSC UTIB0000123 at that branch.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "vpa=rakesh.k1987@okhdfcbank",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Account 20034567891 was debited twice for the same standing instruction.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "The mandate form lists SBIN0011514 as the destination branch.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Their UPI handle sanjana.rao@paytm bounced the collect request.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Acct 6221450098123 shows a reversal pending since Tuesday.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "IFSC PUNB0123456 was quoted on the cheque return memo.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "upi_id: dev.patel@ibl",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "The current account 002205000456 has an unresolved lien.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Transfer to KKBK0000958 failed the beneficiary name check.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "A/c 30987654321012 belongs to the same relationship group.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Registered VPA nandini.gupta@oksbi is linked to the mobile on file.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "The RTGS instruction quotes YESB0000262 as the receiving branch.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "positive",
+    "text": "Savings account number 40123456789012 was closed in March.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Write to priya.sharma@meridiancap.example.com for the confirmation.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "SWIFT code HDFCINBB was used for the inward remittance.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "MICR 400240012 is printed along the bottom of the cheque.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The branch code 0247 is not an account identifier on its own.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "IFSC-shaped HDFC1001234 has a one where the zero belongs.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Card number 4111 1111 1111 1111 is a documented test value.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The account was closed last quarter and the balance swept out.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Ticket INC0042318 tracks the failed mandate, not the account.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Support alias upi-help@example.org handles these escalations.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The eight-digit ledger folio 40123456 is internal to the branch.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Aadhaar 6102 7384 5910 was seeded to the same relationship.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "GSTIN 27AABCU9603R1ZM sits on the invoice header.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The IBAN GB29NWBK60161331926819 came from the overseas counterparty.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Cheque number 000123 was stopped at the customer's request.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "PAN HZTCA1937N appears on the same onboarding form.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The UPI app version 2.7.14 crashed during the collect flow.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Sort code 60-16-13 belongs to the UK correspondent bank.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Employee reimbursement id EXP-2026-04417 is not a bank identifier.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "The customer asked how UPI virtual payment addresses are formatted.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "bank-account-identifier",
+    "kind": "negative",
+    "text": "Loan account label HOMELOAN is a product code, not a number.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The servicing console shows CIF 30045512 for this relationship.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Customer reference CRN-7781204 was quoted on the complaint.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "KYC case 4471200 is still pending with the verification desk.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "cif_number: 30112847",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Please pull the notes against customer reference number 8830125.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The escalation names KYC/2026/004182 as the open case.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "CIF30045512 was typed without a space in the original ticket.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "customer_ref=CRN 9920481",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Case id KYC 5580331 was closed without a decision.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The relationship manager quoted CIF 40219883 in the handover note.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Duplicate customer reference 7781204 exists under a second CIF.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "kyc_case_id: 4471200",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The remediation list includes CRN-6640912 and nothing else.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Their internal id CIF 30998217 does not match the account holder.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Reopened KYC case 4471905 after the address proof arrived.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The migration report flags customer reference CRN 3320774.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "CIF 51120934 was merged into the parent relationship last year.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Case reference KYC-2026-0918 is with the compliance desk.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "Please confirm the CIF number 30045512 before you reply.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "positive",
+    "text": "The audit sample includes customer reference number 8830177.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Incident ticket INC0042318 tracks the outage, not a customer.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Branch code 0247 identifies the branch and nothing else.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Employee id 88213 belongs to the relationship manager.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "The CIF field was left blank on this submission.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Product code HOMELOAN0247 is a catalogue entry.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Change request CHG0091234 covers the console release.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "The KYC policy document is COMP-2025-04.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Account 50100234567890 is not the customer reference.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Vendor empanelment id VEN-2026-0331 sits in a different system.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Batch job KYCLOAD ran at 02:00 without errors.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "PAN MKLPD7264V was collected during the same KYC review.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "The case was raised in 2026 and closed in 2026.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Regulatory circular RBI/2026-27/118 was cited in the note.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Their loan application number is APP7781204X.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "The CRN column header was misread as a customer reference.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Aadhaar 9041 8273 6456 was collected as identity proof.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Queue name KYC-PENDING holds the unworked cases.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "Desk phone extension 4471 was quoted in the signature block.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "The customer reference was never issued for this prospect.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "internal-customer-id",
+    "kind": "negative",
+    "text": "SLA breach counter 004182 is a metric, not an identifier.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The key AKIAQ7ZP4XN9DLMR2TVB was committed to the feature branch by mistake.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "api_key: sk-live-4Tn8Wq2ZrJb6XdY9pLmK3s",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The Slack bot token is xoxb-8814-2276-Rk9PmZ2wTqLdXn4V and it still works.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "personal_access_token=ghp_Zk9PmZ2wTqLdXn4VRk8QbT3sYc7WxN1eJ0uA",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "client_secret=Hq7Zx2Rm9TbW4pLn6VcY8sKdJ0aFgE3u",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0NDcxMjAwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "access_token: 9f3a7c2e8b1d4056a9e7c3b5d2f8a140e6b9c7d3",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The service account key is AKIAP2W7RQ8VD3XN6KZM according to the console.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "stripe_secret=sk_live_51Kd9XmQpZr7TbWnL4VcY8sKd",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "Please rotate the token xoxp-3390-7741-QzWm8LkTvNb2Rd6X immediately.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "azure_client_secret: Xq7Zb2Rm9TbW4pLn6VcY8sKdJ0aFgE3uHt",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The webhook signing secret whsec_8Kd2mXqR7wZbY4tLpN0cVhJa was in the paste.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "AKIAZ9YT6MW3QN8PLRCV shows up in the terraform plan output.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "Rotate sk-proj-7Zb2Rm9TbW4pLn6VcY8sKdJ0aFgE3u before the release goes out.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The integration still uses token xoxa-2210-5567-MbQ9RkTz4WvL8Xn3.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "service_key: AIzaSyD-9Kd2mXqR7wZbY4tLpN0cVhJa8QbT3sY",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "AKIAB4NC7VX2ZQ9TMLRD was pasted into the incident channel this morning.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "consumer_secret=Jb6XdY9pLmK3sTn8Wq2ZrHq7Zx2Rm9Tb",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "The revoked key sk-test-9Kd2mXqR7wZbY4tLpN0cVhJa is still in the notebook.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "positive",
+    "text": "refresh_token: 1//0eXq7Zb2Rm9TbW4pLn6VcY8sKdJ0aFgE3uHtRk9PmZ2w",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "AKIAIOSFODNN7EXAMPLE is the key id used throughout the AWS documentation.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The docs write it as sk-... so nobody pastes a real one.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "Put <your-api-key-here> in the config before you run it.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The commit sha 4f9a2c7e1b8d3056a9e7c3b5d2f8a140e6b9c7d3 identifies the build.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "request_id: 550e8400-e29b-41d4-a716-446655440000",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The token has been rotated and the old one revoked already.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "retry_backoff_config: DEFAULT_RETRY_BACKOFF_MILLISECONDS",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The base64 of hello world is aGVsbG8gd29ybGQ= and nothing more.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "file_path: /var/log/application/service-worker-output",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "public_key_fingerprint: SHA256:8Kd2mXqR7wZbY4tLpN0cVhJa8QbT3sYcWxN1eJ0uA",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "npm_package_version=2.14.7-beta.3",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The API key field was left empty in the environment file.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "trace_id: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The password policy requires twelve characters and a symbol.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "example_token=xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "git_commit=9a3f7c2e1b8d3056a9e7c3b5d2f8a140",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "AKIA is simply the prefix that AWS access key ids start with.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "docker_image: registry.internal/payments/api:2026.04.17-hotfix",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "The client id is 4f8a2c7e-app and it is not treated as a secret.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "api-credential",
+    "kind": "negative",
+    "text": "authorization_header_name: X-Internal-Service-Token",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "The app is failing against postgresql://svc_ledger@db-prod-01.internal:5432/ledger",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "Reporting still points at mysql://reporting@mysql-rr-03.internal:3306/warehouse",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "mongodb+srv://cluster1.internal/kycdocs?retryWrites=true was in the config map.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "connection_string: mssql://svc_recon@sql-prod-02.internal:1433/recon",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "redis://cache-02.internal:6379/3 is timing out during the peak window.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "The publisher uses amqp://payments@rabbit-01.internal:5672/settlements",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "jdbc:postgresql://db-prod-04.internal:5432/collections is in the datasource bean.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "datasource_url=jdbc:mysql://mysql-01.internal:3306/audit",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "postgres://readonly@10.42.7.19:5432/customer360 was pasted into the ticket.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "Use mongodb://mongo-01.internal:27017/statements for the nightly export.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "The DSN is postgresql://etl_user@db-analytics.internal:5432/marts",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "Server=tcp:sql-prod-02.internal,1433;Database=recon;Encrypt=true",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "host=db-prod-01.internal port=5432 dbname=ledger user=svc_ledger",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "redis://sessions-01.internal:6379/0 appears in the incident notes.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "mysql://svc_billing@mysql-02.internal:3306/billing?sslMode=REQUIRED",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "The staging string mongodb+srv://cluster0-staging.internal/kyc leaked into the ticket.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "jdbc:oracle:thin:@ora-prod-01.internal:1521/FINPRD is the legacy datasource.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "db_url: postgres://svc_alerts@db-prod-03.internal:5432/alerts",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "amqps://events@rabbit-02.internal:5671/audit is the TLS listener.",
+    "detected": false,
+    "shadowedBy": "bank-account-identifier",
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "positive",
+    "text": "Failover target is postgresql://svc_recon@db-dr-01.internal:5432/recon_replica",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The runbook lives at https://intranet.example.com/runbooks/db-restore",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The production database is down and the incident bridge is open.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "Connect with psql -h db-prod-01.internal -U svc_ledger -d ledger",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The export landed at s3://finops-exports/2026/04/ledger.parquet",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "Bootstrap servers are kafka-01.internal:9092,kafka-02.internal:9092",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The schema name is ledger_v2 and the owner is svc_ledger.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "Hop through the bastion with ssh db-prod-01.internal first.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "http://localhost:5432 is not reachable from the laptop.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The connection string was removed from the ticket before it was shared.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "ldap://directory.internal:389 is the corporate directory endpoint.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "Check file:///var/lib/postgresql/data/pg_hba.conf on the primary.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The datasource bean is named primaryDataSource in the Spring config.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The mongo shell takes the host and port on the command line.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "JDBC drivers are packaged inside the fat jar we ship.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The DSN was rotated after last quarter's incident.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "smtp://mail-relay.internal:25 handles outbound notifications.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "db-prod-01.internal resolves to 10.42.7.19 from the bastion.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "PostgreSQL is on version 16 in production and 15 in staging.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "The runbook says to fail over to the replica in the DR region.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "db-connection-string",
+    "kind": "negative",
+    "text": "AMQP is the protocol; the broker itself is rabbit-01.internal.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The paste starts with -----BEGIN RSA PRIVATE KEY----- and runs on for forty lines.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN OPENSSH PRIVATE KEY----- was the first line of the file they attached.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "They pasted -----BEGIN EC PRIVATE KEY----- into the incident channel.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The archive contains -----BEGIN ENCRYPTED PRIVATE KEY----- and a passphrase note.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN PRIVATE KEY----- is sitting in the middle of the ticket description.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The legacy backup still holds -----BEGIN DSA PRIVATE KEY----- from 2019.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN PGP PRIVATE KEY BLOCK----- was exported from the signing workstation.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "hsm_key_label: PROD-SIGNING-KEY-01",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The HSM label for the payments signing key is FINPRD_SIGN_2026.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "private_key_pem: -----BEGIN RSA PRIVATE KEY-----",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The id_rsa they attached begins -----BEGIN OPENSSH PRIVATE KEY----- as expected.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN CERTIFICATE----- and the matching key were both in the same message.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The keystore passphrase and the -----BEGIN ENCRYPTED PRIVATE KEY----- block were pasted together.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN EC PRIVATE KEY----- turned up in the terraform state file.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "signing_key: -----BEGIN PRIVATE KEY-----",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "They attached client.key, which begins -----BEGIN RSA PRIVATE KEY----- on line one.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "HSM key label PAYMENTS_MAC_KEY_03 was quoted in the change request.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "The PKCS#12 bundle and its -----BEGIN PRIVATE KEY----- were shared over chat.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "positive",
+    "text": "-----BEGIN DSA PRIVATE KEY----- is still present in the decommissioned image.",
+    "detected": true,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----BEGIN CERTIFICATE REQUEST----- is what the CSR file starts with.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----BEGIN PUBLIC KEY----- is safe to share with the counterparty.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The deploy key's public half is ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQ",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "They attached id_rsa.pub instead of the private half, so nothing leaked.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The certificate expires on 2026-11-04 and needs renewing.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----END RSA PRIVATE KEY----- was the only line they pasted.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "Run keytool -list -v -keystore prod.jks to see the alias.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The CSR was generated with openssl req -new on the jump host.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "PRIVATE KEY appears in the runbook only as a placeholder word.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The key label column in the HSM inventory is empty for that slot.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----BEGIN PGP PUBLIC KEY BLOCK----- was published on the intranet.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "We rotated the certificate chain last month without incident.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "openssl rsa -in client.key -noout -text prints the modulus.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The JKS truststore holds only public certificates.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----BEGIN X509 CRL----- is served from the revocation endpoint.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "private_key_path: /etc/ssl/private/client.key",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The HSM is a payShield appliance in the primary datacentre.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "-----BEGIN DH PARAMETERS----- is checked into the repo deliberately.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "They shared the key fingerprint, not the key itself.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  },
+  {
+    "entityType": "private-key-material",
+    "kind": "negative",
+    "text": "The passphrase prompt appeared because the key file is encrypted.",
+    "detected": false,
+    "corpusTag": "selftest-v1"
+  }
+]

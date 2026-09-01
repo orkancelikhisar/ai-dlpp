@@ -129,7 +129,7 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
     `[bakeoff] ${report.arm}: ${report.answeredCalls} call(s), ` +
       report.gates.map((g) => `${g.gate}=${g.verdict}${g.observed === undefined ? "" : `(${g.observed.toFixed(1)})`}`).join(" ") +
       ` | promptTokens ${JSON.stringify(report.promptTokens)} completionTokens ` +
-      `${JSON.stringify(report.completionTokens)} segmentChars ${JSON.stringify(report.segmentChars)}` +
+      `${JSON.stringify(report.completionTokens)} judgedUnitChars ${JSON.stringify(report.judgedUnitChars)}` +
       ` | degraded ${JSON.stringify(report.degradedNotices)}`,
   );
   // Printed beside the numbers, not only written into the file: the person
@@ -151,7 +151,7 @@ test("runs one arm end to end and writes the gate verdict beside the records", a
   // the engine's prompt tokens over exactly those calls, and the character
   // sizes of the segments this arm ran.
   expect(report.promptTokens).not.toBeUndefined();
-  expect(report.segmentChars).not.toBeUndefined();
+  expect(report.judgedUnitChars).not.toBeUndefined();
   // Every reason word is a key, so a zero is a measurement rather than a gap.
   expect(Object.keys(report.degradedNotices).sort()).toEqual([
     "absent",

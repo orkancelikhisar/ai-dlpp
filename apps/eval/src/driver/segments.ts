@@ -73,6 +73,17 @@ import type { CorpusItem } from "./corpus.js";
  */
 
 /** Character (UTF-16 code unit) counts, UTF-8 byte counts, word counts, and segments-per-message. */
+/**
+ * What ONE engine call covers on an arm.
+ *
+ * Declared here rather than in `bakeoff.ts` because this module is the lower
+ * layer -- bakeoff imports segments and not the other way round -- and both
+ * `FamilyShape.judgedUnit` and `SegmentSizeDistribution.unit` have to be the
+ * same union or a family could be paired with a distribution measured over the
+ * other one.
+ */
+export type JudgedUnit = "segment" | "message";
+
 export interface SizeStats {
   readonly p50: number;
   readonly p95: number;
@@ -81,11 +92,33 @@ export interface SizeStats {
 }
 
 export interface SegmentSizeDistribution {
+  /**
+   * What ONE engine call covers on the arm this distribution describes, and
+   * therefore what `chars`, `bytes`, `words` and `perItem` are counted over.
+   *
+   * `"segment"` is the compiled judge: escalation picks segments and the judge
+   * makes one call per selected segment. `"message"` is Approach B, which does
+   * not escalate and does not segment -- it makes one call per message with the
+   * whole policy and the whole message in it.
+   *
+   * A FIELD rather than a caller's memory of what it asked for, because the two
+   * distributions are both well-formed and neither says so anywhere else. On
+   * `smoke.jsonl` a segment distribution reports a p50 of 62 characters and a
+   * message distribution 78: a report carrying the wrong one puts a plausible
+   * number under a gate whose ceiling was derived at the other unit.
+   */
+  readonly unit: JudgedUnit;
   /** Corpus items measured. */
   readonly items: number;
-  /** Every segment `segmentText` produced, selected or not. */
+  /**
+   * Every segment `segmentText` produced, selected or not.
+   *
+   * A fact about the CORPUS, so it is counted the same way under both units --
+   * on a message distribution it is the segmentation Approach B does not use,
+   * kept because it is what makes the two units comparable at all.
+   */
   readonly segmentsTotal: number;
-  /** Segments the escalation policy SELECTED -- the sample everything below describes. */
+  /** Judged units SELECTED -- the sample everything below describes. */
   readonly count: number;
   /**
    * Segment size in UTF-16 code units, the unit every offset in this pipeline
@@ -110,7 +143,7 @@ export interface SegmentSizeDistribution {
   /** Whitespace-delimited words per segment. `undefined` when `count` is 0. */
   readonly words: SizeStats | undefined;
   /**
-   * Selected segments per corpus ITEM, one sample per item, zeroes included.
+   * Selected judged units per corpus ITEM, one sample per item, zeroes included.
    *
    * The budget being sized is per message and a judge makes one engine call per
    * selected segment, so this is the multiplier on any per-call latency. It is
@@ -118,7 +151,9 @@ export interface SegmentSizeDistribution {
    * costs three calls.
    *
    * `undefined` only when there are no items at all -- an item that selected
-   * nothing is a 0 in the sample, not an absence from it.
+   * nothing is a 0 in the sample, not an absence from it. Under
+   * `unit: "message"` every sample is 1 by construction, which is the whole of
+   * what "one call per message" costs.
    */
   readonly perItem: SizeStats | undefined;
   /** The raw samples, so a percentile quoted anywhere else can be re-derived. */
@@ -137,6 +172,17 @@ export interface SegmentSizeDistribution {
    * than left to the caller's memory of what it passed.
    */
   readonly escalation: {
+    /**
+     * Whether escalation SELECTED this distribution's sample at all.
+     *
+     * False exactly when `unit` is `"message"`: Approach B judges every message
+     * unconditionally, so `hasPredicates` and `uncertainBelow` below describe
+     * inputs that decided nothing here. They are still recorded, because they
+     * are what the PAIRED compiled family escalated on and a reader comparing
+     * the two families needs both sides -- but read them as the other arm's
+     * condition, not as this one's.
+     */
+    readonly applies: boolean;
     readonly hasPredicates: boolean;
     readonly uncertainBelow: number;
     /**
@@ -188,6 +234,19 @@ export interface SegmentSizeOptions {
   readonly priorFindings?: (item: CorpusItem) => readonly Finding[];
   /** Forwarded to `uncertainSegmentStarts`; defaults to core's `UNCERTAIN_BELOW`. */
   readonly uncertainBelow?: number;
+  /**
+   * What one engine call covers on the arm being sized. Defaults to
+   * `"segment"`, which is the compiled judge and was the only arm this module
+   * had when it was written.
+   *
+   * Under `"message"` escalation is not consulted: the sample is one whole
+   * message per item, `perItem` is all 1s, and `escalation.applies` is false.
+   * `priorFindings` is still meaningful there and is still recorded through
+   * `hasPriors` -- an Approach-B arm with tier 0 in front of it really does run
+   * tier 0, and `gateReport` uses that flag to refuse a report carrying the
+   * other family's distribution.
+   */
+  readonly unit?: JudgedUnit;
 }
 
 /**
@@ -268,6 +327,7 @@ export function segmentSizeDistribution(
   // that ran tier 0.
   const hasPriors = options.priorFindings !== undefined;
   const priorFindings = options.priorFindings ?? (() => []);
+  const unit = options.unit ?? "segment";
 
   const chars: number[] = [];
   const bytes: number[] = [];
@@ -278,6 +338,18 @@ export function segmentSizeDistribution(
   for (const item of items) {
     const segments = segmentText(item.text);
     segmentsTotal += segments.length;
+    if (unit === "message") {
+      // No escalation call at all, rather than one whose result is discarded.
+      // Approach B is shown the message whatever any tier below found, and
+      // running `selectSegments` here to throw the answer away would leave a
+      // reader of this loop believing the two units differ only in how the
+      // samples are aggregated.
+      perItem.push(1);
+      chars.push(item.text.length);
+      bytes.push(utf8Length(item.text));
+      words.push(countWords(item.text));
+      continue;
+    }
     // `uncertainSegmentStarts` is what turns findings into the segment starts
     // `selectSegments` demands, and the conversion is never done by hand here
     // because the natural hand version -- passing finding starts -- is wrong.
@@ -297,6 +369,7 @@ export function segmentSizeDistribution(
   }
 
   return {
+    unit,
     items: items.length,
     segmentsTotal,
     count: chars.length,
@@ -305,7 +378,7 @@ export function segmentSizeDistribution(
     words: sizeStats(words),
     perItem: sizeStats(perItem),
     samples: { chars, bytes, words, perItem },
-    escalation: { hasPredicates, uncertainBelow, hasPriors },
+    escalation: { applies: unit === "segment", hasPredicates, uncertainBelow, hasPriors },
   };
 }
 

@@ -1,8 +1,14 @@
 import type { Page } from "@playwright/test";
 import { UNCERTAIN_BELOW, type TierConfig } from "@sih/core";
 import type { Tier1Config } from "@sih/tier1";
+import type { JudgeCallRecord } from "@sih/tier2";
 import type { CorpusItem } from "./corpus.js";
-import { RECORD_SCHEMA_VERSION, type RunRecord, type Tier2RunConfig } from "./record.js";
+import {
+  RECORD_SCHEMA_VERSION,
+  type RecordDetector,
+  type RunRecord,
+  type Tier2RunConfig,
+} from "./record.js";
 
 export interface ArmSpec {
   runId: string;
@@ -40,6 +46,22 @@ export interface ArmSpec {
    * it there as "which arm of the matrix this row belongs to" and nothing more.
    */
   backend: "wasm" | "webgpu";
+  /**
+   * Which implementation the PAGE will run for this arm, stamped onto every
+   * record. See `DetectorSchema` in record.ts for what the two values mean.
+   *
+   * Required with no default, and the caller has to be right about it: this
+   * function decides which page counters to read from it (`tier2Status` versus
+   * `baselineStatus`) and the schema couples both stats fields to it, so a
+   * mislabelled arm is a row with the wrong counters or no counters at all
+   * rather than a row with a wrong word on it.
+   *
+   * `runArm` does not check the coupling and cannot: it never loads anything,
+   * so it has no way to know which detector the page holds. The caller that
+   * loaded it does -- see `runBakeoff` in driver/bakeoff.ts, which calls
+   * `loadBaseline` and passes `approach-b` on the same branch.
+   */
+  detector: RecordDetector;
   provider: string;
   config: TierConfig;
   /**
@@ -132,6 +154,45 @@ async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Prom
 }
 
 /**
+ * One arm's engine-call rows, mapped so they survive the JSON round trip.
+ *
+ * ONE function for both arms, and that is the point rather than tidiness: the
+ * bake-off's p95 TTFT gate and its decode-rate floor are computed over exactly
+ * this column on the compiled arm and on Approach B, so two copies of this
+ * mapping would be two definitions of "a non-finite rate" free to drift on the
+ * one number a FLOOR gate reads.
+ *
+ * Two fields need converting rather than copying, and both were measured:
+ *
+ * `ttftMs` -- `JudgeCallRecord` leaves a non-finite time-to-first-token
+ * deliberately unguarded, because a NaN there is a fact about the call. But
+ * MEASURED, `JSON.stringify(NaN)` is "null" and zod's `z.number()` rejects NaN,
+ * so copying it would write a file this module's own reader refuses. Null is
+ * that same fact spelled so it survives the round trip; `undefined` stays
+ * `undefined`, because "the engine reported none" and "the engine reported
+ * something that is not a number" are different facts.
+ *
+ * `decodeTokPerSec` -- the same mapping, for the same reason, on the field where
+ * the non-finite case is MORE reachable rather than less: the library computes
+ * it as `completion_tokens / decode_time` with no zero guard, so a call
+ * interrupted before its first token is a literal 0/0. `bakeoff.ts` computes the
+ * `minDecodeTokPerSec` gate from this column and excludes the nulls, which it
+ * can only do because the null arrives.
+ */
+function callRows(calls: readonly JudgeCallRecord[]): NonNullable<RunRecord["tier2Stats"]>["calls"] {
+  return calls.map((call) => ({
+    finishReason: call.finishReason,
+    promptTokens: call.promptTokens,
+    completionTokens: call.completionTokens,
+    ttftMs: call.ttftMs === undefined || Number.isFinite(call.ttftMs) ? call.ttftMs : null,
+    decodeTokPerSec:
+      call.decodeTokPerSec === undefined || Number.isFinite(call.decodeTokPerSec)
+        ? call.decodeTokPerSec
+        : null,
+  }));
+}
+
+/**
  * Did the browser survive the item that just threw?
  *
  * This is the difference between "this arm scored badly" and "this run died",
@@ -163,6 +224,19 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
         `${spec.config.backend}; one arm cannot measure two runtimes`,
     );
   }
+  // Refused rather than dropped. Approach B does not escalate, so a threshold on
+  // its config selected nothing; silently deleting it here would let a caller
+  // believe it had varied an experiment variable that this arm has no
+  // equivalent of. Checked before the page is touched, like the one above,
+  // because it is an argument error rather than anything about this run.
+  if (spec.detector === "approach-b" && spec.config.uncertainBelow !== undefined) {
+    throw new Error(
+      `arm "${spec.arm}" runs Approach B and its TierConfig carries uncertainBelow ` +
+        `${spec.config.uncertainBelow}; that threshold decides which SEGMENTS escalate to the ` +
+        `compiled judge, and B judges the whole message in one call without escalating, so the ` +
+        `row would name a knob that turned nothing`,
+    );
+  }
   // ONE object, built here and used for both the call and the record, so the two
   // cannot drift: whatever `detect` was given is literally what gets stamped.
   const config: TierConfig = { ...spec.config, backend: spec.backend };
@@ -177,7 +251,15 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
   // stamping a threshold there would be a record naming a knob that turned
   // nothing -- the intent-as-fact defect, arriving through a field that happens
   // to be available.
-  if (config.tier2) config.uncertainBelow = spec.config.uncertainBelow ?? UNCERTAIN_BELOW;
+  //
+  // And only on the CORE path, for exactly the same reason one layer over.
+  // Approach B reports `tier2: true` -- a model read the message -- but it does
+  // not escalate and does not segment: it makes one call per message, always.
+  // So on a B arm this threshold selects nothing, and `RunRecordSchema` refuses
+  // a B row that carries one.
+  if (config.tier2 && spec.detector === "core-orchestrator") {
+    config.uncertainBelow = spec.config.uncertainBelow ?? UNCERTAIN_BELOW;
+  }
   // Deliberately does NOT navigate. Task 12 loads a tier-1 model into the page
   // before calling this, and a goto() here would discard it and silently
   // measure a tier-0 run under a tier-1 arm label. The caller owns page state.
@@ -241,6 +323,7 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
     let timings: RunRecord["timings"] = { tier0Ms: 0 };
     let tier1Stats: RunRecord["tier1Stats"];
     let tier2Stats: RunRecord["tier2Stats"];
+    let baselineStats: RunRecord["baselineStats"];
     // Absent on a thrown item, like the two stats fields and for a reason that
     // is the same one stated the other way round: `detect` throws whole, so
     // there is no result to read an account of degradation off. An empty array
@@ -265,7 +348,7 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
           // read it in a later round trip would be racing the loop it belongs
           // to. Asked for only when tier 1 is enabled, so a tier-0 arm neither
           // needs `tier1Status` to exist nor carries a value it cannot justify.
-          (request) =>
+          ({ request, isBaseline }) =>
             window.__sih!.detect(request).then((detection) => ({
               detection,
               tier1: request.config.tier1 ? window.__sih!.tier1Status()?.lastDetect : undefined,
@@ -274,9 +357,23 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
               // cost over a 1,500-item corpus, and `lastDetect` is overwritten
               // by the next `detect`, so anything reading it later would race
               // the loop it belongs to.
-              tier2: request.config.tier2 ? window.__sih!.tier2Status()?.lastDetect : undefined,
+              //
+              // Which of the two the page is asked for follows from the ARM's
+              // detector, not from what happens to be loaded: `baselineStatus`
+              // on a compiled arm and `tier2Status` on an Approach-B arm both
+              // return `undefined` rather than throwing, so reading the wrong
+              // one would produce a row missing its counters and a schema
+              // rejection naming a field rather than the arm.
+              tier2:
+                !isBaseline && request.config.tier2
+                  ? window.__sih!.tier2Status()?.lastDetect
+                  : undefined,
+              baseline: isBaseline ? window.__sih!.baselineStatus()?.lastDetect : undefined,
             })),
-          { text: item.text, provider: spec.provider, config },
+          {
+            request: { text: item.text, provider: spec.provider, config },
+            isBaseline: spec.detector === "approach-b",
+          },
         ),
         spec.itemTimeoutMs,
         `detection for item "${item.id}"`,
@@ -322,33 +419,41 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
             // fact about the message; see Tier2CallSchema for the whole
             // argument, including why the bake-off's p95 TTFT gate cannot be
             // computed from a per-message aggregate.
-            calls: both.tier2.calls.map((call) => ({
-              finishReason: call.finishReason,
-              promptTokens: call.promptTokens,
-              completionTokens: call.completionTokens,
-              // The one value that needs converting rather than copying.
-              // `JudgeCallRecord` leaves a non-finite time-to-first-token
-              // deliberately unguarded, because a NaN there is a fact about the
-              // call -- but MEASURED, `JSON.stringify(NaN)` is "null" and zod's
-              // `z.number()` rejects NaN, so copying it would write a file this
-              // module's own reader refuses. Null is that same fact spelled so
-              // it survives the round trip; `undefined` stays `undefined`,
-              // because "the engine reported none" and "the engine reported
-              // something that is not a number" are different facts.
-              ttftMs:
-                call.ttftMs === undefined || Number.isFinite(call.ttftMs) ? call.ttftMs : null,
-              // The same mapping, for the same round-trip reason, on the field
-              // where the non-finite case is MORE reachable rather than less:
-              // the library computes this one as `completion_tokens /
-              // decode_time` with no zero guard, so a call interrupted before
-              // its first token is a literal 0/0. `bakeoff.ts` computes the
-              // `minDecodeTokPerSec` gate from this column and excludes the
-              // nulls, which it can only do because the null arrives.
-              decodeTokPerSec:
-                call.decodeTokPerSec === undefined || Number.isFinite(call.decodeTokPerSec)
-                  ? call.decodeTokPerSec
-                  : null,
-            })),
+            calls: callRows(both.tier2.calls),
+          };
+        }
+        // `BaselineStats` WHOLE, projected the same way and already a DELTA for
+        // the same reason: `baselineDelta` in the page subtracts the snapshot
+        // it took, because `BaselineB.stats` is CUMULATIVE across every message
+        // the arm has processed. One arm on a delta and the other on a total is
+        // a head-to-head that means nothing, so both are handled identically.
+        //
+        // Not `tier2Stats`: three of these counters are different events from
+        // the judge's and one of them the judge does not have at all. See
+        // BaselineStatsSchema in record.ts.
+        if (both.baseline !== undefined) {
+          baselineStats = {
+            rung1: both.baseline.rung1,
+            rung2: both.baseline.rung2,
+            unresolvedQuotes: both.baseline.unresolvedQuotes,
+            unknownEntityTypes: both.baseline.unknownEntityTypes,
+            duplicatesDropped: both.baseline.duplicatesDropped,
+            repairAttempts: both.baseline.repairAttempts,
+            failedClosed: both.baseline.failedClosed,
+            truncatedResponses: both.baseline.truncatedResponses,
+            abortedResponses: both.baseline.abortedResponses,
+            messagesJudged: both.baseline.messagesJudged,
+            deadlineExpiries: both.baseline.deadlineExpiries,
+            messageBudgetExpiries: both.baseline.messageBudgetExpiries,
+            callerAbortsMidGeneration: both.baseline.callerAbortsMidGeneration,
+            callerAbortsWhileQueued: both.baseline.callerAbortsWhileQueued,
+            // The SAME projection the judge's rows get, from the same function.
+            // B makes one call per message plus the one repair retry, so a row
+            // per call is what the p95 TTFT and decode gates are computed over
+            // on both arms -- and two copies of this mapping would be two
+            // definitions of "a non-finite rate", free to drift on exactly the
+            // column a floor gate reads.
+            calls: callRows(both.baseline.calls),
           };
         }
         return both.detection;
@@ -424,6 +529,11 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       irHash,
       policyHash,
       arm: spec.arm,
+      // Which implementation produced this row, from the same value that chose
+      // which page counters to read above. `arm` is free text and a label; this
+      // is the fact a scorer needs in order to know which stats field to read
+      // and which comparison the row belongs to.
+      detector: spec.detector,
       backend: spec.backend,
       provider: spec.provider,
       // The exact object handed to `detect` above -- the caller's config with
@@ -450,6 +560,11 @@ export async function runArm(page: Page, spec: ArmSpec): Promise<RunRecord[]> {
       // The same, one tier up: the judge's rung distribution, its stop
       // accounting and one row per engine call.
       tier2Stats,
+      // Approach B's counterpart to that, on the arms where a model read the
+      // whole message against the whole policy instead. Exactly one of the two
+      // is populated on a returned row, and RunRecordSchema keys which one off
+      // `detector`.
+      baselineStats,
       // The message the offsets in `findings` and `gold` index into, and the
       // one detection actually ran on -- both read from the same `item.text`,
       // so a record cannot carry findings produced from a different string than

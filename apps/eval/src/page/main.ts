@@ -20,8 +20,12 @@ import {
 } from "@sih/tier1";
 import {
   WebLlmJudge,
+  createBaselineB,
+  createBaselineBPlusTier0,
   createWebLlmEngine,
   resolveTier2Config,
+  type BaselineB,
+  type BaselineStats,
   type JudgeStats,
   type Tier2Config,
   type WebLlmEngine,
@@ -32,14 +36,19 @@ import {
 // a total (one detect per page) nor an adapter below web-llm's floor from one
 // above it (one machine). Each module's docblock carries the mutation that
 // proved it.
+import { baselineDelta, type BaselineDetectStats } from "./baseline-delta.js";
 import { judgeDelta, type Tier2DetectStats } from "./judge-delta.js";
 import { meetsWebLlmAdapterFloor } from "./webgpu-floor.js";
 // Copied from packages/core/test/fixtures/minimal-ir.ts and owned by this app:
 // core's test fixture is a TypeScript module, and importing it would both make
 // a test-only artifact a runtime dependency of the harness and bypass the thing
 // worth exercising here -- the extension receives a compiled IR as JSON text and
-// parses it with loadPolicyIr, so the page must too. Later tasks replace this
-// with a real compiled policy; until then it is a placeholder, not a baseline.
+// parses it with loadPolicyIr, so the page must too. It is still a placeholder
+// and not a baseline -- `policyHash: "test-hash"` -- but it is no longer the
+// only kind of IR here: `p-fin` below is real compiler output, and this one
+// stays because it is the default every tier-0 and tier-1 spec is written
+// against and because ONE tier-1 entityType is a shape the compiled policy does
+// not have.
 import minimalIrJson from "../../fixtures/minimal-ir.json?raw";
 // The SECOND fixture, and the reason it exists rather than a variation on the
 // first. `minimal-ir.json` declares exactly ONE tier-1 entityType, so every
@@ -72,6 +81,39 @@ import multiclassIrJson from "../../fixtures/multiclass-ir.json?raw";
 // lifecycle fixture and the number is sized for that; it is NOT a claim that
 // tier 2 fits a 5 s budget, and Task 9 measured that on this corpus it does not.
 import semanticIrJson from "../../fixtures/semantic-ir.json?raw";
+// The FOURTH IR, and the only one in this page that a compiler produced. The
+// other three are hand-written fixtures whose `policyHash` is the literal string
+// "test-hash", and that is what kept Approach B unrunnable: `planBakeoff`
+// refuses to pair a B arm with a compiled arm unless the IR's `policyHash` is
+// the sha256 of a document this repository holds, and no hand-written fixture
+// can satisfy that for any real file. This one carries
+// ebb3cd68d973175f3ea40faeec00685e2cb9d83c6940e96a57e88ee269e8110a, which is
+// `shasum -a 256 policies/p-fin.md`.
+//
+// It is real compiler output -- extraction, grounding, predicate minting, regex
+// validation, the tier-0 self-test and emission all ran -- from the OFFLINE
+// path: `scripts/compile-policies.ts` replays the committed LLM fixtures rather
+// than calling the API, and `packages/compiler/test/compiled.test.ts` recompiles
+// it on every suite run and requires byte equality. What it is NOT is a live
+// frontier-model compile; the model responses behind it are the hand-authored
+// stand-ins `scripts/record-fixtures.ts` describes, and Plan 5 defers the live
+// pass.
+//
+// `latencyBudgetMs` is 5,000 here -- the compiler's default, since p-fin.md
+// states no budget -- against `semantic-ir.json`'s 120,000. That is a 24x
+// difference in what a tier-2 arm is allowed to spend per message and it is NOT
+// a fixture that drifted: this is the number a shipped policy carries, and Plan
+// 5 measured one tier-2 call at 4.6 s on the cheapest pinned arm. So an arm run
+// against THIS IR will degrade on the budget, loudly, in `degraded`. That is the
+// true number and it stays.
+import pFinIrJson from "../../../../policies/compiled/p-fin.ir.json?raw";
+// The policy DOCUMENT, which only Approach B is shown. Imported beside the IR it
+// was compiled from, because the pairing is the whole premise of the arm: B
+// reads the prose, the compiled arm reads the IR, and shown two different
+// policies they compare two policies rather than two methods. `loadBaseline`
+// refuses a pairing whose sha256 does not match the loaded IR's `policyHash`,
+// so the two cannot come apart inside this page either.
+import pFinPolicyText from "../../../../policies/p-fin.md?raw";
 // Reached by PATH rather than by the package's own subpath export, because
 // onnxruntime-web's `exports` map publishes no `./dist/*` entry -- there is no
 // specifier that names this file. See `loadOrtRuntime` for why the page has to
@@ -281,6 +323,67 @@ export interface Tier2Status {
   readonly lastDetect: Tier2DetectStats | undefined;
 }
 
+// Declared in `baseline-delta.ts` beside the function that builds one, for the
+// reason `Tier2DetectStats` is declared in `judge-delta.ts`.
+export type { BaselineDetectStats };
+
+/** Which Approach-B arm to build. The two differ only in whether core's tier 0 runs. */
+export type BaselineFamily = "baseline-b" | "baseline-b-tier0";
+
+export interface BaselineLoadOptions {
+  readonly family: BaselineFamily;
+  /** A key of `POLICY_FIXTURES`. The document B is shown, verbatim and entire. */
+  readonly policy: string;
+}
+
+/**
+ * What an Approach-B load actually did, as opposed to what it was asked to do.
+ *
+ * `policyDocSha256` and `irPolicyHash` are BOTH here and are the same value on
+ * every successful load, which looks redundant and is not: the load is refused
+ * when they differ, so carrying both is what lets a driver read the pairing off
+ * the report rather than trusting that the refusal exists. `policyChars` is the
+ * one number that says how much bigger B's prompt is than the compiled judge's
+ * -- the judge is shown one segment, B is shown this whole document on every
+ * call -- and the p95 TTFT gate's ceiling was derived at ~1.1 kB.
+ */
+export interface BaselineLoadReport {
+  readonly family: BaselineFamily;
+  readonly policy: string;
+  /** sha256 of the document text this page holds, lowercase hex. */
+  readonly policyDocSha256: string;
+  /** The loaded IR's `policyHash`, verbatim. Equal to the above or the load threw. */
+  readonly irPolicyHash: string;
+  /** UTF-16 code units of policy text in every Approach-B prompt. */
+  readonly policyChars: number;
+  /**
+   * The per ENGINE CALL budget this arm holds, which is the judge's own
+   * `callBudgetMs` off the tier-2 load report and never a number of this
+   * function's choosing. Two arms at different per-call budgets measure the
+   * deadline rather than the method.
+   */
+  readonly callBudgetMs: number;
+  /** The tier-2 engine this arm runs on, from `loadTier2`'s observed id. */
+  readonly servedModelId: string;
+}
+
+export interface BaselineStatus {
+  readonly load: BaselineLoadReport;
+  /** The arm's counters since it was constructed, plus every call row. */
+  readonly totals: BaselineStats;
+  /**
+   * The most recent `detect` this arm ran, as deltas. `undefined` until one has.
+   *
+   * Same job as `Tier2Status.lastDetect` and one caveat lighter: B makes one
+   * call per message unconditionally, so unlike the judge there is no path
+   * where it returns a verdict without touching the engine. A `lastDetect`
+   * whose `calls` is empty therefore means the call was stopped -- by the
+   * per-call budget, by the message budget, or by an abort -- rather than never
+   * attempted, and the counters say which.
+   */
+  readonly lastDetect: BaselineDetectStats | undefined;
+}
+
 /** A `detect` run under a per-call budget this page chooses, with that run's judge stats. */
 export interface BudgetedDetectRequest extends DetectRequest {
   /**
@@ -377,6 +480,41 @@ export interface SihPageApi {
    */
   useIr(name: string): Promise<string>;
   /**
+   * sha256 of one of this page's pinned policy DOCUMENTS, lowercase hex.
+   *
+   * The `irHash` of the other half of a compile. A driver plans an Approach-B
+   * arm from a document it read off disk and the page shows B the document it
+   * bundled, and nothing else in the pipeline compares the two -- so a bake-off
+   * could plan against `policies/p-fin.md` while the page served a stale copy,
+   * and every record would look correct. `shasum -a 256 policies/p-fin.md`
+   * reproduces this.
+   */
+  policyDocHash(name: string): Promise<string>;
+  /**
+   * Build an Approach-B arm on the loaded tier-2 engine and make `detect` use
+   * it INSTEAD of core's orchestrator.
+   *
+   * This is the door Approach B had no other way through. `detect` is core's
+   * orchestrator with a `WebLlmJudge` behind it; `createBaselineB` is a
+   * `Detector` in its own right -- no compiler, no tiers, the whole policy and
+   * the whole message in one call -- so no amount of `TierConfig` reaches it.
+   *
+   * Requires `loadTier2` first, and takes the engine, the resolved
+   * `Tier2Config` and the per-call budget from that load rather than from this
+   * caller. That is the single biggest fairness lever available here: the model
+   * id, the context window, the temperature, the token ceiling, the
+   * grammar-constrained decoding path and the per-call deadline are then the
+   * same OBJECT the compiled arm ran on, not the same numbers by convention.
+   *
+   * Refuses a policy document whose sha256 is not the loaded IR's `policyHash`.
+   * B's entire premise is being shown the document the compiled arm's IR came
+   * from; shown a different one it wins or loses for a reason invisible in every
+   * number the run produces.
+   */
+  loadBaseline(options: BaselineLoadOptions): Promise<BaselineLoadReport>;
+  /** `undefined` until `loadBaseline` has succeeded. */
+  baselineStatus(): BaselineStatus | undefined;
+  /**
    * Whether this browser can actually run `backend`, asked of the browser
    * rather than guessed from a user agent.
    *
@@ -422,6 +560,22 @@ export interface SihPageApi {
   loadTier2(options: Tier2LoadOptions): Promise<Tier2LoadReport>;
   /** `undefined` until `loadTier2` has succeeded. */
   tier2Status(): Tier2Status | undefined;
+  /**
+   * Release the loaded tier-2 engine and everything built on it.
+   *
+   * `loadTier2` already unloads before it replaces an arm, and its docblock
+   * gives the reason with the numbers: two live engines hold two copies of the
+   * weights on one GPU and the two largest pinned arms are 3,432 and 3,438 MB.
+   * The same argument applies BETWEEN arms of a bake-off, where `runBakeoff`
+   * navigates rather than reloads -- and navigation destroys the JS context
+   * without promising the GPU allocation goes with it. That promise is the part
+   * nothing here can make: no measurement in this repository says when Chrome
+   * releases a `GPUDevice` whose page has gone away, so this is the explicit
+   * release rather than a claim about what the implicit one does.
+   *
+   * A no-op when nothing is loaded, so a caller need not track that.
+   */
+  unloadTier2(): Promise<void>;
   /**
    * One `detect` under a per-CALL budget of this caller's choosing, plus the
    * judge stats that run produced. The loaded engine is reused, so what a tiny
@@ -485,13 +639,40 @@ declare global {
  * arbitrary text, and the difference is `irHash`'s whole value. A record's
  * `irHash` is checkable from outside the browser -- `shasum -a 256` on a file
  * in this repo reproduces it -- and a spec that could inject IR text would make
- * half the records in a run name an artifact nobody can produce. Adding a
- * compiled policy here is one line and keeps that property.
+ * half the records in a run name an artifact nobody can produce. `p-fin` is
+ * that compiled policy, added as one line, and it keeps the property: its
+ * digest is `shasum -a 256 policies/compiled/p-fin.ir.json`.
+ *
+ * Three of the four are hand-written fixtures whose `policyHash` is the literal
+ * string "test-hash". Only `p-fin` can be paired with a policy DOCUMENT, which
+ * is what an Approach-B arm needs -- see `POLICY_FIXTURES` and `loadBaseline`.
  */
 const IR_FIXTURES: Readonly<Record<string, string>> = {
   minimal: minimalIrJson,
   multiclass: multiclassIrJson,
   semantic: semanticIrJson,
+  "p-fin": pFinIrJson,
+};
+
+/**
+ * Every policy DOCUMENT this page can show an Approach-B arm, by name.
+ *
+ * A named registry for exactly the reason `IR_FIXTURES` is one: `policyDocHash`
+ * is checkable from outside the browser with `shasum -a 256`, and a
+ * `loadBaseline(policyText)` taking arbitrary text would let a spec show B a
+ * document nobody can reproduce. The names are the same names, so `"p-fin"`
+ * here and `"p-fin"` there are the two halves of one compile -- and
+ * `loadBaseline` checks that rather than trusting it.
+ *
+ * Only p-fin, because only p-fin has a compiled IR: `policies/p-med.md` and
+ * `policies/p-corp.md` are in the repository, but no committed LLM fixture
+ * answers their compile prompts (MEASURED -- `scripts/compile-policies.ts`
+ * reports both as needing a live pass), so pairing either with an IR is
+ * impossible today and a document here without one would be a door onto a
+ * comparison that cannot be made.
+ */
+const POLICY_FIXTURES: Readonly<Record<string, string>> = {
+  "p-fin": pFinPolicyText,
 };
 
 export type IrName = keyof typeof IR_FIXTURES & string;
@@ -576,7 +757,26 @@ async function useIr(name: string): Promise<string> {
   irJson = IR_FIXTURES[name] as string;
   ir = PARSED_IRS[name] as PolicyIr;
   irHash = digestHex(irJson);
+  // A baseline arm holds a policy document paired with the IR that was loaded
+  // when it was built, and switching IRs breaks that pairing silently: the arm
+  // would keep showing its model p-fin's prose while `detect` resolved actions
+  // against another policy's entityTypes. Dropped rather than re-checked,
+  // because re-checking would make `useIr` succeed or fail depending on which
+  // arm happens to be loaded, and a driver navigates a fresh page per arm
+  // anyway.
+  baseline = undefined;
+  lastBaselineDetect = undefined;
   return irHash;
+}
+
+/** sha256 of one pinned policy document. See `SihPageApi.policyDocHash`. */
+async function policyDocHash(name: string): Promise<string> {
+  if (!Object.hasOwn(POLICY_FIXTURES, name)) {
+    throw new Error(
+      `unknown policy "${name}"; this page carries ${Object.keys(POLICY_FIXTURES).join(", ")}`,
+    );
+  }
+  return digestHex(POLICY_FIXTURES[name] as string);
 }
 
 // -- tier 1 ------------------------------------------------------------------
@@ -1196,7 +1396,161 @@ async function loadTier2(options: Tier2LoadOptions): Promise<Tier2LoadReport> {
   // answered with it. The warm-up does not go through the judge at all, so this
   // is belt and braces rather than a correction.
   lastTier2Detect = undefined;
+  // A baseline arm is built ON an engine. Replacing the engine leaves the arm
+  // holding an unloaded one, so it goes with it -- and `loadBaseline` has to be
+  // called again, which is what makes its report describe the engine it runs on.
+  baseline = undefined;
+  lastBaselineDetect = undefined;
   return report;
+}
+
+/**
+ * Release the loaded engine and everything built on it. See `SihPageApi`.
+ *
+ * The baseline arm goes with it and is not merely cleared: it holds this engine
+ * through `BaselineBOptions.engine`, so an arm surviving an unload would call
+ * `complete` on a released engine and the failure would arrive as whatever
+ * web-llm does with one rather than as "no arm is loaded".
+ */
+async function unloadTier2(): Promise<void> {
+  if (tier2 === undefined) return;
+  const { engine } = tier2;
+  // Cleared BEFORE the await, so a `detect` racing this cannot find a state
+  // whose engine is halfway through being released.
+  tier2 = undefined;
+  lastTier2Detect = undefined;
+  baseline = undefined;
+  lastBaselineDetect = undefined;
+  await engine.unload();
+}
+
+// -- Approach B --------------------------------------------------------------
+
+interface BaselineState {
+  /** The arm itself: a `Detector`, with the arm's cumulative counters on it. */
+  readonly arm: BaselineB;
+  readonly report: BaselineLoadReport;
+}
+
+let baseline: BaselineState | undefined;
+let lastBaselineDetect: BaselineDetectStats | undefined;
+
+/**
+ * Build an Approach-B arm on the loaded tier-2 engine.
+ *
+ * See `SihPageApi.loadBaseline` for what this door is for. What is worth having
+ * beside the code is the list of things this function deliberately does NOT
+ * choose, because each one is a lever that would tilt the head-to-head:
+ *
+ * - the ENGINE, taken from `tier2.engine`, so both arms decode through one
+ *   object rather than two configured alike;
+ * - the `Tier2Config`, taken from `tier2.report.config`, which is the object
+ *   `createWebLlmEngine` was called with -- `baselineB.ts` refuses an engine
+ *   whose `requestedModelId` disagrees with it, and that refusal is only worth
+ *   anything if this passes the real one;
+ * - the per-call budget, taken from `tier2.report.callBudgetMs`, which is the
+ *   number the judge holds;
+ * - the IR, which is not passed at all: B reads it off each `DetectInput`, so
+ *   the arm cannot run tier 0 against a policy the record names differently.
+ *
+ * The one thing it does choose is which of the two constructors to call, and
+ * that follows from `family` alone. `createBaselineBPlusTier0` is the mandatory
+ * intermediate arm: without it a B-versus-compiled result conflates "compiling
+ * the policy helps" with "having deterministic patterns helps".
+ */
+async function loadBaseline(options: BaselineLoadOptions): Promise<BaselineLoadReport> {
+  // The two PAIRING checks run before the engine requirement, deliberately.
+  // Both are configuration errors that cost nothing to detect, and a bake-off
+  // whose policy does not match its IR should learn that before it spends a
+  // 1 GB model load rather than after -- the same ordering `planBakeoff` uses
+  // for every refusal it can make without touching the page. It also means the
+  // spec that drives this refusal needs no GPU.
+  if (!Object.hasOwn(POLICY_FIXTURES, options.policy)) {
+    throw new Error(
+      `unknown policy "${options.policy}"; this page carries ` +
+        `${Object.keys(POLICY_FIXTURES).join(", ")}`,
+    );
+  }
+  const policyText = POLICY_FIXTURES[options.policy] as string;
+  const policyDocSha256 = await digestHex(policyText);
+  // The pairing, refused HERE as well as in `planBakeoff`, and the two are not
+  // redundant. That one checks a file the driver read against an IR the driver
+  // parsed; this one checks the text THIS PAGE will put in the prompt against
+  // the IR THIS PAGE loaded. A driver planning correctly over a page serving a
+  // stale bundle passes the first and fails this one, which is the case worth
+  // catching -- `playwright.config.ts` reuses an existing dev server outside CI.
+  if (policyDocSha256 !== ir.policyHash) {
+    throw new Error(
+      `policy "${options.policy}" hashes to ${policyDocSha256} and the loaded IR's policyHash is ` +
+        `"${ir.policyHash}"; Approach B is shown the document and the compiled arm is shown the ` +
+        `IR, so running them against different policies compares two policies rather than two ` +
+        `methods. Select the IR compiled from this document with useIr() first.`,
+    );
+  }
+
+  if (tier2 === undefined) {
+    throw new Error(
+      "loadBaseline needs a loaded tier-2 engine; call loadTier2 first. Approach B runs on the " +
+        "SAME engine as the compiled judge -- that is what makes the two arms' decoding settings " +
+        "equal by construction rather than by convention",
+    );
+  }
+
+  const build = options.family === "baseline-b-tier0" ? createBaselineBPlusTier0 : createBaselineB;
+  const arm = build({
+    engine: tier2.engine,
+    config: tier2.report.config,
+    policyText,
+    budgetMs: tier2.report.callBudgetMs,
+  });
+
+  const report: BaselineLoadReport = {
+    family: options.family,
+    policy: options.policy,
+    policyDocSha256,
+    irPolicyHash: ir.policyHash,
+    policyChars: policyText.length,
+    callBudgetMs: tier2.report.callBudgetMs,
+    // The OBSERVED id off the tier-2 load's warm-up completion, never
+    // `config.modelId`, for the reason `measuredDetect` gives one tier down.
+    servedModelId: tier2.report.servedModelId,
+  };
+  baseline = { arm, report };
+  lastBaselineDetect = undefined;
+  return report;
+}
+
+/**
+ * One Approach-B `detect`, with the arm's counters read either side of it.
+ *
+ * The twin of `measuredDetect`, and a separate function rather than a branch
+ * inside it because the two share no engine plumbing: B takes no tagger and no
+ * judge, holds its own message deadline, and is itself the `Detector`. A branch
+ * would have had to explain, at every line, which arm each half belonged to.
+ *
+ * The one check it does share is the model-substitution one, and it is here for
+ * the same reason: `runArm` copies the arm's `TierConfig` onto every record, so
+ * without it a row can name one model for a run the engine holding another
+ * served.
+ */
+async function measuredBaselineDetect(
+  request: DetectRequest,
+  state: BaselineState,
+): Promise<{ result: DetectionResult; stats: BaselineDetectStats }> {
+  const { provider, text, config } = request;
+  if (config.t2Model !== undefined && config.t2Model !== state.report.servedModelId) {
+    throw new Error(
+      `config.t2Model is "${config.t2Model}" but the engine this Approach-B arm runs on answered ` +
+        `as "${state.report.servedModelId}"; refusing to report findings for one model under ` +
+        `the other's name`,
+    );
+  }
+  // A snapshot: `BaselineB.stats` rebuilds the counters and the call array on
+  // every read, so this cannot be a live view of the numbers the delta is taken
+  // against.
+  const before = state.arm.stats;
+  const result = await state.arm({ ir, provider, text, config });
+  return { result, stats: baselineDelta(before, state.arm.stats) };
 }
 
 /**
@@ -1313,6 +1667,17 @@ const api: SihPageApi = {
   // the harness would report its latency as core's. What a spec CAN influence is
   // exactly the three fields of DetectRequest -- see measuredDetect.
   detect: async (request) => {
+    // Approach B REPLACES core's orchestrator rather than sitting inside it, so
+    // the routing is here and it is exclusive: an arm is one method or the
+    // other, and a page holding a B arm must never quietly answer with the
+    // compiled pipeline. `loadBaseline` is the only thing that sets this, and
+    // `useIr` and `loadTier2` both clear it, so a run cannot drift into the
+    // wrong branch between items.
+    if (baseline !== undefined) {
+      const { result, stats } = await measuredBaselineDetect(request, baseline);
+      lastBaselineDetect = stats;
+      return result;
+    }
     // The one place both the loaded backend and the caller's TierConfig are
     // known. Nothing under packages/core/src reads `TierConfig.backend`, and
     // runArm copies its own `spec.backend` onto every record, so without this
@@ -1344,6 +1709,15 @@ const api: SihPageApi = {
   irHash: () => irHash,
   policyHash: () => ir.policyHash,
   useIr,
+  policyDocHash,
+  loadBaseline,
+  // `BaselineB.stats` copies on every read, one level deep, so `totals` is a
+  // snapshot rather than a handle a spec could rewrite the arm's numbers
+  // through.
+  baselineStatus: () =>
+    baseline === undefined
+      ? undefined
+      : { load: baseline.report, totals: baseline.arm.stats, lastDetect: lastBaselineDetect },
   backendAvailable,
   loadTier1,
   tier1Status: () =>
@@ -1352,6 +1726,7 @@ const api: SihPageApi = {
       : { load: tier1.report, totals: { ...tier1.tagger.stats }, lastDetect },
   webgpuAvailable,
   loadTier2,
+  unloadTier2,
   // `WebLlmJudge.stats` copies on every read, so `totals` is a snapshot rather
   // than a handle a spec could rewrite the arm's numbers through.
   tier2Status: () =>

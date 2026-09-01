@@ -222,7 +222,12 @@ describe("segmentSizeDistribution", () => {
     // And the result says so, rather than reporting the permissive default it
     // did not run under. Stamping `hasPredicates: true` here survived the first
     // mutation round: the only test reading this field used the default.
-    expect(d.escalation).toEqual({ hasPredicates: false, uncertainBelow: 0.8, hasPriors: false });
+    expect(d.escalation).toEqual({
+      applies: true,
+      hasPredicates: false,
+      uncertainBelow: 0.8,
+      hasPriors: false,
+    });
   });
 
   it("records the escalation input it actually ran under", () => {
@@ -230,6 +235,11 @@ describe("segmentSizeDistribution", () => {
     // it, and the default is the permissive one. Stating it on the result is
     // what stops a number measured under one input being quoted under another.
     expect(segmentSizeDistribution([]).escalation).toEqual({
+      // True because the default unit is `"segment"`: escalation really did
+      // decide this sample, even though the sample is empty. It is false only
+      // under `unit: "message"`, where Approach B judges every message and
+      // escalation is not consulted at all.
+      applies: true,
       hasPredicates: true,
       uncertainBelow: 0.8,
       hasPriors: false,

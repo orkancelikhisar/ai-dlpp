@@ -115,6 +115,7 @@ function rec(overrides: Partial<RunRecord> = {}): RunRecord {
     policyHash: "test-hash",
     arm: "tier2-" + MODEL,
     backend: "webgpu",
+    detector: "core-orchestrator",
     provider: "claude",
     config: { tier0: false, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW },
     // Required exactly when `config.tier2` is set, and the values are what a
@@ -161,8 +162,8 @@ const call = (over: Partial<Call> = {}): Call => ({
  * it for the family that runs under it.
  *
  * TWO of them and never one, because `gateReport` now refuses a distribution
- * whose condition disagrees with the arm's family -- `segmentChars`,
- * `segmentsPerItem` and `escalation` are the only fields on a gate report that
+ * whose condition disagrees with the arm's family -- `judgedUnitChars`,
+ * `judgedUnitsPerItem` and `escalation` are the only fields on a gate report that
  * do not come off the rows, so the wrong one would describe the other family's
  * work under this arm's name. A single shared constant was what let this file
  * hand a no-priors distribution to a `compiled` report for the whole of the
@@ -174,6 +175,24 @@ const call = (over: Partial<Call> = {}): Call => ({
 const SEGMENTS = segmentSizeDistribution(ITEMS, { hasPredicates: true });
 const SEGMENTS_TIER0 = segmentSizeDistribution(ITEMS, {
   hasPredicates: true,
+  priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
+});
+
+/**
+ * The same two conditions again for the MESSAGE-judged families, which is a
+ * third dimension rather than a variation on those two.
+ *
+ * Approach B makes one call per message however many segments the text has, so
+ * `judgedUnitChars` on a B report is a distribution over whole messages and
+ * `judgedUnitsPerItem` is all 1s. `gateReport` refuses a family/unit mismatch
+ * for the reason it refuses the priors mismatch: a segment p50 of 62 characters
+ * under an arm whose model was shown whole messages is a plausible number
+ * describing the other method's work.
+ */
+const MESSAGES_B = segmentSizeDistribution(ITEMS, { hasPredicates: true, unit: "message" });
+const MESSAGES_B_TIER0 = segmentSizeDistribution(ITEMS, {
+  hasPredicates: true,
+  unit: "message",
   priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
 });
 
@@ -194,6 +213,21 @@ const RUN_CONTEXT = {
   entityTypes: SEMANTIC_IR.entityTypes,
 } as const;
 
+/**
+ * The distribution `planBakeoff` would hand `gateReport` for this family.
+ *
+ * Both dimensions, because both are checked: the unit follows `judgedUnit` and
+ * the priors condition follows `runsTier0`. Written as a lookup off
+ * `familyShape` rather than a per-test literal so a test cannot accidentally
+ * hand an arm the other family's numbers -- which is the mistake this file made
+ * for a whole round on the priors axis alone.
+ */
+function distributionFor(family: ArmFamily) {
+  const shape = familyShape(family);
+  if (shape.judgedUnit === "message") return shape.runsTier0 ? MESSAGES_B_TIER0 : MESSAGES_B;
+  return shape.runsTier0 ? SEGMENTS_TIER0 : SEGMENTS;
+}
+
 /** The distribution `planBakeoff` would hand `gateReport` for this family. */
 function report(
   records: readonly RunRecord[],
@@ -205,7 +239,7 @@ function report(
     family,
     modelId: MODEL,
     records,
-    segments: familyShape(family).runsTier0 ? SEGMENTS_TIER0 : SEGMENTS,
+    segments: distributionFor(family),
     ...RUN_CONTEXT,
     ...over,
   });
@@ -420,32 +454,32 @@ describe("the p95 time-to-first-token gate", () => {
     // And the segment sizes escalation selects for the arm, which ARE in
     // characters and so are directly comparable to the ~1.1 kB the threshold
     // was derived at.
-    expect(r.segmentChars).toEqual(SEGMENTS_TIER0.chars);
+    expect(r.judgedUnitChars).toEqual(SEGMENTS_TIER0.chars);
   });
 
   it("carries THIS family's escalation, on the one field where the two differ", () => {
-    // `segmentChars` cannot tell the two conditions apart on this corpus and
+    // `judgedUnitChars` cannot tell the two conditions apart on this corpus and
     // that is a measured fact, not a weakness of the fixture: the segment tier 0
     // re-admits is 66 characters, larger than nine of the seventeen the
     // predicate branch selects and smaller than the largest, so it moves neither
-    // the median nor the maximum. Asserting `segmentChars` alone therefore
-    // proves nothing about WHICH distribution a report carries. `segmentsPerItem`
+    // the median nor the maximum. Asserting `judgedUnitChars` alone therefore
+    // proves nothing about WHICH distribution a report carries. `judgedUnitsPerItem`
     // is where the two separate -- max 3 against max 2 -- so it is the field
     // this test reads.
     expect(SEGMENTS_TIER0.chars).toEqual(SEGMENTS.chars);
     expect(SEGMENTS_TIER0.perItem).not.toEqual(SEGMENTS.perItem);
 
     const tier0 = report([judged([call()])], "compiled");
-    expect(tier0.segmentsPerItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
+    expect(tier0.judgedUnitsPerItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
     expect(tier0.escalation.hasPriors).toBe(true);
 
     const tier2Only = report([judged([call()])], "compiled-tier2-only");
-    expect(tier2Only.segmentsPerItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
+    expect(tier2Only.judgedUnitsPerItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
     expect(tier2Only.escalation.hasPriors).toBe(false);
   });
 
   it("refuses the other family's distribution rather than reporting it as this arm's", () => {
-    // The population check. `segmentChars`, `segmentsPerItem` and `escalation`
+    // The population check. `judgedUnitChars`, `judgedUnitsPerItem` and `escalation`
     // are the only fields on a gate report that do not come off the rows -- they
     // are the PLAN's, measured before the arm ran -- so nothing else in the
     // report contradicts a distribution belonging to the other family. This file
@@ -758,11 +792,44 @@ describe("every ladder counter reaches the report", () => {
       segmentsSkipped: 31,
     } as const;
     const r = report([judged([call()], counters), judged([call()], counters)]);
-    expect(r.ladder).toEqual(Object.fromEntries(Object.entries(counters).map(([k, v]) => [k, 2 * v])));
+    // The two counters `BaselineStats` renames arrive under the report's own
+    // method-neutral names -- see `ArmGateReport.ladder` -- so this asserts the
+    // MAPPING as well as the sum: a `normalizeArmStats` that read
+    // `segmentsSkipped` where it means `segmentsJudged` swaps 29 and 31 here.
+    expect(r.ladder).toEqual({
+      rung1: 4,
+      rung2: 6,
+      unresolvedQuotes: 10,
+      duplicatesDropped: 14,
+      unknownLabels: 22,
+      failedClosed: 26,
+      truncatedResponses: 34,
+      abortedResponses: 38,
+      repairAttempts: 46,
+      unitsJudged: 58,
+      unitsSkipped: 62,
+      // `undefined` and not 0 on a compiled arm: the judge has no message-budget
+      // counter at all -- `detect` files a `budget-exhausted` notice instead --
+      // and a 0 would be the positive claim that the event happened zero times.
+      messageBudgetExpiries: undefined,
+    });
     // The three stop counters are NOT in `ladder` and must not be: they are the
     // stop-gate's evidence, not the ladder's, and a report that summed them here
     // would be reporting an interruption as a judgement.
-    expect(Object.keys(r.ladder).sort()).toEqual(Object.keys(counters).sort());
+    expect(Object.keys(r.ladder).sort()).toEqual([
+      "abortedResponses",
+      "duplicatesDropped",
+      "failedClosed",
+      "messageBudgetExpiries",
+      "repairAttempts",
+      "rung1",
+      "rung2",
+      "truncatedResponses",
+      "unitsJudged",
+      "unitsSkipped",
+      "unknownLabels",
+      "unresolvedQuotes",
+    ]);
   });
 });
 
@@ -1330,11 +1397,14 @@ describe("what this harness can actually execute", () => {
     ).not.toThrow();
   });
 
-  it("refuses a baseline arm, naming the door that is missing and the two things behind it", () => {
-    // A valid experiment with nowhere to run. The refusal is separate from
-    // planning on purpose: the plan is a statement about fairness and this is a
-    // statement about the browser half, and conflating them would make a fair
-    // slate look invalid.
+  it("lets a paired baseline slate through, which it refused outright before", () => {
+    // The three reasons this function used to give -- no page door, no record
+    // field, no compiled IR -- are all closed, and this is what says so from
+    // the outside. Each is now checked where it can actually be checked:
+    // `loadBaseline` in the page, `baselineStats` plus `detector` in
+    // `RunRecordSchema`, and `policies/compiled/p-fin.ir.json` whose
+    // `policyHash` is a real sha256. `assertPageCanRun` is left with the one
+    // condition it can still decide from a plan alone.
     const plan = planBakeoff({
       options: options({ families: ["baseline-b", "baseline-b-tier0"] }),
       ir: PAIRED_IR,
@@ -1342,26 +1412,52 @@ describe("what this harness can actually execute", () => {
       policyText: POLICY_TEXT,
     });
     expect(plan.arms).toHaveLength(2);
-    let message = "";
-    try {
-      assertPageCanRun(plan);
-    } catch (cause) {
-      message = (cause as Error).message;
-    }
-    // The door.
-    expect(message).toContain("createBaselineB");
-    expect(message).toContain("window.__sih.detect");
-    // And the two reasons adding it would not be enough on its own.
-    expect(message).toContain("compiled from");
-    expect(message).toContain("BaselineStats");
-    // A THIRD reason stood here and is gone: `semantic-ir.json` used to declare
-    // `rules: []`, so tier 0 found nothing and the B/B+tier0 pair would have
-    // been two runs of the same arm. The fixture carries three rules now and
-    // that pair really would differ, so the message must NOT still claim it --
-    // an out-of-date reason in a refusal is a reader's evidence about the
-    // fixture, and this one would be false.
+    expect(() => assertPageCanRun(plan)).not.toThrow();
+    // And the plan carries the document, which is the thing the arms need.
+    expect(plan.policy).toEqual({
+      name: "semantic",
+      sha256: POLICY_SHA256,
+      chars: POLICY_TEXT.length,
+    });
+  });
+
+  it("refuses a baseline arm whose plan carries no policy document", () => {
+    // Unreachable through `planBakeoff`, which refuses a baseline family with no
+    // policy one layer up -- so this drives the spliced shape a direct caller
+    // can build. It is worth keeping rather than deleting as dead: Approach B
+    // IS the policy document, and an arm built without one would show its model
+    // an empty prompt and record the result as "the method found nothing".
+    const compiled = planBakeoff({ options: options(), ir: SEMANTIC_IR, items: ITEMS });
+    const spliced = {
+      ...compiled,
+      arms: [{ ...compiled.arms[0]!, arm: "baselineB-x", family: "baseline-b" as const }],
+    };
+    expect(() => assertPageCanRun(spliced)).toThrow(/no policy document/);
+  });
+
+  it("no longer claims tier 0 finds nothing, which was true for one commit", () => {
+    // `semantic-ir.json` shipped `rules: []`, so tier 0 found nothing on any
+    // item and `baseline-b-tier0` versus `baseline-b` -- the pair that separates
+    // "compiling helps" from "patterns help" -- would have been two runs of the
+    // same thing. The fixture carries three rules now and that pair really does
+    // differ, which is what makes the intermediate arm worth running.
     expect(SEMANTIC_IR.rules.length).toBeGreaterThan(0);
-    expect(message).not.toContain("declares no rules");
+    const plan = planBakeoff({
+      options: options({ families: ["baseline-b", "baseline-b-tier0"] }),
+      ir: PAIRED_IR,
+      items: ITEMS,
+      policyText: POLICY_TEXT,
+    });
+    const [b, bTier0] = plan.arms;
+    expect(b!.segments.escalation.hasPriors).toBe(false);
+    expect(bTier0!.segments.escalation.hasPriors).toBe(true);
+    // Both are MESSAGE distributions, because B makes one call per message
+    // however many segments the text has -- so unlike the compiled pair these
+    // two agree on every size and differ only in whether tier 0 ran.
+    expect(b!.segments.unit).toBe("message");
+    expect(bTier0!.segments.unit).toBe("message");
+    expect(b!.segments.chars).toEqual(bTier0!.segments.chars);
+    expect(b!.segments.perItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
   });
 });
 
@@ -1887,5 +1983,289 @@ describe("the message budget these latencies were taken under", () => {
       latencyBudgetMs: 5_000,
     });
     expect(outcome(shipped, "p95-ttft").detail).toContain("1x");
+  });
+});
+
+/**
+ * The gate report over an APPROACH-B arm.
+ *
+ * Everything in this describe was a SURVIVING MUTANT before it existed. No
+ * vitest fixture built a `baselineStats` row, so `normalizeArmStats` could map
+ * `unitsJudged` to `deadlineExpiries`, the family/detector check and the
+ * family/unit check could both be deleted, and `unitsSkipped` could report 0
+ * on an arm that has no such counter -- all with the whole suite green. The
+ * browser spec exercises the real path, but a browser spec costs a model load
+ * and cannot drive a counter to a chosen value.
+ *
+ * The mapping is the subject. `BaselineStats` renames two events and adds one
+ * the judge does not have, so `ArmGateReport.ladder` is method-neutral and
+ * `normalizeArmStats` is where a rename can silently become a swap. Every
+ * counter below is a distinct prime for exactly that reason.
+ */
+describe("the gate report over an Approach-B arm", () => {
+  type BStats = NonNullable<RunRecord["baselineStats"]>;
+
+  const ZERO_B: Omit<BStats, "calls"> = {
+    rung1: 0,
+    rung2: 0,
+    unresolvedQuotes: 0,
+    unknownEntityTypes: 0,
+    duplicatesDropped: 0,
+    repairAttempts: 0,
+    failedClosed: 0,
+    truncatedResponses: 0,
+    abortedResponses: 0,
+    messagesJudged: 0,
+    deadlineExpiries: 0,
+    messageBudgetExpiries: 0,
+    callerAbortsMidGeneration: 0,
+    callerAbortsWhileQueued: 0,
+  };
+
+  /** One schema-valid Approach-B record, VALIDATED here rather than merely typed. */
+  function bRec(
+    calls: readonly Call[],
+    counters: Partial<Omit<BStats, "calls">> = {},
+    over: Partial<RunRecord> = {},
+  ): RunRecord {
+    const record: RunRecord = {
+      schemaVersion: RECORD_SCHEMA_VERSION,
+      runId: "bake",
+      itemId: "item-1",
+      policy: "semantic-fixture",
+      irHash: "a".repeat(64),
+      policyHash: "test-hash",
+      arm: "baselineB-" + MODEL,
+      backend: "webgpu",
+      detector: "approach-b",
+      provider: "claude",
+      // No `uncertainBelow`: B does not escalate, and the schema refuses one.
+      config: { tier0: false, tier1: false, tier2: true, t2Model: MODEL },
+      tier2Config: {
+        modelId: MODEL,
+        contextWindowSize: 8192,
+        temperature: 0,
+        maxTokens: 512,
+        callBudgetMs: 60_000,
+      },
+      text: "Please review the Northwind Traders renewal before Friday.",
+      findings: [],
+      gold: [],
+      timings: { tier0Ms: 0.2, tier2Ms: 3600 },
+      degraded: [],
+      error: null,
+      abandonedWorkInFlight: false,
+      baselineStats: { ...ZERO_B, ...counters, calls: [...calls] },
+      ...over,
+    };
+    const parsed = RunRecordSchema.safeParse(record);
+    if (!parsed.success) throw new Error(`fixture is not a valid record: ${parsed.error.message}`);
+    return record;
+  }
+
+  const bReport = (records: readonly RunRecord[], family: ArmFamily = "baseline-b") =>
+    gateReport({
+      arm: "baselineB-" + MODEL,
+      family,
+      modelId: MODEL,
+      records,
+      segments: distributionFor(family),
+      ...RUN_CONTEXT,
+    });
+
+  it("maps every renamed counter into the report's method-neutral names", () => {
+    // Distinct primes per counter, so a field read from the wrong slot is
+    // visible rather than merely possible, and TWO records so a `=` written for
+    // a `+=` fails too. The three that are not the judge's carry the three
+    // largest values.
+    const counters = {
+      rung1: 2,
+      rung2: 3,
+      unresolvedQuotes: 5,
+      duplicatesDropped: 7,
+      unknownEntityTypes: 11,
+      failedClosed: 13,
+      truncatedResponses: 17,
+      abortedResponses: 19,
+      repairAttempts: 23,
+      messagesJudged: 29,
+      messageBudgetExpiries: 31,
+    } as const;
+    const r = bReport([bRec([call()], counters), bRec([call()], counters)]);
+    expect(r.ladder).toEqual({
+      rung1: 4,
+      rung2: 6,
+      unresolvedQuotes: 10,
+      duplicatesDropped: 14,
+      // `unknownEntityTypes` on this arm, `unknownPredicates` on the other.
+      unknownLabels: 22,
+      failedClosed: 26,
+      truncatedResponses: 34,
+      abortedResponses: 38,
+      repairAttempts: 46,
+      // `messagesJudged` here, `segmentsJudged` there -- and they are DIFFERENT
+      // events, not a rename of taste: one counts messages and the other
+      // segments, and both are the denominator every rate is taken over.
+      unitsJudged: 58,
+      // `undefined` and not 0: an arm that makes one call per message has no
+      // second unit for a stop to skip past, and a 0 would be the positive
+      // claim that it skipped none.
+      unitsSkipped: undefined,
+      messageBudgetExpiries: 62,
+    });
+  });
+
+  it("carries the message distribution, not the segment one, and refuses the swap", () => {
+    const r = bReport([bRec([call()])]);
+    expect(r.judgedUnit).toBe("message");
+    // One judged unit per item, which is the whole of what "one call per
+    // message" costs -- against max 2 or 3 on the compiled families.
+    expect(r.judgedUnitsPerItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
+    // Whole MESSAGES. MEASURED over this corpus, and the shape is worth
+    // stating because half of it is counter-intuitive: the message p50 is 78
+    // characters against the selected-segment p50 of 62, and the two MAXIMA are
+    // both 153 -- because the largest item, `pos-multiline-pan-and-client`, is
+    // 153 characters and escalation selects a segment covering all of it. So a
+    // report that carried the segment distribution under a B arm's name would
+    // agree on the maximum and disagree on the median and the count (13 judged
+    // units against 17), which is exactly why the swap is refused rather than
+    // spotted.
+    expect(r.judgedUnitChars).toEqual({ p50: 78, p95: 153, max: 153, min: 48 });
+    expect(SEGMENTS.chars).toEqual({ p50: 62, p95: 153, max: 153, min: 22 });
+    expect(r.judgedUnitChars!.max).toBe(Math.max(...ITEMS.map((i) => i.text.length)));
+    // Escalation did not select this sample, and the row says so rather than
+    // reporting a threshold that decided nothing.
+    expect(r.escalation.applies).toBe(false);
+    expect(SEGMENTS.escalation.applies).toBe(true);
+    // And the swap is refused rather than reported.
+    expect(() =>
+      gateReport({
+        arm: "baselineB-" + MODEL,
+        family: "baseline-b",
+        modelId: MODEL,
+        records: [bRec([call()])],
+        segments: SEGMENTS,
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/one message per engine call.*measured over segments/s);
+  });
+
+  it("refuses to file an Approach-B arm's rows under a compiled family", () => {
+    // The check that reads `detector` off the ROWS rather than trusting the
+    // family a caller named. The gates are the same numbers either way and
+    // would look perfectly well-formed; what would be wrong is which METHOD
+    // they are attributed to, which is the only question the bake-off asks.
+    // The arm NAME is made to agree deliberately, so this drives the detector
+    // check and not the foreign-arm one that guards it. A mislabelled family is
+    // exactly the case where the name would agree: `armName` builds it from the
+    // family the plan asked for.
+    expect(() =>
+      gateReport({
+        arm: "tier2-" + MODEL,
+        family: "compiled-tier2-only",
+        modelId: MODEL,
+        records: [bRec([call()], {}, { arm: "tier2-" + MODEL })],
+        segments: SEGMENTS,
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/rows say the detector was "approach-b"/);
+    // And the mirror: a compiled arm's rows filed under a baseline family.
+    expect(() =>
+      gateReport({
+        arm: "tier2-" + MODEL,
+        family: "baseline-b",
+        modelId: MODEL,
+        records: [judged([call()])],
+        segments: MESSAGES_B,
+        ...RUN_CONTEXT,
+      }),
+    ).toThrow(/rows say the detector was "core-orchestrator"/);
+  });
+
+  it("computes the same gates over B's calls as over the judge's", () => {
+    // The point of normalising into one shape: every gate below is one
+    // expression over both methods. A B arm's TTFT is B's TTFT, and the ceiling
+    // it is compared against is the same 1,500 ms -- which is exactly why
+    // `judgedUnit` and `promptTokens` are on the row: that ceiling was derived
+    // at a ~1.1 kB prompt built from ONE SEGMENT, and B's prompt carries the
+    // whole policy document.
+    const r = bReport([bRec([call({ ttftMs: 2700, promptTokens: 1433 })], { rung1: 1, messagesJudged: 1 })]);
+    expect(r.answeredCalls).toBe(1);
+    expect(outcome(r, "p95-ttft").verdict).toBe("fail");
+    expect(outcome(r, "p95-ttft").detail).toContain("judgedUnitChars");
+    expect(outcome(r, "p95-ttft").detail).toContain('judgedUnit "message"');
+    expect(r.promptTokens).toEqual({ p50: 1433, p95: 1433, max: 1433, min: 1433 });
+    expect(outcome(r, "resolvable-rate").observed).toBe(1);
+  });
+
+  it("reads B's own message-budget stop as a stop, which the judge has no counter for", () => {
+    // `messageBudgetExpiries` is in the fold `normalizeArmStats` hands the
+    // engine-poisoning walk, and it belongs there: `createArm` in
+    // `baselineB.ts` `break`s the loop on it exactly as it does on a per-call
+    // expiry, so it is a stop that ended the run for that message.
+    const stopped = bRec([call()], { messageBudgetExpiries: 1 }, { itemId: "stopped" });
+    const after = bRec([call({ finishReason: "abort", completionTokens: 0 })], {}, { itemId: "later" });
+    const r = bReport([stopped, after]);
+    expect(outcome(r, "non-empty-after-stop").verdict).toBe("fail");
+    expect(outcome(r, "non-empty-after-stop").detail).toContain("stopped");
+  });
+
+  it("separates the two Approach-B families by their tier-0 half", () => {
+    // The pair that makes "compiling helps" separable from "patterns help".
+    // Both are message-judged, so their size distributions agree exactly; what
+    // differs is whether tier 0 ran in front of the model.
+    const plain = bReport([bRec([call()])], "baseline-b");
+    const withTier0 = bReport(
+      [bRec([call()], {}, { config: { tier0: true, tier1: false, tier2: true, t2Model: MODEL } })],
+      "baseline-b-tier0",
+    );
+    expect(plain.escalation.hasPriors).toBe(false);
+    expect(withTier0.escalation.hasPriors).toBe(true);
+    expect(plain.judgedUnitChars).toEqual(withTier0.judgedUnitChars);
+    expect(plain.scoring.tiersRun).toEqual([2]);
+    expect(withTier0.scoring.tiersRun).toEqual([0, 2]);
+  });
+});
+
+describe("what planBakeoff gives an Approach-B arm", () => {
+  it("does not stamp an escalation threshold on it, and does on the compiled arms", () => {
+    // `uncertainBelow` decides which SEGMENTS escalate. B judges the whole
+    // message in one call and never escalates, so on a B arm it is a knob that
+    // turned nothing -- and `gateReport` compares it against the threshold the
+    // planned distribution was measured at, which would make the two agree
+    // about work no B arm performs. `RunRecordSchema` refuses such a row, so
+    // stamping it here would fail the whole arm after its GPU time was spent.
+    const plan = planBakeoff({
+      options: options({
+        families: ["compiled", "compiled-tier2-only", "baseline-b", "baseline-b-tier0"],
+        uncertainBelow: 0.42,
+      }),
+      ir: PAIRED_IR,
+      items: ITEMS,
+      policyText: POLICY_TEXT,
+    });
+    const byFamily = new Map(plan.arms.map((a) => [a.family, a]));
+    expect(byFamily.get("compiled")!.config.uncertainBelow).toBe(0.42);
+    expect(byFamily.get("compiled-tier2-only")!.config.uncertainBelow).toBe(0.42);
+    expect(byFamily.get("baseline-b")!.config.uncertainBelow).toBeUndefined();
+    expect(byFamily.get("baseline-b-tier0")!.config.uncertainBelow).toBeUndefined();
+    // A non-default threshold, deliberately: a plan exercised only at
+    // `UNCERTAIN_BELOW` cannot tell "carries the caller's value" from
+    // "hardcodes the default".
+    expect(0.42).not.toBe(UNCERTAIN_BELOW);
+  });
+
+  it("sizes a B arm at one call per message and the compiled arms at one per segment", () => {
+    const plan = planBakeoff({
+      options: options({ families: ["compiled", "baseline-b"] }),
+      ir: PAIRED_IR,
+      items: ITEMS,
+      policyText: POLICY_TEXT,
+    });
+    const byFamily = new Map(plan.arms.map((a) => [a.family, a]));
+    // One judged unit plus the single repair retry.
+    expect(byFamily.get("baseline-b")!.maxCallsPerItem).toBe(2);
+    // The compiled arm's worst message selects three segments on this corpus.
+    expect(byFamily.get("compiled")!.maxCallsPerItem).toBe(6);
   });
 });

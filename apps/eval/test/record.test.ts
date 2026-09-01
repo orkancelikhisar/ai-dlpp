@@ -85,6 +85,7 @@ describe("RunRecordSchema", () => {
       policyHash: "1".repeat(64),
       arm: "t0",
       backend: "wasm",
+      detector: "core-orchestrator",
       provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
       // `text` added to the specified fixture when RunRecordSchema gained the
@@ -110,7 +111,7 @@ describe("RunRecordSchema", () => {
     const complete = {
       schemaVersion: 1, runId: "r1", itemId: "a", policy: "p-fin",
       irHash: "0".repeat(64), policyHash: "1".repeat(64),
-      arm: "t0", backend: "wasm", provider: "claude",
+      arm: "t0", backend: "wasm", detector: "core-orchestrator", provider: "claude",
     config: { tier0: true, tier1: false, tier2: false }, text: "hello world", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
     abandonedWorkInFlight: false,
@@ -185,6 +186,7 @@ describe("RunRecordSchema guards the specified tests leave open", () => {
     policyHash: "1".repeat(64),
     arm: "t0",
     backend: "wasm" as const,
+    detector: "core-orchestrator" as const,
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world",
@@ -502,6 +504,7 @@ describe("findings are validated to core's unions, like gold", () => {
     policyHash: "1".repeat(64),
     arm: "t0",
     backend: "wasm" as const,
+    detector: "core-orchestrator" as const,
     provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world",
@@ -574,7 +577,8 @@ describe("the record's own text makes the cross-check executable", () => {
   const base = {
     schemaVersion: 1 as const,
     runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
-    arm: "t0", backend: "wasm" as const, provider: "claude",
+    arm: "t0", backend: "wasm" as const, detector: "core-orchestrator" as const,
+      provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
@@ -622,7 +626,8 @@ describe("toJsonl survives the separators Python treats as newlines", () => {
     const record = {
       schemaVersion: 1 as const,
       runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
-      arm: "t0", backend: "wasm" as const, provider: "claude",
+      arm: "t0", backend: "wasm" as const, detector: "core-orchestrator" as const,
+      provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
       text: "before after end", findings: [], gold: [],
       timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
@@ -661,7 +666,8 @@ describe("findings cannot carry a degenerate span", () => {
   const base = {
     schemaVersion: 1 as const,
     runId: "r1", itemId: "a", policy: "p-fin", irHash: "0".repeat(64), policyHash: "1".repeat(64),
-    arm: "t0", backend: "wasm" as const, provider: "claude",
+    arm: "t0", backend: "wasm" as const, detector: "core-orchestrator" as const,
+      provider: "claude",
     config: { tier0: true, tier1: false, tier2: false },
     text: "hello world", findings: [], gold: [],
     timings: { tier0Ms: 0 }, error: null, degraded: ABSENT_1_2,
@@ -754,6 +760,7 @@ describe("the tier-2 evidence a record has to carry", () => {
     policyHash: "1".repeat(64),
     arm: "t0+t2",
     backend: "webgpu" as const,
+    detector: "core-orchestrator" as const,
     provider: "claude",
     text: "hello world",
     findings: [],
@@ -1249,6 +1256,7 @@ describe("a scorer separates 'failed closed on 40%' from 'found nothing'", () =>
           policyHash: "test-hash",
           arm: "t0+t2",
           backend: "webgpu",
+          detector: "core-orchestrator",
           provider: "claude",
           config: { tier0: true, tier1: false, tier2: true, backend: "webgpu", uncertainBelow: 1 },
           text: MESSAGES[i]!,
@@ -1375,5 +1383,230 @@ describe("a scorer separates 'failed closed on 40%' from 'found nothing'", () =>
     expect(throughTheFile([fast])[0]!.degraded?.map((d) => d.reason)).not.toContain(
       "budget-exhausted",
     );
+  });
+});
+
+/**
+ * The Approach-B evidence a record has to carry, and the four couplings that
+ * decide which arm a row belongs to.
+ *
+ * Every one of these was a SURVIVING MUTANT before this block existed. The
+ * schema had `detector` and `baselineStats` and nothing in vitest ever built a
+ * B row, so all four refines could be replaced by `() => true` with the whole
+ * suite green -- which is the same shape of hole `tier1Stats` and `tier2Stats`
+ * were found in, one arm over.
+ *
+ * What each coupling prevents, in the order they appear below:
+ *
+ *   - `detector` REQUIRED with no default. A default of "core-orchestrator"
+ *     would let a B row be written as a compiled one by omission.
+ *   - `baselineStats` present exactly on a returned B row. Absent, B's counters
+ *     have nowhere to go but `tier2Stats`, where `messagesJudged` would be
+ *     written under a field named for segments.
+ *   - `tier2Stats` present exactly on a returned COMPILED row. A B row also has
+ *     `config.tier2` true -- a model read the message -- so without `detector`
+ *     in that refine the two arms are indistinguishable to the schema.
+ *   - no `uncertainBelow` on a B row. B never escalates, and `gateReport`
+ *     compares that number against the threshold the planned distribution was
+ *     measured at, which would make the two agree about work no B arm performs.
+ */
+describe("the Approach-B evidence a record has to carry", () => {
+  const base = {
+    schemaVersion: 1 as const,
+    runId: "r1",
+    itemId: "a",
+    policy: "p-fin",
+    irHash: "0".repeat(64),
+    policyHash: "1".repeat(64),
+    arm: "baselineB-Qwen3.5-2B-q4f16_1-MLC",
+    backend: "webgpu" as const,
+    detector: "approach-b" as const,
+    provider: "claude",
+    // No `uncertainBelow`: this arm does not escalate. Tier 0 is ON, so this is
+    // the `baseline-b-tier0` shape -- the arm that separates "compiling helps"
+    // from "having patterns helps".
+    config: { tier0: true, tier1: false, tier2: true, t2Model: "Qwen3.5-2B-q4f16_1-MLC" },
+    tier2Config: {
+      modelId: "Qwen3.5-2B-q4f16_1-MLC",
+      contextWindowSize: 8192,
+      temperature: 0,
+      maxTokens: 512,
+      callBudgetMs: 60_000,
+    },
+    text: "hello world",
+    findings: [],
+    gold: [],
+    timings: { tier0Ms: 0.4, tier2Ms: 3612 },
+    degraded: [],
+    error: null,
+    abandonedWorkInFlight: false,
+  };
+  /**
+   * `BaselineStats` WHOLE as a per-item delta, every counter at a DISTINCT
+   * value so a field projected into the wrong slot is visible. The three that
+   * are not the judge's carry the three largest numbers, for the same reason.
+   */
+  const B_STATS = {
+    rung1: 3,
+    rung2: 1,
+    unresolvedQuotes: 2,
+    unknownEntityTypes: 41,
+    duplicatesDropped: 4,
+    repairAttempts: 5,
+    failedClosed: 6,
+    truncatedResponses: 7,
+    abortedResponses: 8,
+    messagesJudged: 43,
+    deadlineExpiries: 9,
+    messageBudgetExpiries: 47,
+    callerAbortsMidGeneration: 10,
+    callerAbortsWhileQueued: 11,
+    calls: [{ finishReason: "stop", promptTokens: 1433, completionTokens: 36, ttftMs: 2711 }],
+  };
+  const b = (patch: Record<string, unknown> = {}) =>
+    RunRecordSchema.safeParse({ ...base, baselineStats: B_STATS, ...patch });
+
+  it("accepts an Approach-B row and strips none of its counters", () => {
+    const parsed = b();
+    expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+    // Deep-equal rather than a spot check: zod DROPS what a schema does not
+    // declare, so a counter missing from `BaselineStatsSchema` would vanish
+    // from the file without a word.
+    expect(parsed.success && parsed.data.baselineStats).toEqual(B_STATS);
+  });
+
+  it("requires detector, and does not fill it in", () => {
+    // The one unconditionally required field this schema has gained, and the
+    // mutation worth naming is `.default("core-orchestrator")` rather than
+    // deletion: a default would silently turn a row that forgot to say what ran
+    // into a compiled row, which is the substitution the field exists to stop.
+    //
+    // The row below is COMPILED-SHAPED on purpose. Dropping `detector` from a
+    // B-shaped row is already refused by the `baselineStats` coupling, so it
+    // cannot tell "required" from "defaulted"; this one is valid under a
+    // default and invalid without one, which is the only shape that can.
+    const { detector: _dropped, ...without } = base;
+    const compiledShaped = {
+      ...without,
+      config: { ...base.config, uncertainBelow: 0.8 },
+      tier2Stats: {
+        rung1: 0,
+        rung2: 0,
+        unresolvedQuotes: 0,
+        unknownPredicates: 0,
+        duplicatesDropped: 0,
+        repairAttempts: 0,
+        failedClosed: 0,
+        truncatedResponses: 0,
+        abortedResponses: 0,
+        segmentsJudged: 0,
+        segmentsSkipped: 0,
+        deadlineExpiries: 0,
+        callerAbortsMidGeneration: 0,
+        callerAbortsWhileQueued: 0,
+        calls: [],
+      },
+    };
+    expect(RunRecordSchema.safeParse(compiledShaped).success).toBe(false);
+    // The same object WITH the field is accepted, so the refusal above is about
+    // the field being absent and not about anything else in the fixture.
+    expect(
+      RunRecordSchema.safeParse({ ...compiledShaped, detector: "core-orchestrator" }).success,
+    ).toBe(true);
+    expect(RunRecordSchema.safeParse({ ...without, baselineStats: B_STATS }).success).toBe(false);
+    expect(b({ detector: "the-compiler" }).success).toBe(false);
+  });
+
+  it("requires baselineStats on a returned B row and forbids them anywhere else", () => {
+    expect(b({ baselineStats: undefined }).success).toBe(false);
+    // Absent on an ERRORED item, exactly as `tier2Stats` is: the page's
+    // `lastDetect` is a delta over cumulative counters, so on a thrown item it
+    // belongs to the PREVIOUS item and there is no per-item answer to give.
+    expect(b({ error: "boom", degraded: undefined, baselineStats: undefined }).success).toBe(true);
+    expect(b({ error: "boom", degraded: undefined }).success).toBe(false);
+    // And a COMPILED row must not carry them.
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        detector: "core-orchestrator",
+        config: { ...base.config, uncertainBelow: 0.8 },
+        baselineStats: B_STATS,
+        tier2Stats: undefined,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("forbids tier2Stats on a B row, which config.tier2 alone cannot express", () => {
+    // The mutation this catches: dropping `detector` from the `tier2Stats`
+    // refine. A B row has `config.tier2` true -- a model read the message and
+    // every finding it emits carries `tier: 2` -- so on `config.tier2` alone
+    // the schema would REQUIRE the judge's counters on an arm that has none,
+    // and accept them beside B's own.
+    const JUDGE_STATS = {
+      rung1: 1,
+      rung2: 0,
+      unresolvedQuotes: 0,
+      unknownPredicates: 0,
+      duplicatesDropped: 0,
+      repairAttempts: 0,
+      failedClosed: 0,
+      truncatedResponses: 0,
+      abortedResponses: 0,
+      segmentsJudged: 1,
+      segmentsSkipped: 0,
+      deadlineExpiries: 0,
+      callerAbortsMidGeneration: 0,
+      callerAbortsWhileQueued: 0,
+      calls: [],
+    };
+    expect(base.config.tier2).toBe(true);
+    expect(b({ tier2Stats: JUDGE_STATS }).success).toBe(false);
+    expect(b({ tier2Stats: JUDGE_STATS, baselineStats: undefined }).success).toBe(false);
+  });
+
+  it("refuses an escalation threshold on a B row, and requires one on a compiled row", () => {
+    // Both directions, because only together do they say what `uncertainBelow`
+    // means. It is the threshold `escalate.ts` compares a prior tier's
+    // confidence against in order to decide which SEGMENTS reach the judge;
+    // Approach B judges the whole message in one call and never escalates.
+    expect(b({ config: { ...base.config, uncertainBelow: 0.8 } }).success).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({
+        ...base,
+        detector: "core-orchestrator",
+        baselineStats: undefined,
+        tier2Stats: {
+          rung1: 0,
+          rung2: 0,
+          unresolvedQuotes: 0,
+          unknownPredicates: 0,
+          duplicatesDropped: 0,
+          repairAttempts: 0,
+          failedClosed: 0,
+          truncatedResponses: 0,
+          abortedResponses: 0,
+          segmentsJudged: 0,
+          segmentsSkipped: 0,
+          deadlineExpiries: 0,
+          callerAbortsMidGeneration: 0,
+          callerAbortsWhileQueued: 0,
+          calls: [],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("survives the JSONL round trip with the three counters no judge reports", () => {
+    // The file is the deliverable. `messagesJudged`, `unknownEntityTypes` and
+    // `messageBudgetExpiries` are the three fields that make `baselineStats` a
+    // second schema rather than a rename, so they are the three worth proving
+    // reach a reader intact.
+    const [line] = toJsonl([{ ...base, baselineStats: B_STATS } as unknown as RunRecord])
+      .trim()
+      .split("\n");
+    const reparsed = RunRecordSchema.safeParse(JSON.parse(line!));
+    expect(reparsed.success, reparsed.success ? "" : JSON.stringify(reparsed.error)).toBe(true);
+    expect(reparsed.success && reparsed.data.baselineStats).toEqual(B_STATS);
+    expect(reparsed.success && reparsed.data.detector).toBe("approach-b");
   });
 });

@@ -23,6 +23,7 @@ import {
   percentile,
   segmentSizeDistribution,
   sizeStats,
+  type JudgedUnit,
   type SegmentSizeDistribution,
   type SizeStats,
 } from "./segments.js";
@@ -108,7 +109,7 @@ export const GATES = {
    * than the largest, so it moves neither end. The WORD median does move, 9
    * without priors and 8 with, which is why the number above is quoted in
    * characters. What the extra segment does move is the per-MESSAGE count, and
-   * that is `segmentsPerItem`'s business rather than this threshold's.
+   * that is `judgedUnitsPerItem`'s business rather than this threshold's.
    *
    * MEASURED HERE for the whole prompt, by driving the real `WebLlmJudge` over
    * those two segments with a capturing engine and adding up what
@@ -140,10 +141,13 @@ export const GATES = {
    * prompt is assembled inside the browser and a record carries no copy of it.
    * What it does instead is put the size BESIDE the number, twice over --
    * `ArmGateReport.promptTokens` is the engine's own prompt-token count over
-   * exactly the calls the p95 was taken over, and `ArmGateReport.segmentChars`
-   * is the character-size distribution escalation selects for the arm, which is
-   * the unit the 1.1 kB above is quoted in (and is PLANNED rather than observed
-   * -- see that field). A reader who finds either one out of line with the
+   * exactly the calls the p95 was taken over, and `ArmGateReport.judgedUnitChars`
+   * is the character-size distribution of what the arm's model is shown per
+   * call, which is the unit the 1.1 kB above is quoted in (and is PLANNED
+   * rather than observed -- see that field). On an Approach-B arm the
+   * derivation does not transfer at all: B's prompt carries the whole policy
+   * document, so `judgedUnit` on the report is what says the threshold was set
+   * for different work. A reader who finds either one out of line with the
    * derivation knows the gate was applied to different work.
    */
   maxP95TtftMs: 1500,
@@ -313,8 +317,13 @@ export interface FamilyShape {
    * one place the families legitimately differ in cost -- which is why the
    * shared wall-clock ceiling is sized from the larger of the two rather than
    * from an average that would squeeze the compiled family.
+   *
+   * It is also what `SegmentSizeDistribution.unit` has to agree with, which is
+   * why the union is imported from `segments.ts` rather than restated: a family
+   * paired with a distribution measured over the other unit would put a segment
+   * p50 under an arm whose model was shown whole messages.
    */
-  readonly judgedUnit: "segment" | "message";
+  readonly judgedUnit: JudgedUnit;
   /**
    * Engine calls per judged unit, worst case.
    *
@@ -610,8 +619,27 @@ export interface BakeoffOptions {
    * thought about it wrongly should be told.
    */
   readonly itemTimeoutMs: number;
-  /** Path to the policy DOCUMENT the baseline arms would be shown. */
+  /**
+   * Path to the policy DOCUMENT the baseline arms are shown. Required exactly
+   * when a baseline family is asked for.
+   *
+   * TWO things are checked against it and they are different checks.
+   * `planBakeoff` requires its sha256 to equal the IR's `policyHash`, which is
+   * what makes B and the compiled arm the same experiment. `runBakeoff` then
+   * requires the PAGE's own digest of the document it bundled to equal this
+   * file's -- the same two-sided check `irHash` gets, and the one that catches
+   * a dev server left running by another worktree.
+   */
   readonly policyPath?: string;
+  /**
+   * The page's policy-registry name for that document, defaulting to
+   * `policyName`'s basename minus `.md`.
+   *
+   * A NAME rather than the text, for the reason `irName` is one: a page that
+   * accepted arbitrary policy text would make half a run's provenance
+   * unreproducible from this repository.
+   */
+  readonly policyName?: string;
   readonly lowerTierAllowanceMs?: number;
   readonly uncertainBelow?: number;
 }
@@ -670,6 +698,23 @@ export interface BakeoffPlan {
     readonly entityTypes: number;
     readonly rules: number;
   };
+  /**
+   * The policy DOCUMENT the Approach-B arms are shown, when there are any.
+   *
+   * `undefined` exactly when no baseline family was asked for -- `planBakeoff`
+   * refuses a baseline family without one, and refuses one whose sha256 is not
+   * the IR's `policyHash`. So a present value has already been proven to be the
+   * document this run's IR was compiled from, which is the whole premise of the
+   * comparison.
+   *
+   * `chars` is here rather than derivable later because it is the number that
+   * says how much bigger B's prompt is than the compiled judge's: the p95 TTFT
+   * ceiling was derived at a ~1.1 kB whole prompt, and this document alone is
+   * several times that.
+   */
+  readonly policy:
+    | { readonly name: string; readonly sha256: string; readonly chars: number }
+    | undefined;
 }
 
 export interface PlanInput {
@@ -682,6 +727,20 @@ export interface PlanInput {
 }
 
 const DEFAULT_FAMILIES: readonly ArmFamily[] = ["compiled"];
+
+/**
+ * The page IR registry name a run selects unless told otherwise.
+ *
+ * `"semantic"` and not `"p-fin"`, deliberately, and the difference is a real
+ * experiment variable rather than inertia. `apps/eval/fixtures/semantic-ir.json`
+ * carries `latencyBudgetMs: 120000` -- 24x the compiler's default -- so a
+ * compiled-family smoke run against it exercises completed judgements;
+ * `policies/compiled/p-fin.ir.json` carries the compiler's own 5,000 and at
+ * Plan 5's measured 4.6 s per call an arm run against it degrades on the budget.
+ * Both are true measurements of different questions, and the head-to-head needs
+ * the compiled one because only it can be paired with a document.
+ */
+const DEFAULT_IR_NAME = "semantic";
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -751,6 +810,7 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
 
   const needsPolicy = families.some((f) => !familyShape(f).runsCompiledJudge);
   const policyText = input.policyText;
+  let policy: BakeoffPlan["policy"];
   if (needsPolicy) {
     if (policyText === undefined || policyText === "") {
       throw new Error(
@@ -777,6 +837,15 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
           `and no document in this repository can satisfy it; compile a policy first.`,
       );
     }
+    policy = {
+      // Defaulted from the IR name rather than required, because the page's two
+      // registries are keyed by the SAME names for the two halves of one
+      // compile -- `useIr("p-fin")` and the policy fixture "p-fin". A caller
+      // pairing them differently has to say so.
+      name: options.policyName ?? options.irName ?? DEFAULT_IR_NAME,
+      sha256: documentHash,
+      chars: policyText.length,
+    };
   }
 
   // Per FAMILY and never shared, so the two escalation conditions cannot be
@@ -792,6 +861,12 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
       segmentSizeDistribution(items, {
         hasPredicates: ir.semanticPredicates.length > 0,
         uncertainBelow,
+        // The unit ONE engine call covers on this family, so the distribution
+        // describes the work the arm does rather than the work its paired
+        // family does. An Approach-B arm is shown whole messages; a segment
+        // distribution under its name would put a p50 of 62 characters beside a
+        // p95 TTFT taken on a ~5.9 kB prompt.
+        unit: shape.judgedUnit,
         // The key is OMITTED rather than set to `() => []` for a family that
         // does not run tier 0, so `escalation.hasPriors` records which of the
         // two conditions this distribution is. A supplied callback that returns
@@ -844,12 +919,21 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
         // cannot be recorded as something it is not. `baselineB.ts` refuses a
         // TierConfig that disagrees with the arm it was built as, for the same
         // reason and with the same argument.
+        //
+        // `uncertainBelow` is on the COMPILED families only. It is the threshold
+        // `escalate.ts` compares a prior tier's confidence against to decide
+        // which SEGMENTS reach the judge; Approach B judges the whole message in
+        // one call and never escalates, so on a B arm it would be a knob that
+        // turned nothing -- and `gateReport` compares this number against the
+        // one the planned distribution was measured at, which would make the two
+        // agree about work no B arm performs. `RunRecordSchema` refuses a B row
+        // that carries one.
         config: {
           tier0: shape.runsTier0,
           tier1: false,
           tier2: true,
           t2Model: model.modelId,
-          uncertainBelow,
+          ...(shape.runsCompiledJudge ? { uncertainBelow } : {}),
         },
         contextWindowSize: model.contextWindowSize,
         callBudgetMs,
@@ -878,6 +962,7 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
     itemTimeoutMs: options.itemTimeoutMs,
     bound,
     gatesPath: join(options.outDir, `${options.runId}.gates.jsonl`),
+    policy,
     ir: {
       policyHash: ir.policyHash,
       latencyBudgetMs: ir.latencyBudgetMs,
@@ -1030,7 +1115,7 @@ export interface ArmRunContext {
    * message budget does not slow a call, but it changes WHICH calls happen --
    * the orchestrator's one deadline cuts the message off mid-judgement, so a
    * run at 5,000 would have a smaller sample, more calls ended by an interrupt,
-   * far fewer `ladder.segmentsJudged` and far more
+   * far fewer `ladder.unitsJudged` and far more
    * `degradedNotices["budget-exhausted"]`. None of those differences is
    * observable from this file.
    *
@@ -1040,7 +1125,7 @@ export interface ArmRunContext {
    * `IR_FIXTURES` in `apps/eval/src/page/main.ts`, and then a second
    * `runBakeoff` under a different `runId` and `irName`, with an `itemTimeoutMs`
    * matching the much smaller bound `planBakeoff` derives at that budget. The
-   * degradation rate is then the ratio of `ladder.segmentsJudged` and of
+   * degradation rate is then the ratio of `ladder.unitsJudged` and of
    * `degradedNotices["budget-exhausted"]` between the two gates rows. It is
    * deliberately NOT a per-arm dimension of one run: `armName` is
    * `<familySlug>-<modelId>` and a file is named by runId, family and model, so
@@ -1228,7 +1313,7 @@ export interface ArmGateReport {
    *
    * The evidence for `GATES.maxP95TtftMs`'s comparability clause. The engine's
    * own `usage.prompt_tokens`, so it is a token count and not the ~1.1 kB
-   * CHARACTER figure the threshold was derived at -- see `segmentChars` for a
+   * CHARACTER figure the threshold was derived at -- see `judgedUnitChars` for a
    * number in that unit. Restricted to the latency sample deliberately: a
    * prompt column taken over a different set of calls cannot be checked against
    * the latency it stands beside.
@@ -1248,18 +1333,51 @@ export interface ArmGateReport {
    * the denominator.
    */
   readonly sustainedDecodeTokPerSec: number | undefined;
+  /**
+   * The span ladder and the stop accounting, summed over the arm.
+   *
+   * ONE shape for both methods, and the two renames are deliberate rather than
+   * a translation layer's accident. `BaselineStats` calls two of these events
+   * something else because Approach B judges a MESSAGE and names an ENTITY
+   * CLASS where the compiled judge judges a segment and names a predicate; the
+   * events are the same events, and a bake-off putting the two arms in one
+   * table needs one column per event. So:
+   *
+   *   - `unitsJudged` is `segmentsJudged` on a compiled arm and `messagesJudged`
+   *     on a B arm. It is the denominator every rate here is taken over, and it
+   *     is deliberately NOT named for either unit: `judgedUnit` on this report
+   *     says which one, and a column named `segmentsJudged` holding a count of
+   *     messages is the defect this rename exists to prevent.
+   *   - `unknownLabels` is `unknownPredicates` on a compiled arm and
+   *     `unknownEntityTypes` on a B arm -- a model inventing a label, in two
+   *     vocabularies.
+   *
+   * Two fields have no counterpart on the other side and are `undefined` rather
+   * than 0 there, because 0 would be the positive claim that the event happened
+   * zero times:
+   *
+   *   - `unitsSkipped` (the judge's `segmentsSkipped`) is meaningless for an arm
+   *     that makes one call per message: there is no second unit to skip.
+   *   - `messageBudgetExpiries` is B's alone. `detect` arms the message deadline
+   *     for the compiled path and files a notice instead of counting, so the
+   *     compiled arms report this event only through
+   *     `degradedNotices["budget-exhausted"]`.
+   */
   readonly ladder: {
     readonly rung1: number;
     readonly rung2: number;
     readonly unresolvedQuotes: number;
     readonly duplicatesDropped: number;
-    readonly unknownPredicates: number;
+    readonly unknownLabels: number;
     readonly failedClosed: number;
     readonly truncatedResponses: number;
     readonly abortedResponses: number;
     readonly repairAttempts: number;
-    readonly segmentsJudged: number;
-    readonly segmentsSkipped: number;
+    readonly unitsJudged: number;
+    /** The judge's `segmentsSkipped`. `undefined` on a message-judged arm. */
+    readonly unitsSkipped: number | undefined;
+    /** Approach B's own message-budget stops. `undefined` on a compiled arm. */
+    readonly messageBudgetExpiries: number | undefined;
   };
   /**
    * Degradation notices by reason word, summed over the arm.
@@ -1275,32 +1393,51 @@ export interface ArmGateReport {
   /** Items carrying at least one notice of that reason. One item can carry two. */
   readonly degradedItems: Readonly<Record<DegradedReason, number>>;
   /**
-   * The character-size distribution of the segments escalation SELECTS for this
-   * arm over this corpus.
+   * What one engine call covers on this arm: a selected SEGMENT on the compiled
+   * families, the whole MESSAGE on the Approach-B families.
+   *
+   * On the report because the two fields below are counted over it and a
+   * character p50 does not say which. Checked against the arm's family rather
+   * than copied from it -- see `gateReport`.
+   */
+  readonly judgedUnit: JudgedUnit;
+  /**
+   * The character-size distribution of the units this arm's model is shown, one
+   * sample per engine call the arm would make.
    *
    * The evidence for `GATES.maxP95TtftMs` in the unit its ~1.1 kB derivation is
    * quoted in -- `promptTokens` is the same calls in the engine's tokens, and
    * neither converts into the other without the model's own tokenizer.
    *
+   * READ IT WITH `judgedUnit`, and on an Approach-B arm read the p95 TTFT gate's
+   * derivation as not applying: that ceiling was derived at a ~1.1 kB WHOLE
+   * PROMPT, of which 776 characters are the judge's fixed system turn and the
+   * rest is one segment. Approach B's prompt carries the whole policy document
+   * on every call -- `policies/p-fin.md` alone is 5,272 characters -- so a B
+   * arm's prompt is several times the size the threshold was set at, and its
+   * TTFT is not measuring the same thing. The gate is still computed and still
+   * reported, because suppressing it would hide the number; what must not
+   * happen is reading a B arm's `p95-ttft` verdict as a comparable one. The
+   * evidence for saying so is on the row: this field and `promptTokens`.
+   *
    * PLANNED, not observed, and the name is only as true as that: it is computed
    * in Node by `planBakeoff` before the first model loads, from core's own
    * segmenter and the escalation policy under THIS arm's tier-0 setting -- so
-   * it is the set of segments a healthy run of this arm would judge, not a
-   * count taken off the rows. No record carries the segments the page actually
-   * handed the judge, so this is the closest population the file has. The three
-   * ways a real run diverges from it are all on this same report and should be
-   * read beside it: `itemsErrored` (an item that threw judged none of its
-   * segments), `degradedNotices["budget-exhausted"]` (a message that stopped
-   * before its later segments) and `ladder.segmentsJudged` (what the judge
-   * actually saw).
+   * it is the set of units a healthy run of this arm would judge, not a count
+   * taken off the rows. No record carries what the page actually handed the
+   * model, so this is the closest population the file has. The three ways a
+   * real run diverges from it are all on this same report and should be read
+   * beside it: `itemsErrored` (an item that threw judged nothing),
+   * `degradedNotices["budget-exhausted"]` (a message that stopped early) and
+   * `ladder.unitsJudged` (what the model actually saw).
    *
    * What is checked rather than trusted: `gateReport` refuses a distribution
-   * whose escalation condition or item count disagrees with the rows, so this
-   * cannot be the OTHER family's distribution -- the two differ on this corpus
-   * -- or one measured over a different corpus.
+   * whose unit, escalation condition or item count disagrees with the rows, so
+   * this cannot be the OTHER family's distribution -- the two differ on this
+   * corpus -- or one measured over a different corpus.
    */
-  readonly segmentChars: SizeStats | undefined;
-  readonly segmentsPerItem: SizeStats | undefined;
+  readonly judgedUnitChars: SizeStats | undefined;
+  readonly judgedUnitsPerItem: SizeStats | undefined;
   readonly escalation: SegmentSizeDistribution["escalation"];
   readonly gates: readonly GateOutcome[];
   /**
@@ -1506,6 +1643,98 @@ function scoringBoundary(
 }
 
 /**
+ * One row's model-call counters, in ONE shape whichever method produced them.
+ *
+ * The translation layer `assertPageCanRun` used to refuse to write, now written
+ * in the one place a translation belongs: at the boundary, once, with the
+ * mapping spelled out. Every gate below is then a single expression over both
+ * methods rather than two expressions that could drift on a threshold.
+ *
+ * The mapping, and it is a mapping and not a rename of convenience:
+ *
+ *   segmentsJudged      <-> messagesJudged        (the unit ONE call covers)
+ *   unknownPredicates   <-> unknownEntityTypes    (a model inventing a label)
+ *   segmentsSkipped     <-> (none)                (no second unit to skip)
+ *   (none)              <-> messageBudgetExpiries (only B owns its own message clock)
+ *
+ * `stops` folds the three stop counters, which is what the engine-poisoning walk
+ * needs and all it needs: the walk asks WHETHER this item ended in a stop, and
+ * the three are already reported separately on `ladder`. Folding them here is
+ * what keeps that walk from having to know which method it is walking.
+ *
+ * Returns `undefined` for a row with no counters at all -- an errored item,
+ * whose delta belongs to the previous item and whose absence `RunRecordSchema`
+ * requires.
+ */
+function normalizeArmStats(record: RunRecord):
+  | {
+      readonly rung1: number;
+      readonly rung2: number;
+      readonly unresolvedQuotes: number;
+      readonly duplicatesDropped: number;
+      readonly unknownLabels: number;
+      readonly failedClosed: number;
+      readonly truncatedResponses: number;
+      readonly abortedResponses: number;
+      readonly repairAttempts: number;
+      readonly unitsJudged: number;
+      readonly unitsSkipped: number | undefined;
+      readonly messageBudgetExpiries: number | undefined;
+      readonly stops: number;
+      readonly calls: NonNullable<RunRecord["tier2Stats"]>["calls"];
+    }
+  | undefined {
+  const judge = record.tier2Stats;
+  if (judge !== undefined) {
+    return {
+      rung1: judge.rung1,
+      rung2: judge.rung2,
+      unresolvedQuotes: judge.unresolvedQuotes,
+      duplicatesDropped: judge.duplicatesDropped,
+      unknownLabels: judge.unknownPredicates,
+      failedClosed: judge.failedClosed,
+      truncatedResponses: judge.truncatedResponses,
+      abortedResponses: judge.abortedResponses,
+      repairAttempts: judge.repairAttempts,
+      unitsJudged: judge.segmentsJudged,
+      unitsSkipped: judge.segmentsSkipped,
+      messageBudgetExpiries: undefined,
+      stops:
+        judge.deadlineExpiries +
+        judge.callerAbortsMidGeneration +
+        judge.callerAbortsWhileQueued,
+      calls: judge.calls,
+    };
+  }
+  const baseline = record.baselineStats;
+  if (baseline === undefined) return undefined;
+  return {
+    rung1: baseline.rung1,
+    rung2: baseline.rung2,
+    unresolvedQuotes: baseline.unresolvedQuotes,
+    duplicatesDropped: baseline.duplicatesDropped,
+    unknownLabels: baseline.unknownEntityTypes,
+    failedClosed: baseline.failedClosed,
+    truncatedResponses: baseline.truncatedResponses,
+    abortedResponses: baseline.abortedResponses,
+    repairAttempts: baseline.repairAttempts,
+    unitsJudged: baseline.messagesJudged,
+    unitsSkipped: undefined,
+    messageBudgetExpiries: baseline.messageBudgetExpiries,
+    // `messageBudgetExpiries` is IN the fold and `deadlineExpiries` is too, and
+    // both belong: each is a stop that ended the run for that message, and the
+    // poisoning walk's question is whether the engine was interrupted before
+    // the next call. `baselineB.ts`'s loop `break`s on either.
+    stops:
+      baseline.deadlineExpiries +
+      baseline.messageBudgetExpiries +
+      baseline.callerAbortsMidGeneration +
+      baseline.callerAbortsWhileQueued,
+    calls: baseline.calls,
+  };
+}
+
+/**
  * One arm's numbers and one verdict per gate.
  *
  * PURE, and takes records rather than a path, because this is the part of the
@@ -1551,7 +1780,7 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     tier2Config: uniform(records, "tier2Config", (r) => r.tier2Config),
   };
 
-  // `segmentChars`, `segmentsPerItem` and `escalation` are the only fields on
+  // `judgedUnitChars`, `judgedUnitsPerItem` and `escalation` are the only fields on
   // this report that do not come off the rows: they are the PLAN's distribution,
   // measured in Node before the arm ran. That is the closest population there
   // is -- no record carries the segments the page judged -- and it is only
@@ -1584,12 +1813,38 @@ export function gateReport(input: GateReportInput): ArmGateReport {
   // `runBakeoff` case, which asserts each report's distribution IS its own
   // arm's.
   const shape = familyShape(family);
+  // The family the caller NAMED against what the rows say ran. `detector` is a
+  // record field the page's own routing produced -- `loadBaseline` is the only
+  // thing that makes `detect` answer from Approach B -- so this is a check on
+  // fact, not on intent, and it is the one that stops a B arm's numbers being
+  // filed under a compiled family. `uniform` refuses a set of rows that
+  // disagree with each other, which on this field would be an arm that changed
+  // method partway through.
+  const detector = uniform(records, "detector", (r) => r.detector);
+  if ((detector === "core-orchestrator") !== shape.runsCompiledJudge) {
+    throw new Error(
+      `arm "${arm}" is family "${family}", which runs ` +
+        `${shape.runsCompiledJudge ? "core's orchestrator with the compiled judge" : "Approach B"}, ` +
+        `but its rows say the detector was "${detector}". The gates below are the same numbers ` +
+        `either way and would look perfectly well-formed; what would be wrong is which method ` +
+        `they are attributed to, which is the only question this bake-off exists to answer`,
+    );
+  }
+  if (segments.unit !== shape.judgedUnit) {
+    throw new Error(
+      `arm "${arm}" is family "${family}", whose model is shown one ${shape.judgedUnit} per ` +
+        `engine call, but its size distribution was measured over ${segments.unit}s; ` +
+        `judgedUnitChars and judgedUnitsPerItem would describe the other family's prompts, and ` +
+        `the p95 TTFT gate's stated prompt size with them`,
+    );
+  }
   if (segments.escalation.hasPriors !== shape.runsTier0) {
     throw new Error(
       `arm "${arm}" is family "${family}", which ${shape.runsTier0 ? "runs" : "does not run"} ` +
         `tier 0, but its segment distribution was measured ` +
-        `${segments.escalation.hasPriors ? "WITH" : "WITHOUT"} tier-0 priors; segmentChars, ` +
-        `segmentsPerItem and escalation would describe the other family's work under this arm's ` +
+        `${segments.escalation.hasPriors ? "WITH" : "WITHOUT"} tier-0 priors; judgedUnitChars, ` +
+        `judgedUnitsPerItem and escalation would describe the other family's work under this ` +
+        `arm's ` +
         `name, and the p95 gate's stated prompt size with them`,
     );
   }
@@ -1615,13 +1870,18 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     rung2: 0,
     unresolvedQuotes: 0,
     duplicatesDropped: 0,
-    unknownPredicates: 0,
+    unknownLabels: 0,
     failedClosed: 0,
     truncatedResponses: 0,
     abortedResponses: 0,
     repairAttempts: 0,
-    segmentsJudged: 0,
-    segmentsSkipped: 0,
+    unitsJudged: 0,
+    // Accumulated as numbers and reported as `undefined` on the family that has
+    // no such counter -- see `ArmGateReport.ladder`. A 0 there would be the
+    // positive claim that the event happened zero times on an arm that cannot
+    // produce it.
+    unitsSkipped: 0,
+    messageBudgetExpiries: 0,
   };
   const degradedNotices = zeroReasons();
   const degradedItems = zeroReasons();
@@ -1640,19 +1900,25 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     }
     for (const notice of record.degraded ?? []) degradedNotices[notice.reason] += 1;
 
-    const stats = record.tier2Stats;
+    // Exactly one of the two is populated on a returned row, and which one is
+    // decided by `detector` -- `RunRecordSchema` refuses a row carrying both or
+    // neither. Normalised into ONE shape here rather than summed into two
+    // parallel sets of counters, so every gate below is computed by one
+    // expression over both methods instead of two that could drift.
+    const stats = normalizeArmStats(record);
     if (stats === undefined) continue;
     ladder.rung1 += stats.rung1;
     ladder.rung2 += stats.rung2;
     ladder.unresolvedQuotes += stats.unresolvedQuotes;
     ladder.duplicatesDropped += stats.duplicatesDropped;
-    ladder.unknownPredicates += stats.unknownPredicates;
+    ladder.unknownLabels += stats.unknownLabels;
     ladder.failedClosed += stats.failedClosed;
     ladder.truncatedResponses += stats.truncatedResponses;
     ladder.abortedResponses += stats.abortedResponses;
     ladder.repairAttempts += stats.repairAttempts;
-    ladder.segmentsJudged += stats.segmentsJudged;
-    ladder.segmentsSkipped += stats.segmentsSkipped;
+    ladder.unitsJudged += stats.unitsJudged;
+    ladder.unitsSkipped += stats.unitsSkipped ?? 0;
+    ladder.messageBudgetExpiries += stats.messageBudgetExpiries ?? 0;
 
     for (const call of stats.calls) {
       answeredCalls += 1;
@@ -1698,12 +1964,7 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     // both loops -- `WebLlmJudge.judge` and `baselineB.ts`'s `createArm` return
     // on every `DeadlineExpired`, so no further call is made on the item that
     // stopped.
-    if (
-      stoppedAt === undefined &&
-      stats.deadlineExpiries + stats.callerAbortsMidGeneration + stats.callerAbortsWhileQueued > 0
-    ) {
-      stoppedAt = record.itemId;
-    }
+    if (stoppedAt === undefined && stats.stops > 0) stoppedAt = record.itemId;
   }
 
   const sustainedDecodeTokPerSec = decodeSeconds > 0 ? decodedTokens / decodeSeconds : undefined;
@@ -1748,8 +2009,10 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         "take a percentile of; that is not a slow arm, it is an unmeasured one",
       measured: (observed) =>
         `p95 time-to-first-token over ${ttft.length} answered call(s) was ${observed.toFixed(0)}ms ` +
-        `against a ${GATES.maxP95TtftMs}ms ceiling; read it beside promptTokens and segmentChars, ` +
-        `because the ceiling was derived at a ~1.1 kB prompt, and beside ` +
+        `against a ${GATES.maxP95TtftMs}ms ceiling; read it beside promptTokens and ` +
+        `judgedUnitChars, because the ceiling was derived at a ~1.1 kB prompt built from ONE ` +
+        `SEGMENT -- so on a message-judged arm (judgedUnit "${segments.unit}") it is not the ` +
+        `prompt size this number was taken at -- and beside ` +
         `run.latencyBudgetTimesCompilerDefault, because these calls were ${budgetTaken} -- so the ` +
         `SET of calls in this sample is not the set a compiled policy's budget would produce, and ` +
         `the degradation that difference causes is measured nowhere in this run`,
@@ -1814,11 +2077,19 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     completionTokens: sizeStats(completionTokens),
     decodeTokPerSec: sizeStats(decodeRates),
     sustainedDecodeTokPerSec,
-    ladder,
+    ladder: {
+      ...ladder,
+      // Reported as `undefined` on the family that cannot produce the event.
+      // See `ArmGateReport.ladder`: a 0 is a measurement and these two are not
+      // measurable on the other method.
+      unitsSkipped: shape.judgedUnit === "segment" ? ladder.unitsSkipped : undefined,
+      messageBudgetExpiries: shape.runsCompiledJudge ? undefined : ladder.messageBudgetExpiries,
+    },
     degradedNotices,
     degradedItems,
-    segmentChars: segments.chars,
-    segmentsPerItem: segments.perItem,
+    judgedUnit: segments.unit,
+    judgedUnitChars: segments.chars,
+    judgedUnitsPerItem: segments.perItem,
     escalation: segments.escalation,
     gates,
     // FAIL only. A `not-measured` gate must never kill: see `GateOutcome.verdict`.
@@ -1923,56 +2194,58 @@ function stopGate(
 // ---------------------------------------------------------------------------
 
 /**
- * Which of the planned arms this harness can actually execute today.
+ * What the harness needs from a plan before it will run one, and what it USED to
+ * refuse.
  *
- * SEPARATE from `planBakeoff` because the two answer different questions.
- * Planning asks whether a slate is a valid experiment; this asks whether the
- * browser half has a door for it. An arm can be a perfectly fair experiment and
- * still have nowhere to run.
+ * This function refused every Approach-B arm outright for three reasons, and
+ * the record of them is worth keeping because each was true and each is now
+ * closed by something checkable rather than by an assurance:
  *
- * The Approach-B families have nowhere to run, and the reason is worth stating
- * exactly rather than as "unsupported". `apps/eval/src/page/main.ts` exposes
- * `detect`, which is core's orchestrator with a `WebLlmJudge` behind it;
- * `createBaselineB` is a `Detector` in its own right and the page imports
- * neither it nor a policy document, so there is no `window.__sih` call that
- * reaches it. That door is a small addition -- and it is deliberately NOT made
- * here, because two things in the corpus/policy and record layers would make a
- * B arm meaningless the moment it ran:
+ *   1. NO PAGE DOOR. `apps/eval/src/page/main.ts` published only
+ *      `window.__sih.detect`, core's orchestrator with a `WebLlmJudge` behind
+ *      it, and never constructed `createBaselineB` -- so no call could reach an
+ *      Approach-B arm at all. Closed by `loadBaseline`, which builds the arm on
+ *      the SAME engine the compiled judge runs on and makes `detect` answer
+ *      from it.
+ *   2. NO RECORD FIELD. `RunRecordSchema` had `tier2Stats` and no baseline
+ *      equivalent, and B's counters are `BaselineStats`: two events renamed
+ *      (`messagesJudged`, `unknownEntityTypes`) and one the judge does not have
+ *      (`messageBudgetExpiries`). Writing them into `tier2Stats` would have been
+ *      a record stating one event under another event's name. Closed by
+ *      `baselineStats` plus the `detector` field that says which of the two a
+ *      row carries.
+ *   3. NO COMPILED IR. Every IR here was hand-written with
+ *      `policyHash: "test-hash"`, which is not a sha256 of anything, so
+ *      `planBakeoff`'s pairing check could not be satisfied by any document in
+ *      the repository and every B arm was refused one layer up. Closed by
+ *      `policies/compiled/p-fin.ir.json`, real compiler output whose
+ *      `policyHash` is `shasum -a 256 policies/p-fin.md`, produced offline by
+ *      `scripts/compile-policies.ts` replaying the committed LLM fixtures and
+ *      re-derived on every suite run by `packages/compiler/test/compiled.test.ts`.
  *
- *   1. No IR in this repository was compiled from any policy document in it.
- *      `semantic-ir.json` carries `policyHash: "test-hash"`, which is not a
- *      sha256 of anything, so `planBakeoff` refuses every B arm here already.
- *   2. `RunRecordSchema` has `tier2Stats` and no baseline equivalent. B's
- *      counters are `BaselineStats`, which renames two events (`messagesJudged`
- *      for `segmentsJudged`, `unknownEntityTypes` for `unknownPredicates`) and
- *      adds `messageBudgetExpiries`, which no judge counter reports. Writing
- *      them into `tier2Stats` would be a record stating one event under another
- *      event's name.
+ * A FOURTH reason stood here before those and no longer does, kept for the same
+ * reason: `semantic-ir.json` carried `rules: []`, so tier 0 found nothing on any
+ * item and `baseline-b-tier0` versus `baseline-b` -- the pair that separates
+ * "compiling helps" from "patterns help" -- would have been two runs of the same
+ * thing. That fixture now carries three tier-0 rules (MEASURED: 18 selected
+ * segments against 17, per-message max 3 against 2), and the compiled p-fin IR
+ * carries ten.
  *
- * A THIRD reason stood here and no longer does, which is worth recording rather
- * than deleting: `semantic-ir.json` carried `rules: []`, so tier 0 found nothing
- * on any item and `baseline-b-tier0` versus `baseline-b` -- the pair that
- * separates "compiling helps" from "patterns help" -- would have been two runs
- * of the same thing. The fixture now carries three tier-0 rules and that pair
- * would differ (MEASURED: 18 selected segments against 17, per-message max 3
- * against 2), so the objection is gone and only the two above remain.
- *
- * So this refuses, naming them, rather than running an arm whose numbers would
- * be confident and meaningless.
+ * What is left to check is the ONE thing a plan can still get wrong here: a
+ * baseline arm needs a policy document to show its model, and `planBakeoff`
+ * only requires one when a baseline family is present. This makes the pairing a
+ * property of the plan rather than of the caller's memory.
  */
 export function assertPageCanRun(plan: BakeoffPlan): void {
   const baseline = plan.arms.filter((a) => !familyShape(a.family).runsCompiledJudge);
   if (baseline.length === 0) return;
-  throw new Error(
-    `this harness cannot execute the Approach-B arm(s) [${baseline.map((a) => a.arm).join(", ")}]: ` +
-      `apps/eval/src/page/main.ts publishes only core's orchestrator (window.__sih.detect) and ` +
-      `never constructs createBaselineB, so no call reaches it. Adding that door is small; what ` +
-      `is not is that (1) no IR here was compiled from any policy document here, so B cannot be ` +
-      `shown the document the compiled arm's IR came from, and (2) RunRecordSchema has no field ` +
-      `for BaselineStats, whose messagesJudged, unknownEntityTypes and messageBudgetExpiries are ` +
-      `different events from the judge's. Run the compiled families here and land the baseline ` +
-      `families with the compiled policy.`,
-  );
+  if (plan.policy === undefined) {
+    throw new Error(
+      `this plan holds Approach-B arm(s) [${baseline.map((a) => a.arm).join(", ")}] and no policy ` +
+        `document. B is the whole policy in one prompt with no compiler, so without the document ` +
+        `there is nothing for it to be shown`,
+    );
+  }
 }
 
 export interface BakeoffResult {
@@ -2001,7 +2274,7 @@ export interface BakeoffResult {
  */
 export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<BakeoffResult> {
   const items = loadCorpus(readFileSync(options.corpus, "utf8"));
-  const irName = options.irName ?? "semantic";
+  const irName = options.irName ?? DEFAULT_IR_NAME;
   const irPath =
     options.irPath ?? join(import.meta.dirname, "..", "..", "fixtures", `${irName}-ir.json`);
   const irJson = readFileSync(irPath, "utf8");
@@ -2028,6 +2301,29 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
     options.policyPath === undefined ? undefined : readFileSync(options.policyPath, "utf8");
   const plan = planBakeoff({ options, ir, items, policyText });
   assertPageCanRun(plan);
+  // The policy document's two-sided check, the twin of the IR one above and for
+  // the same failure: this process reads a file off disk and the PAGE bundles
+  // its own copy, and nothing else compares them. `playwright.config.ts` sets
+  // `reuseExistingServer: !CI`, so a dev server from another worktree would
+  // show Approach B a different document while every record looked correct --
+  // and unlike the IR, no record field carries a digest of what B was shown.
+  // (`policyHash` on a record is the IR's field, which is the hash of the
+  // document the IR was COMPILED from, not of the text B was handed.) So this
+  // is the only place the two can be tied together, and it happens before a
+  // model loads.
+  if (plan.policy !== undefined) {
+    const pagePolicyHash = await page.evaluate(
+      (name) => window.__sih!.policyDocHash(name),
+      plan.policy.name,
+    );
+    if (pagePolicyHash !== plan.policy.sha256) {
+      throw new Error(
+        `the page's policy "${plan.policy.name}" hashes to ${pagePolicyHash} but ` +
+          `${String(options.policyPath)} hashes to ${plan.policy.sha256}; Approach B would be ` +
+          `shown a document this driver never read, and no field of any record would say so`,
+      );
+    }
+  }
 
   mkdirSync(options.outDir, { recursive: true });
   for (const { path } of plan.arms) {
@@ -2108,9 +2404,69 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
       );
     }
 
+    // The Approach-B door, taken exactly when the arm's FAMILY says this arm is
+    // not the compiled judge. Everything the arm runs under is already fixed by
+    // the `loadTier2` above -- the engine, the window, the temperature, the
+    // token ceiling and the per-call budget -- and `loadBaseline` reads all of
+    // them off that load rather than taking any of them from here. What this
+    // call adds is the policy DOCUMENT and which of the two B constructors to
+    // use, and both come off the plan.
+    const shape = familyShape(arm.family);
+    if (!shape.runsCompiledJudge) {
+      // Unreachable: `assertPageCanRun` refused this plan before any model
+      // loaded. Kept because the alternative is passing `undefined` into the
+      // page and getting an "unknown policy" from the far side of an evaluate.
+      if (plan.policy === undefined) {
+        throw new Error(`arm "${arm.arm}" is an Approach-B arm and this plan carries no policy`);
+      }
+      const baselineLoad = await page.evaluate(
+        (loadOptions) => window.__sih!.loadBaseline(loadOptions),
+        { family: shape.runsTier0 ? ("baseline-b-tier0" as const) : ("baseline-b" as const), policy: plan.policy.name },
+      );
+      // Three checks on the report, and like the tier-2 ones they are NOT of
+      // equal strength. `irPolicyHash` is the strong one: the page compares its
+      // own digest of the document it will put in the prompt against the IR it
+      // has loaded, and refuses -- so this is reading back a refusal that has
+      // already run. `policyDocSha256` is the echo that ties that refusal to
+      // the file THIS process read. `servedModelId` is the same observed id the
+      // tier-2 load reported, re-read here because B runs on that engine and a
+      // reload between the two calls would otherwise go unnoticed.
+      if (baselineLoad.policyDocSha256 !== plan.policy.sha256) {
+        throw new Error(
+          `arm "${arm.arm}": the page built its Approach-B arm on a document hashing ` +
+            `${baselineLoad.policyDocSha256}, not the ${plan.policy.sha256} this driver planned ` +
+            `from`,
+        );
+      }
+      if (baselineLoad.irPolicyHash !== plan.ir.policyHash) {
+        throw new Error(
+          `arm "${arm.arm}": the page paired its Approach-B document with an IR whose policyHash ` +
+            `is "${baselineLoad.irPolicyHash}", not this plan's "${plan.ir.policyHash}"`,
+        );
+      }
+      if (baselineLoad.servedModelId !== arm.modelId) {
+        throw new Error(
+          `arm "${arm.arm}": the Approach-B arm was built on an engine answering as ` +
+            `"${baselineLoad.servedModelId}" rather than ${arm.modelId}`,
+        );
+      }
+      if (baselineLoad.callBudgetMs !== arm.callBudgetMs) {
+        throw new Error(
+          `arm "${arm.arm}": the Approach-B arm holds a ${baselineLoad.callBudgetMs}ms per-call ` +
+            `budget and this driver asked for ${arm.callBudgetMs}; two arms at different per-call ` +
+            `budgets measure the deadline rather than the method`,
+        );
+      }
+    }
+
     const records = await runArm(page, {
       runId: options.runId,
       arm: arm.arm,
+      // From the FAMILY, and it is the same value that decided whether
+      // `loadBaseline` was called five lines up -- so the label on every row
+      // and the code the page will run come from one expression rather than
+      // two that could disagree.
+      detector: shape.runsCompiledJudge ? "core-orchestrator" : "approach-b",
       // Tier 2 is WebGPU or nothing: `loadTier2` goes through web-llm, which
       // throws on a null adapter, and `webgpuAvailable()` above asked the
       // adapter's limits rather than guessing from a user agent. So unlike a
@@ -2197,6 +2553,23 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
         entityTypes: ir.entityTypes,
       }),
     );
+
+    // The arm is finished, so its engine is released HERE rather than left to
+    // the next `page.goto`. `loadTier2` already unloads before replacing an arm
+    // and its docblock gives the arithmetic -- two live engines hold two copies
+    // of the weights and the two largest pinned arms are 3,432 and 3,438 MB --
+    // but this loop never replaces an arm, it navigates past it, and no
+    // measurement here says when Chrome releases a `GPUDevice` whose page has
+    // gone away. What IS measured is the cost of assuming: a full suite run in
+    // which a four-arm bake-off preceded the other tier-2 specs lost two of
+    // them to `Execution context was destroyed, most likely because of a
+    // navigation` inside `loadTier2`, and both passed when run on their own.
+    // That is consistent with GPU memory pressure and is not proof of it, so
+    // this is an explicit release and not a fix with a mechanism attached.
+    //
+    // AFTER the file is written and the report computed, so a failure to
+    // release cannot cost an arm that has already been measured.
+    await page.evaluate(() => window.__sih!.unloadTier2());
   }
 
   // After every arm, and losing it costs nothing: `gateReport` is pure and takes

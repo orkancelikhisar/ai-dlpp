@@ -435,6 +435,11 @@ export async function runMatrix(page: Page, options: MatrixOptions): Promise<str
       runId: options.runId,
       arm: definition.arm,
       backend: definition.backend,
+      // Every arm of a MATRIX runs core's orchestrator. This driver has no door
+      // onto Approach B and is not going to grow one: a matrix varies the
+      // tier-1 ladder over one policy, and B has no tier 1 at all. The
+      // bake-off in driver/bakeoff.ts is where the two methods meet.
+      detector: "core-orchestrator",
       provider: options.provider,
       // `t1Model` filled from the rung that actually loaded, so core's own
       // TierConfig names the model too instead of leaving the only mention of it

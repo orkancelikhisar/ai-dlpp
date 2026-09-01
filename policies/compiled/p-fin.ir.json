@@ -1,0 +1,390 @@
+{
+  "irVersion": "1",
+  "policyHash": "ebb3cd68d973175f3ea40faeec00685e2cb9d83c6940e96a57e88ee269e8110a",
+  "entityTypes": [
+    {
+      "id": "in-pan",
+      "tier": 0,
+      "nlDefinition": "An Indian Permanent Account Number: the ten-character taxpayer identifier issued by the Income Tax Department, written as five letters, four digits and a check letter, where the fourth letter encodes the holder type.",
+      "examples": [
+        "AAAPZ1234C",
+        "BNZPM2501F",
+        "AFTPD1298Q"
+      ],
+      "counterExamples": [
+        "ABCDE1234F",
+        "AAAPZ1234",
+        "27AABCU9603R1ZM",
+        "PAN application form 49A"
+      ],
+      "severity": "critical",
+      "surrogateKind": "id-number"
+    },
+    {
+      "id": "in-aadhaar",
+      "tier": 0,
+      "nlDefinition": "An Aadhaar number: the twelve-digit resident identifier issued by UIDAI, usually written as three groups of four digits, never starting with 0 or 1, and carrying a Verhoeff check digit.",
+      "examples": [
+        "7829 0134 5726",
+        "349102756488"
+      ],
+      "counterExamples": [
+        "1234 5678 9012",
+        "100234567890",
+        "9876543210"
+      ],
+      "severity": "critical",
+      "surrogateKind": "id-number"
+    },
+    {
+      "id": "bank-account-identifier",
+      "tier": 0,
+      "nlDefinition": "An identifier that names a bank account: a core banking account number, an IFSC branch code qualifying an account, or a UPI virtual payment address written as a handle followed by an at sign and a payment provider.",
+      "examples": [
+        "HDFC0001234",
+        "priya.sharma@okhdfcbank",
+        "A/C No. 50100234567890"
+      ],
+      "counterExamples": [
+        "priya.sharma@meridiancap.example.com",
+        "MICR 400240012",
+        "SWIFT HDFCINBB"
+      ],
+      "severity": "critical",
+      "surrogateKind": "id-number"
+    },
+    {
+      "id": "internal-customer-id",
+      "tier": 0,
+      "nlDefinition": "An identifier the Firm assigns to a customer inside its own systems: a customer reference number, a CIF number, or a KYC case id.",
+      "examples": [
+        "CIF 30045512",
+        "CRN-7781204",
+        "KYC 4471200"
+      ],
+      "counterExamples": [
+        "ticket INC0042318",
+        "branch code 0247",
+        "employee id 88213"
+      ],
+      "severity": "high",
+      "surrogateKind": "id-number"
+    },
+    {
+      "id": "client-name",
+      "tier": 1,
+      "nlDefinition": "The name of a client organisation, prospective client, deal counterparty, or party under a non-disclosure agreement, as it appears in running prose rather than in a fixed field.",
+      "examples": [
+        "Meridian Capital Partners",
+        "Northwind Securities Ltd"
+      ],
+      "counterExamples": [
+        "the client",
+        "our counterparty",
+        "Mumbai"
+      ],
+      "severity": "high",
+      "surrogateKind": "org-name"
+    },
+    {
+      "id": "api-credential",
+      "tier": 0,
+      "nlDefinition": "A machine-generated credential that authenticates a caller to a service: an API key, an access token, or a client secret, whether or not it is believed to have been revoked.",
+      "examples": [
+        "AKIAQ4XZ7HN2LMPD3RTV",
+        "sk-live-9Kd2mXqR7wZbY4tLpN0cVhJa",
+        "xoxb-2419-8842-QpZmR7kLdT2wXfNa"
+      ],
+      "counterExamples": [
+        "sk-...",
+        "AKIA followed by sixteen uppercase characters",
+        "the token has been rotated"
+      ],
+      "severity": "critical",
+      "neverPseudonymize": true
+    },
+    {
+      "id": "db-connection-string",
+      "tier": 0,
+      "nlDefinition": "A database connection string naming a driver, a host and a schema, with or without credentials in it, because the host and schema names alone disclose internal topology.",
+      "examples": [
+        "postgresql://svc_billing@db-prod-02.internal:5432/ledger",
+        "mongodb+srv://cluster0.internal/kyc"
+      ],
+      "counterExamples": [
+        "https://intranet.example.com/runbook",
+        "the production database is down"
+      ],
+      "severity": "critical",
+      "neverPseudonymize": true
+    },
+    {
+      "id": "private-key-material",
+      "tier": 0,
+      "nlDefinition": "Private key or certificate material, including a PEM private key block and the label naming a key held in a hardware security module.",
+      "examples": [
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----"
+      ],
+      "counterExamples": [
+        "-----BEGIN CERTIFICATE REQUEST-----",
+        "the public key fingerprint"
+      ],
+      "severity": "critical",
+      "neverPseudonymize": true
+    },
+    {
+      "id": "pred:client-relationship-disclosure",
+      "tier": 2,
+      "nlDefinition": "The message discloses that a named organisation is a client, prospective client, or counterparty of the Firm, even when it carries no identifier and no fixed field.",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "high",
+      "neverPseudonymize": true
+    }
+  ],
+  "rules": [
+    {
+      "id": "in-pan-format",
+      "entityType": "in-pan",
+      "regex": "\\b[A-Z]{5}[0-9]{4}[A-Z]\\b",
+      "validator": "pan-structure",
+      "contextBoost": [
+        "PAN",
+        "permanent account number",
+        "income tax",
+        "form 16"
+      ]
+    },
+    {
+      "id": "in-aadhaar-format",
+      "entityType": "in-aadhaar",
+      "regex": "\\b[2-9][0-9]{3}[ -]?[0-9]{4}[ -]?[0-9]{4}\\b",
+      "validator": "verhoeff",
+      "contextBoost": [
+        "aadhaar",
+        "uidai",
+        "e-kyc",
+        "resident"
+      ]
+    },
+    {
+      "id": "ifsc-qualified-account",
+      "entityType": "bank-account-identifier",
+      "regex": "\\b[A-Z]{4}0[A-Z0-9]{6}\\b",
+      "contextBoost": [
+        "ifsc",
+        "neft",
+        "rtgs",
+        "branch",
+        "account"
+      ]
+    },
+    {
+      "id": "upi-vpa-format",
+      "entityType": "bank-account-identifier",
+      "regex": "\\b[a-zA-Z0-9][a-zA-Z0-9._-]{2,}@[a-zA-Z][a-zA-Z0-9]{2,}\\b",
+      "contextBoost": [
+        "upi",
+        "vpa",
+        "virtual payment address",
+        "collect request"
+      ]
+    },
+    {
+      "id": "labelled-account-number",
+      "entityType": "bank-account-identifier",
+      "regex": "\\b(?:A/C|A/c|Acct|[Aa]ccount)[^0-9\\n]{0,12}[0-9]{9,18}\\b",
+      "contextBoost": [
+        "savings",
+        "current",
+        "beneficiary",
+        "credited"
+      ]
+    },
+    {
+      "id": "internal-customer-id-format",
+      "entityType": "internal-customer-id",
+      "regex": "\\b(?:CIF|CRN|KYC)[ /:#-]?[0-9]{6,10}\\b",
+      "contextBoost": [
+        "customer reference",
+        "cif",
+        "kyc",
+        "case id",
+        "servicing console"
+      ]
+    },
+    {
+      "id": "api-credential-prefix",
+      "entityType": "api-credential",
+      "regex": "\\b(?:AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9-]{20,}|xox[abprs]-[A-Za-z0-9-]{12,})\\b",
+      "contextBoost": [
+        "api key",
+        "access token",
+        "client secret",
+        "authorization"
+      ]
+    },
+    {
+      "id": "api-credential-entropy",
+      "entityType": "api-credential",
+      "entropyThreshold": 4,
+      "minLength": 24
+    },
+    {
+      "id": "db-connection-string-format",
+      "entityType": "db-connection-string",
+      "regex": "(?:postgres(?:ql)?|mysql|mongodb(?:\\+srv)?|mssql|redis|amqp|jdbc:[a-z]+)://[^\\s\"']+",
+      "contextBoost": [
+        "connection string",
+        "datasource",
+        "dsn",
+        "connect"
+      ]
+    },
+    {
+      "id": "pem-private-key-header",
+      "entityType": "private-key-material",
+      "regex": "-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+      "contextBoost": [
+        "private key",
+        "keypair",
+        "hsm",
+        "certificate"
+      ]
+    }
+  ],
+  "semanticPredicates": [
+    {
+      "id": "client-relationship-disclosure",
+      "nlPredicate": "The message discloses that a named organisation is a client, prospective client, or counterparty of the Firm, even when it carries no identifier and no fixed field.",
+      "scope": "message"
+    }
+  ],
+  "actions": {
+    "default": {
+      "in-pan": "block",
+      "in-aadhaar": "block",
+      "bank-account-identifier": "block",
+      "internal-customer-id": "block",
+      "client-name": "pseudonymize",
+      "api-credential": "block",
+      "db-connection-string": "block",
+      "private-key-material": "block",
+      "pred:client-relationship-disclosure": "redact"
+    },
+    "providerOverrides": {
+      "chatgpt": {
+        "in-pan": "block",
+        "in-aadhaar": "block",
+        "bank-account-identifier": "block",
+        "internal-customer-id": "block",
+        "client-name": "block",
+        "pred:client-relationship-disclosure": "block"
+      },
+      "gemini": {
+        "in-pan": "block",
+        "in-aadhaar": "block",
+        "bank-account-identifier": "block",
+        "internal-customer-id": "block",
+        "client-name": "block",
+        "pred:client-relationship-disclosure": "block"
+      },
+      "deepseek": {
+        "in-pan": "block",
+        "in-aadhaar": "block",
+        "bank-account-identifier": "block",
+        "internal-customer-id": "block",
+        "client-name": "block",
+        "api-credential": "block",
+        "db-connection-string": "block",
+        "private-key-material": "block",
+        "pred:client-relationship-disclosure": "block"
+      }
+    }
+  },
+  "failMode": "closed",
+  "latencyBudgetMs": 5000,
+  "provenance": {
+    "in-pan": {
+      "clause": "§2.1",
+      "quote": "Permanent Account Number (PAN) values must never be sent to an external AI assistant."
+    },
+    "in-aadhaar": {
+      "clause": "§2.2",
+      "quote": "Aadhaar numbers must never be sent to an external AI assistant."
+    },
+    "bank-account-identifier": {
+      "clause": "§2.3",
+      "quote": "Bank account numbers, including IFSC-qualified account strings and UPI virtual payment addresses, must never be sent to an external AI assistant."
+    },
+    "internal-customer-id": {
+      "clause": "§2.4",
+      "quote": "Internal customer identifiers, including customer reference numbers, CIF numbers, and KYC case ids, must never be sent to an external AI assistant."
+    },
+    "client-name": {
+      "clause": "§3.1",
+      "quote": "Client organisation names and counterparty organisation names must be replaced with a consistent pseudonym before a prompt is sent to an external AI assistant."
+    },
+    "api-credential": {
+      "clause": "§4.1",
+      "quote": "API keys, access tokens, and client secrets must never be included in a prompt to an external AI assistant, including when the person sending the prompt believes the credential has already been revoked."
+    },
+    "db-connection-string": {
+      "clause": "§4.2",
+      "quote": "Database connection strings must never be included in a prompt to an external AI assistant, even when the password field has been removed, because the host and schema names disclose the Firm's internal topology."
+    },
+    "private-key-material": {
+      "clause": "§4.3",
+      "quote": "Private keys, certificate material, and HSM key labels must never be included in a prompt to an external AI assistant."
+    },
+    "in-pan-format": {
+      "clause": "§2.1",
+      "quote": "Permanent Account Number (PAN) values must never be sent to an external AI assistant."
+    },
+    "in-aadhaar-format": {
+      "clause": "§2.2",
+      "quote": "Aadhaar numbers must never be sent to an external AI assistant."
+    },
+    "ifsc-qualified-account": {
+      "clause": "§2.3",
+      "quote": "Bank account numbers, including IFSC-qualified account strings and UPI virtual payment addresses, must never be sent to an external AI assistant."
+    },
+    "upi-vpa-format": {
+      "clause": "§2.3",
+      "quote": "Bank account numbers, including IFSC-qualified account strings and UPI virtual payment addresses, must never be sent to an external AI assistant."
+    },
+    "labelled-account-number": {
+      "clause": "§2.3",
+      "quote": "Bank account numbers, including IFSC-qualified account strings and UPI virtual payment addresses, must never be sent to an external AI assistant."
+    },
+    "internal-customer-id-format": {
+      "clause": "§2.4",
+      "quote": "Internal customer identifiers, including customer reference numbers, CIF numbers, and KYC case ids, must never be sent to an external AI assistant."
+    },
+    "api-credential-prefix": {
+      "clause": "§4.1",
+      "quote": "API keys, access tokens, and client secrets must never be included in a prompt to an external AI assistant, including when the person sending the prompt believes the credential has already been revoked."
+    },
+    "api-credential-entropy": {
+      "clause": "§4.1",
+      "quote": "API keys, access tokens, and client secrets must never be included in a prompt to an external AI assistant, including when the person sending the prompt believes the credential has already been revoked."
+    },
+    "db-connection-string-format": {
+      "clause": "§4.2",
+      "quote": "Database connection strings must never be included in a prompt to an external AI assistant, even when the password field has been removed, because the host and schema names disclose the Firm's internal topology."
+    },
+    "pem-private-key-header": {
+      "clause": "§4.3",
+      "quote": "Private keys, certificate material, and HSM key labels must never be included in a prompt to an external AI assistant."
+    },
+    "client-relationship-disclosure": {
+      "clause": "§3.4",
+      "quote": "This section exists because the pairing of a client name with a routine operational question is itself a disclosure of the relationship, and the relationship is frequently the confidential part of the transaction."
+    },
+    "pred:client-relationship-disclosure": {
+      "clause": "§3.4",
+      "quote": "This section exists because the pairing of a client name with a routine operational question is itself a disclosure of the relationship, and the relationship is frequently the confidential part of the transaction."
+    }
+  }
+}

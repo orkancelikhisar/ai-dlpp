@@ -2004,6 +2004,16 @@ git add -A && git commit -m "feat(eval): four-arm tier-2 bake-off against the am
 
 A local instruct LLM runs in a real browser as tier 2, judging the semantic predicates a compiled policy declares, emitting shadow entityTypes core can resolve actions for, with spans recovered by a ladder that refuses ambiguity rather than guessing and reports which rung it needed. Cancellation interrupts and drains, so an over-budget run degrades to the lower tiers instead of wedging the engine for every message after it. Approach B runs the same corpus through the same interface with the whole policy and no compiler, and **B + tier 0** runs between them, so the head-to-head separates "compiling the policy helps" from "having deterministic patterns helps". Four model arms are measured against gates derived from what the hardware actually does.
 
+**Status of the Approach-B half, as of the AUDIT-4 round.** The four-family
+head-to-head RUNS, on this machine, over a real compiled policy; the command is
+in `apps/eval/test/baseline.spec.ts` and the numbers it produced are in the
+deviations entry at the end of this file. What is NOT done and is not claimed:
+the four MODEL arms of the bake-off have never been run against each other on a
+paired IR (one model, `TIER2_MODELS[0]`, is what the evidence covers), and no
+accuracy metric exists here at all -- spec 2.2 puts scoring in Plan 8, so this
+head-to-head is an apparatus that works, not an answer to which method is
+better.
+
 **Explicitly NOT in this plan:** the real corpus (Plan 7), any metric or plot (Plan 8), the extension (Plan 6). The smoke corpus remains a pipe-integrity check and cannot produce meaningful accuracy in either direction.
 
 **Carried forward as known-unretired risks:**
@@ -2118,3 +2128,163 @@ instead needs one copy of `semantic-ir.json` at 5,000, one line in `IR_FIXTURES`
 and a second `runBakeoff` under another `runId`; it is not a per-arm dimension of
 one run, because a file is named by runId, family and model and two budgets would
 collide on a name.
+
+### AUDIT-4: Approach B could not run, and this plan's Done criteria said it did
+
+The audit was right on all three counts and I verified each by trying to run the
+arm rather than by reading the code. `planBakeoff` accepted a four-family slate
+and `assertPageCanRun` then refused every baseline arm in it, naming two of the
+three; the third was upstream of that refusal and fired first.
+
+**1. No page door.** `apps/eval/src/page/main.ts` published `detect` -- core's
+orchestrator with a `WebLlmJudge` behind it -- and imported neither
+`createBaselineB` nor any policy document, so no `window.__sih` call could reach
+an Approach-B arm. VERIFIED: `grep -c createBaselineB apps/eval/src` returned 0.
+
+**2. No `BaselineStats` field on the record.** `RunRecordSchema` had
+`tier2Stats` and no baseline equivalent. This is not a naming inconvenience:
+`BaselineStats` renames `segmentsJudged` to `messagesJudged` and
+`unknownPredicates` to `unknownEntityTypes` because B judges a MESSAGE and names
+an ENTITY CLASS, adds `messageBudgetExpiries` which no judge counter reports,
+and has no `segmentsSkipped` because an arm making one call per message has no
+second unit to skip. Writing them into `tier2Stats` would have put a message
+count under a field named for segments, with nothing downstream able to notice.
+
+**3. No compiled IR, and the audit's framing of it is slightly off.** The audit
+called this "no compiled p-fin IR committed under `policies/compiled/`", which
+was true, but the mechanism is narrower and worth stating exactly: `planBakeoff`
+requires `sha256(policyText) === ir.policyHash`, and every IR in this repository
+carried the literal string `"test-hash"`. So the refusal was not "the directory
+is missing", it was "no document in this repository can satisfy any IR here" --
+`planBakeoff` threw on the pairing before `assertPageCanRun` was ever reached,
+which is why the audit's ordering of the three reasons reads backwards against
+what actually happens. MEASURED: passing `policies/p-fin.md` with
+`semantic-ir.json` throws
+`the policy document is not the one this IR was compiled from: its sha256 is
+ebb3cd68... and the IR's policyHash is "test-hash"`.
+
+**The decision: close all three.** A recorded-fixture compile path exists and
+needs no network. `packages/compiler/src/cli.ts` takes injected `fixtures` and
+replays them through `FixtureLlmClient`, which is the mode the whole compiler
+suite already runs in. `scripts/compile-policies.ts` drives that over the three
+policy documents; MEASURED, only `p-fin` compiles -- `p-med` and `p-corp` both
+exit 1 on a fixture miss, because `requestHash` keys a fixture by the prompt and
+theirs carry a different document -- so `policies/compiled/` holds one policy of
+three and the script says so on every run. `policies/compiled/p-fin.ir.json` is
+real compiler output (9 entityTypes, 10 rules, 1 semantic predicate, 9 warnings,
+`policyHash` = `shasum -a 256 policies/p-fin.md`), it is byte-identical across
+three consecutive compiles (md5 compared), and
+`packages/compiler/test/compiled.test.ts` recompiles it on every suite run and
+requires byte equality, so a hand-edit is a red test. Nothing was authored by
+hand and presented as compiled output.
+
+**What it is NOT: a live frontier-model compile.** The two model-driven stages
+were answered from the committed fixtures, which `scripts/record-fixtures.ts`
+describes as hand-authored stand-ins. Every stage of the compiler ran; the
+entity vocabulary behind them is not a frontier model's. The plan's deferral of
+the live compile stands, and the README says so in the same words.
+
+**The head-to-head, run.** `apps/eval/test/baseline.spec.ts`, four families x
+one model over the first three items of `corpora/fixtures/smoke.jsonl`, 41 s
+including four warm model loads. Run FOUR times; the p95 columns below are the
+observed ranges over those runs and every other column was identical in all
+four:
+
+| family | judgedUnit | answered calls | promptTokens p50 | ttft p95 | p95-ttft |
+|---|---|---|---|---|---|
+| `compiled-tier2-only` | segment | 5 | 264 | 535-537 ms | pass |
+| `compiled` | segment | 6 | 264 | 557-560 ms | pass |
+| `baseline-b` | message | 3 | 1,433 | 2,705-2,730 ms | **fail** |
+| `baseline-b-tier0` | message | 3 | 1,450 | 2,762-2,795 ms | **fail** |
+
+Read the last column with `judgedUnit` beside it and not on its own.
+`GATES.maxP95TtftMs` was derived at a ~1.1 kB whole prompt built from ONE
+SEGMENT; B's prompt carries the whole 5,272-character policy on every call and
+measures 1,407-1,451 prompt tokens against the judge's 260-295. B is failing a
+threshold set for different work, which is why `ArmGateReport` gained
+`judgedUnit` and why both latency gate details now name it.
+
+**Two of this plan's own numbers did not reproduce, both in B's favour.**
+
+- Plan 5 records "an Approach-B call is 7.5 s, whose TTFT alone (2.8-3.9 s)".
+  MEASURED here on `Qwen3.5-2B-q4f16_1-MLC` against `p-fin.md`, over four runs:
+  TTFT 2,685-2,796 ms across 24 calls, below the bottom of the plan's range. The whole call is
+  ARITHMETIC from two measurements rather than a third measurement -- that TTFT
+  plus 35-42 completion tokens at the measured 39.2-39.6 tok/s is 3.6-3.9 s --
+  and it is half the plan's 7.5 s. The plan does not say which policy its figure
+  was taken against; `p-corp.md` is 433 code units longer than `p-fin.md`, which
+  is nowhere near enough to explain the gap.
+- That difference decides whether B can run at all. `p-fin.ir.json` carries
+  `latencyBudgetMs: 5000` -- the compiler's own default, since `p-fin.md`
+  states no budget -- so at the plan's 7.5 s every B call would have been
+  aborted mid-generation and the arm would have measured nothing. MEASURED:
+  `messageBudgetExpiries` is 0 on both B arms and `budget-exhausted` is 0
+  everywhere. This is also the first run in this repository taken at 1x a
+  shipped policy's message budget rather than the fixture's 24x
+  (`run.latencyBudgetTimesCompilerDefault` is 1 on every row).
+
+**What the run says about the two methods, stated as observation and not as a
+result.** On these three items the compiled arms and B found the same entities
+and disagreed about spans and labels: B quotes whole clauses because it is shown
+the whole message (`in-pan[0,48)` = the entire sentence) where tier 0 returns the
+value (`in-pan[20,30)`); `baseline-b` labelled `SESSION_TOKEN=kR7...` as
+`in-aadhaar` while `baseline-b-tier0`, which is handed tier 0's labels through
+`priorFindingsLine`, called it `api-credential`. That is one message and is not
+a finding; it is the intermediate arm doing the job it exists for.
+`corpora/fixtures/smoke.jsonl` is labelled under `minimal-fixture` and its gold
+entityTypes are not p-fin's, so no accuracy number is derivable here in either
+direction and `ArmGateReport.scoring` says so on every row.
+
+**Every remaining asymmetry between B and the compiled arms**, and which kind
+each is:
+
+| Asymmetry | Kind |
+|---|---|
+| Same engine object, model, window, temperature, `max_tokens`, grammar-constrained path, per-call budget, per-item ceiling, corpus, provider, IR and source policy | equal by construction -- `loadBaseline` takes all of them off the tier-2 load report |
+| B's prompt is 5.4x the judge's (1,433 vs 264 tokens), because it carries the whole policy | intrinsic to "simply prompting"; reported via `judgedUnit`, `judgedUnitChars` and `promptTokens` |
+| `GATES.maxP95TtftMs` was derived at the judge's prompt size | **UNFIXED, and the largest one.** The gate is still computed and still kills B. A B-appropriate ceiling would have to be derived from a run, and no run existed until this one |
+| B spends one `max_tokens` budget per MESSAGE; the judge spends one per SEGMENT | intrinsic; `truncatedResponses` is 0 on every arm in this run, so it did not bite here |
+| B resolves quotes against the whole message; the judge against one segment | intrinsic -- uniqueness is harder in a longer string, and B can span a segment boundary |
+| B is shown a second document and can quote the POLICY back, which resolves against nothing | intrinsic; `unresolvedQuotes` is 0 on every arm in this run |
+| B is handed `ir.entityTypes.map(e => e.id)` -- the compiler's taxonomy, ids only | a concession that FAVOURS B; without it no finding would pass `normalizeFindings` |
+| B files no `scope-unjudged`; both compiled arms file one per message (p-fin's predicate is message-scoped and the judge reports segment scope) | B has the easier scope problem, not less degradation |
+| `latencyBudgetMs` is 5,000 on every compiled policy, because the compiler defaults it and no policy document states one | applies to both arms equally; it did not fire in this run and would bite B first if it did |
+
+**Two smaller things this round changed and why.** `ArmGateReport.segmentChars`
+and `segmentsPerItem` became `judgedUnitChars` and `judgedUnitsPerItem` beside a
+new `judgedUnit`, because a field named for segments holding a distribution over
+messages is the intent-as-fact defect in the one place a reader checks a gate's
+derivation. And `ArmGateReport.ladder` gained `unitsJudged`/`unknownLabels` in
+place of `segmentsJudged`/`unknownPredicates`, with `unitsSkipped` and
+`messageBudgetExpiries` reported as `undefined` on the family that cannot
+produce them -- a 0 there would be the positive claim that the event happened
+zero times.
+
+**One flake this round produced, and what was done about it.** A full
+`pnpm -r test` in which the four-arm head-to-head ran before the other tier-2
+specs lost two of them -- `tier2-arms.spec.ts`'s Ministral 8192 case and
+`tier2.spec.ts`'s second-detect case -- to
+`Execution context was destroyed, most likely because of a navigation` inside
+`loadTier2`. Both passed when run on their own (11 passed, exit 0), and an
+earlier full run with the same spec passed, so it is a flake rather than a
+regression, and it appeared after this round added four model loads to a suite
+that already made several. `runBakeoff` now calls a new `unloadTier2()` when an
+arm finishes instead of leaving the engine to the next `page.goto`, which is
+what `loadTier2`'s own docblock argues for when it REPLACES an arm ("two live
+engines hold two copies of the weights on one GPU, and the two largest pinned
+arms are 3,432 and 3,438 MB"). That is an explicit release and not a fix with a
+mechanism attached: nothing here measured when Chrome frees a `GPUDevice` whose
+page has gone away, and the comment at the call site says so.
+
+**Mutation results.** 27 mutants, 27 killed, over a `git ls-files -co` copy of
+the working tree in scratch with the source tree verified untouched by md5
+afterwards. Four CONTROL mutants (two comment rewords, a throw message no test
+reads, and a page error message no test reads) all SURVIVED. The first browser
+batch reported CONTROL-3 as killed; that was the harness lying -- the copy's dev
+server had exited mid-batch -- and the batch was re-run under a harness that
+checks the server is alive before and after every mutant. Ten mutants survived
+the first Node pass and each one named a real hole: nothing in vitest built an
+Approach-B record, so all four of `RunRecordSchema`'s new refines could be
+replaced by `() => true` with a green suite, and `normalizeArmStats` could map
+`unitsJudged` to `deadlineExpiries`. `record.test.ts` and `bakeoff.test.ts`
+gained the fixtures that close them.

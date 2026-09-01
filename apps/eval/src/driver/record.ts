@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DegradedNotice, DegradedReason, Tier } from "@sih/core";
 import { TIER1_BACKENDS, TIER1_LABEL_FORMS } from "@sih/tier1";
-import type { JudgeCallRecord, JudgeStats, Tier2Config } from "@sih/tier2";
+import type { BaselineStats, JudgeCallRecord, JudgeStats, Tier2Config } from "@sih/tier2";
 import { GoldSpanSchema } from "./corpus.js";
 
 /**
@@ -49,6 +49,18 @@ import { GoldSpanSchema } from "./corpus.js";
  * their context window or their per-call budget emitted rows byte-identical in
  * every field a scorer can group by -- the disease `tier1Config` cured one tier
  * down. If a run is ever kept, this constant moves before the next field does.
+ *
+ * STILL 1 after `detector` and `baselineStats`, which are the fifth and sixth
+ * additions and include the first UNCONDITIONALLY required one: `detector` has
+ * no `.optional()` and no default, so every producer must state which
+ * implementation ran. That is the strongest tightening this schema has taken --
+ * not "an old file fails a new reader" but "an old file could not be written at
+ * all". The reasoning is unchanged and is still the only one: no producer here
+ * has ever written a durable file. `runMatrix` and `runBakeoff` write into
+ * directories the tests create with `mkdtemp` and abandon, and nothing else
+ * calls `toJsonl`. A default of `"core-orchestrator"` was considered and
+ * rejected: it would let an Approach-B row be written as a compiled one by
+ * omission, which is the exact substitution the field exists to prevent.
  */
 export const RECORD_SCHEMA_VERSION = 1;
 
@@ -460,6 +472,119 @@ const Tier2StatsSchema = z.object({
   calls: z.array(Tier2CallSchema),
 } satisfies Record<keyof JudgeStats, z.ZodType>);
 
+/**
+ * Approach B's own numbers for THIS item, as a DELTA over one `detect`.
+ *
+ * A SECOND stats field rather than a widening of `Tier2StatsSchema`, and the
+ * decision is the whole reason this schema exists rather than B's counters
+ * being written into `tier2Stats`. Three of these fields are not the judge's:
+ *
+ *   - `messagesJudged`, where the judge has `segmentsJudged`. B makes one call
+ *     per MESSAGE; the judge makes one per selected SEGMENT. These are the
+ *     denominators every rate on the row is taken over, and putting a count of
+ *     messages under a field named for segments is a record stating one event
+ *     under another event's name -- with no way for a reader to notice, because
+ *     both are small non-negative integers.
+ *   - `unknownEntityTypes`, where the judge has `unknownPredicates`. Same event
+ *     -- a model inventing a label -- in two different vocabularies, because B
+ *     names an entity class and the judge names a predicate.
+ *   - `messageBudgetExpiries`, which the judge has NO counterpart for. `detect`
+ *     arms the message deadline for the compiled path and files its own notice;
+ *     B is its own orchestrator, so B is the only thing that can count it.
+ *
+ * And one of the judge's is absent here: `segmentsSkipped`. An arm that makes
+ * one call per message has no second unit for a stop to skip past.
+ *
+ * The field set is `BaselineStats` WHOLE and the `satisfies` enforces it, for
+ * the reason `Tier2StatsSchema`'s does: a counter added upstream fails to
+ * compile rather than going unreported.
+ *
+ * Read `messagesJudged` before reading any of the loss counters. Zero means no
+ * answer was ever collected on this item, in which case the loss counters are
+ * zero because there was nothing to lose.
+ *
+ * A DELTA, with the same trap and the same remedy as `tier2Stats`:
+ * `BaselineB.stats` is cumulative across every message the arm has processed
+ * (`baselineB.ts` MEASURED `rung1` after each of four identical items as
+ * 1, 2, 3, 4), and `baselineDelta` in apps/eval/src/page/baseline-delta.ts
+ * subtracts the snapshot taken before the call. One arm on a delta and the
+ * other on a total is a head-to-head that means nothing.
+ */
+const BaselineStatsSchema = z.object({
+  /** Findings whose quote resolved uniquely in FOLDED space; the strong case. */
+  rung1: JUDGE_COUNTER,
+  /** Findings whose quote only matched after the ladder peeled its tail. Weaker. */
+  rung2: JUDGE_COUNTER,
+  /**
+   * Quotes the ladder refused, for any of its four reasons.
+   *
+   * B is structurally the arm most likely to accumulate these, and it is not a
+   * defect: it is the only arm shown a SECOND document, so it is the only arm
+   * that can quote the POLICY back instead of the message. Such a quote
+   * resolves against nothing, which is the correct answer.
+   */
+  unresolvedQuotes: JUDGE_COUNTER,
+  /** Findings naming an entityType the IR does not declare. Models invent labels. */
+  unknownEntityTypes: JUDGE_COUNTER,
+  /** Findings resolving to a span this message had already emitted. */
+  duplicatesDropped: JUDGE_COUNTER,
+  /** Messages that got a second call because the first answer would not parse. */
+  repairAttempts: JUDGE_COUNTER,
+  /** Messages the engine ANSWERED that still yielded no judgement. */
+  failedClosed: JUDGE_COUNTER,
+  /**
+   * Completions the engine reported cut off, by finishReason "length".
+   *
+   * The counter that makes B's worst structural disadvantage visible: `maxTokens`
+   * is fixed on the engine, so a message split into five segments gives the
+   * compiled arm five times B's output allowance for the same input. An arm
+   * killed by its token budget has to be distinguishable from one with nothing
+   * to say.
+   */
+  truncatedResponses: JUDGE_COUNTER,
+  /** Completions the engine reported as interrupted. */
+  abortedResponses: JUDGE_COUNTER,
+  /** Messages whose answer parsed and was collected -- the denominator for recall. */
+  messagesJudged: JUDGE_COUNTER,
+  /** Runs stopped by B's PER-CALL budget. Says nothing about ir.latencyBudgetMs. */
+  deadlineExpiries: JUDGE_COUNTER,
+  /** Runs stopped by the MESSAGE's ir.latencyBudgetMs. The judge has no counterpart. */
+  messageBudgetExpiries: JUDGE_COUNTER,
+  /** Caller aborts that really interrupted a generation. */
+  callerAbortsMidGeneration: JUDGE_COUNTER,
+  /** Caller aborts while the call was still queued: nothing ran, nothing was interrupted. */
+  callerAbortsWhileQueued: JUDGE_COUNTER,
+  /** One row per engine call that ANSWERED, in the order they were made. */
+  calls: z.array(Tier2CallSchema),
+} satisfies Record<keyof BaselineStats, z.ZodType>);
+
+/**
+ * Which DETECTOR produced this row, as a fact about code that ran.
+ *
+ * Not a label and not the arm's family: `arm` is free text and a family is a
+ * statement about work planned, while this says which implementation the page
+ * actually called. There are exactly two, and they are not two configurations
+ * of one thing:
+ *
+ *   - `core-orchestrator` -- `detect` in @sih/core, running whichever of tiers
+ *     0, 1 and 2 `config` enables, with a compiled IR deciding everything.
+ *   - `approach-b` -- `createBaselineB`/`createBaselineBPlusTier0` in
+ *     @sih/tier2, which implements core's `Detector` directly: the whole policy
+ *     DOCUMENT and the whole message in one model call, no compiler, no tiers,
+ *     no escalation.
+ *
+ * WHY THE RECORD NEEDS IT, rather than leaving it to be inferred. `TierConfig`
+ * cannot express the difference -- a B arm legitimately reports `tier2: true`,
+ * because a model read the message and every finding it emits carries `tier: 2`
+ * -- so without this field a B row and a compiled row are distinguishable only
+ * by which stats field is populated, and on an ERRORED row neither is. Three
+ * refines below turn on it: which stats field is required, whether
+ * `uncertainBelow` must be present (B never escalates, so stamping the
+ * threshold would name a knob that turned nothing), and it is what
+ * `gateReport` checks a report's family against.
+ */
+const DetectorSchema = z.enum(["core-orchestrator", "approach-b"]);
+
 export const RunRecordSchema = z
   .object({
     schemaVersion: z.literal(RECORD_SCHEMA_VERSION),
@@ -509,6 +634,8 @@ export const RunRecordSchema = z
      */
     policyHash: z.string().min(1),
     arm: z.string().min(1),
+    /** Which implementation produced this row. See DetectorSchema. */
+    detector: DetectorSchema,
     backend: z.enum(["wasm", "webgpu"]),
     provider: z.string().min(1),
     /**
@@ -665,6 +792,13 @@ export const RunRecordSchema = z
      */
     tier2Stats: Tier2StatsSchema.optional(),
     /**
+     * What the Approach-B arm did on THIS item, as a delta; see
+     * BaselineStatsSchema for the field set and why it is not `tier2Stats`.
+     * Present exactly when `detector` is `approach-b` and `error` is null --
+     * the same coupling `tier2Stats` has, for the same reason.
+     */
+    baselineStats: BaselineStatsSchema.optional(),
+    /**
      * The resolved tier-2 settings this arm ran under; see
      * Tier2RunConfigSchema. Present exactly when tier 2 ran, and coupled to
      * `config.tier2` alone rather than also to `error` -- the same asymmetry
@@ -815,15 +949,41 @@ export const RunRecordSchema = z
       r.config.t1Model === r.tier1Config.modelId,
     { message: "config.t1Model names a different rung than tier1Config.modelId" },
   )
-  .refine((r) => (r.tier2Stats !== undefined) === (r.config.tier2 && r.error === null), {
-    // The tier-1 coupling verbatim, one tier up, including the `error` half:
-    // `tier2Status().lastDetect` is a DELTA over the judge's cumulative
-    // counters, so on a thrown or timed-out item that delta belongs to the
-    // PREVIOUS item and there is no per-item answer to give. A row of zeros
-    // would assert that nothing failed closed, nothing was truncated and no
-    // quote went unresolved on an item whose judge may never have returned.
-    message: "tier2Stats must be present exactly when config.tier2 is true and error is null",
-  })
+  .refine(
+    (r) =>
+      (r.tier2Stats !== undefined) ===
+      (r.detector === "core-orchestrator" && r.config.tier2 && r.error === null),
+    {
+      // The tier-1 coupling verbatim, one tier up, including the `error` half:
+      // `tier2Status().lastDetect` is a DELTA over the judge's cumulative
+      // counters, so on a thrown or timed-out item that delta belongs to the
+      // PREVIOUS item and there is no per-item answer to give. A row of zeros
+      // would assert that nothing failed closed, nothing was truncated and no
+      // quote went unresolved on an item whose judge may never have returned.
+      //
+      // Keyed on `detector` as well, because an Approach-B row also has
+      // `config.tier2` true -- a model read the message -- and its counters are
+      // `BaselineStats`, which renames two of these events and adds one the
+      // judge never reports. `baselineStats` is where those go.
+      message:
+        "tier2Stats must be present exactly when detector is core-orchestrator, config.tier2 " +
+        "is true and error is null",
+    },
+  )
+  .refine(
+    (r) => (r.baselineStats !== undefined) === (r.detector === "approach-b" && r.error === null),
+    {
+      // NOT also keyed on `config.tier2`, unlike the refine above, and the
+      // asymmetry is not an oversight. `config.tier2` is a switch a compiled
+      // arm can turn off; Approach B has no such switch -- it makes one model
+      // call per message unconditionally, and `assertArmConfig` in
+      // `baselineB.ts` REFUSES a `TierConfig` with `tier2: false` outright. So
+      // for a B row `config.tier2` is not a condition, it is an invariant, and
+      // adding it here would be a second spelling of the same fact that could
+      // only ever be satisfied one way.
+      message: "baselineStats must be present exactly when detector is approach-b and error is null",
+    },
+  )
   .refine((r) => r.config.tier2 === (r.tier2Config !== undefined), {
     // Both directions, exactly as `tier1Config`. Tier 2 on with no config is an
     // arm whose window, token ceiling and per-call budget went unrecorded --
@@ -845,16 +1005,36 @@ export const RunRecordSchema = z
     // entries that say which tiers its empty `findings` is silent about.
     message: "degraded must be present exactly when error is null",
   })
-  .refine((r) => !r.config.tier2 || r.config.uncertainBelow !== undefined, {
-    // One direction only. A tier-2 row without it cannot be compared with the
-    // row beside it, which is the failure being closed. The other direction is
-    // deliberately left open: a caller may hand `detect` a threshold on an arm
-    // that never reaches escalation, and the record's job is to state what
-    // detect received rather than to tidy it away.
-    message: "a tier-2 record must carry the escalation threshold that produced it",
+  .refine(
+    (r) =>
+      r.detector !== "core-orchestrator" ||
+      !r.config.tier2 ||
+      r.config.uncertainBelow !== undefined,
+    {
+      // One direction only. A tier-2 row without it cannot be compared with the
+      // row beside it, which is the failure being closed. The other direction is
+      // deliberately left open: a caller may hand `detect` a threshold on an arm
+      // that never reaches escalation, and the record's job is to state what
+      // detect received rather than to tidy it away.
+      message: "a tier-2 record must carry the escalation threshold that produced it",
+    },
+  )
+  .refine((r) => r.detector !== "approach-b" || r.config.uncertainBelow === undefined, {
+    // The OTHER direction, and only on Approach B, where it is not a matter of
+    // taste. `uncertainBelow` is the threshold `escalate.ts` compares a prior
+    // tier's confidence against in order to decide which SEGMENTS to judge.
+    // Approach B does not escalate and does not segment: it makes one call per
+    // message, always. So a threshold on a B row is a knob that turned nothing
+    // -- the intent-as-fact defect arriving through a field that happens to be
+    // available -- and, worse, `gateReport` compares this number with the one
+    // the planned segment distribution was measured at, which would make the
+    // two agree about work no B arm performed.
+    message: "an Approach-B record must not carry an escalation threshold; it never escalates",
   });
 
 export type RunRecord = z.infer<typeof RunRecordSchema>;
+/** Which implementation produced a row. See DetectorSchema. */
+export type RecordDetector = z.infer<typeof DetectorSchema>;
 /** The resolved tier-2 settings a record states, as `runArm` receives them. */
 export type Tier2RunConfig = z.infer<typeof Tier2RunConfigSchema>;
 export type RecordFinding = z.infer<typeof RecordFindingSchema>;

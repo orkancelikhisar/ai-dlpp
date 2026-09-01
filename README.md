@@ -96,7 +96,8 @@ that a coverage claim can be re-derived from the file alone.
 | `packages/compiler` | Policy document → IR. Node-only CLI. The one component allowed to call a frontier model, with an anti-hallucination gate requiring every rule to quote its source clause verbatim. |
 | `packages/tier1` | The GLiNER-class ONNX span tagger. Browser-only. Word splitter, per-word encoder, two decoders (the two model families express spans differently), and the span mapper. |
 | `apps/eval` | Playwright harness: corpus in, JSONL out. Computes no metrics. |
-| `policies/` | Three deliberately disagreeing policy documents (finance, healthcare, generic corporate) plus the provider manifest. |
+| `packages/tier2` | The in-browser instruct-LLM judge (`@mlc-ai/web-llm`, WebGPU) behind core's `SemanticJudge` seam, plus **Approach B** — a `Detector` that takes the whole policy document and the whole message in one model call, with no compiler and no tiers. |
+| `policies/` | Three deliberately disagreeing policy documents (finance, healthcare, generic corporate) plus the provider manifest. `policies/compiled/` holds compiled artifacts — see the caveat below. |
 | `corpora/` | Corpus fixtures and, later, the build pipeline. Never raw third-party data. |
 | `docs/superpowers/` | The design spec and the per-plan implementation plans, including their deviation logs. |
 
@@ -110,19 +111,47 @@ Eight plans; four are done.
 |---|---|---|
 | 1 | Core foundation | **done** |
 | 2 | Vault, pseudonymization, rehydration | **done** — Plans 1&nbsp;+&nbsp;2 are `packages/core`, 276 tests between them |
-| 3 | Policy compiler + policy suite | **done** offline — 133 tests. The live compile against a frontier model is deferred by choice. |
-| 4 | Tier-1 span tagger + eval harness | **done** — 218 + 96 tests |
-| 5 | Tier-2 judge + in-context baseline | not started |
+| 3 | Policy compiler + policy suite | **done** offline — 137 tests. The live compile against a frontier model is deferred by choice. |
+| 4 | Tier-1 span tagger + eval harness | **done** — `packages/tier1` 219 tests. `apps/eval` is shared with Plan 5 and its count is no longer attributable to one plan. |
+| 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (255 tests); the compiler-versus-prompting head-to-head runs, see below |
 | 6 | Extension (WXT, MV3) | not started |
 | 7 | Corpus pipeline | not started |
 | 8 | Evaluation and analysis | not started |
 
-**723 tests**, typechecking clean across four packages.
+**1,259 tests** — 1,180 vitest (core 352, tier2 255, tier1 219, eval 217, compiler 137) plus 79
+Playwright specs against real Chrome. Typechecking clean across five projects.
 
 ### What is deliberately *not* claimed yet
 
 - **No policy has been compiled by a real frontier model.** Plan 3 is verified against
   hand-authored fixtures, so the *compiler* is tested and the *extraction prompt* is not.
+  `policies/compiled/p-fin.ir.json` is real compiler output — every stage ran, and
+  `packages/compiler/test/compiled.test.ts` recompiles it on every suite run and requires byte
+  equality — but the two model-driven stages were answered from those same hand-authored
+  fixtures by `scripts/compile-policies.ts`, which touches no network. Read it as "the
+  compiler's output given those responses", never as a frontier model's. `p-med` and `p-corp`
+  have no compiled artifact at all: no committed fixture answers their prompts, and the script
+  reports that rather than skipping them quietly.
+- **The compiler-versus-prompting head-to-head runs, and has produced no verdict.** It is the
+  arm that makes the project's central claim falsifiable and for most of Plan 5 it could not
+  run at all. It runs now — four arms (compiled judge alone, tier 0 + compiled judge, Approach
+  B, B + tier 0) over one compiled policy paired with the document it came from:
+
+  ```
+  pnpm -C apps/eval exec playwright test test/baseline.spec.ts
+  ```
+
+  What that is *not* is an answer. It is one model over three corpus items, the corpus is the
+  smoke fixture whose gold was labelled under a different policy, and **no accuracy metric
+  exists anywhere in this repository** — spec 2.2 makes the JSONL file the whole boundary and
+  puts scoring in Plan 8. The gate verdicts that run does produce are throughput and hygiene
+  properties; `ArmGateReport.scoring.verdictMeans` says so on every row.
+- **Approach B fails the p95 time-to-first-token gate, and that is not a result either.** The
+  ceiling was derived at the compiled judge's ~1.1 kB prompt, built from one segment; B carries
+  the whole policy document on every call and measures 5.4x the prompt tokens. Every report row
+  carries `judgedUnit`, `judgedUnitChars` and `promptTokens` so the mismatch is visible rather
+  than described, but the gate is still applied and a B-appropriate ceiling would have to be
+  derived from a run that has not happened.
 - **No accuracy numbers exist.** The corpus in this repo is a 13-item smoke fixture whose only
   job is to prove the pipe carries data end to end. It cannot produce meaningful tier-1
   accuracy in either direction, and says so.
@@ -153,7 +182,7 @@ latency/footprint per arm and backend.
 
 ```bash
 pnpm install
-pnpm -r test          # 723 tests; apps/eval drives real Chrome
+pnpm -r test          # apps/eval drives real Chrome, and tier 2 drives a real GPU
 pnpm -r typecheck
 ```
 
@@ -165,7 +194,16 @@ fetched on demand:
 pnpm -C packages/tier1 exec vite-node ../../scripts/fetch-models.ts
 ```
 
-Tests that need weights skip cleanly when they are absent.
+Tests that need weights skip cleanly when they are absent. Tier-2 weights (7.5 GB across four
+pinned arms) are fetched by `@mlc-ai/web-llm` into a browser profile outside the repository;
+tier-2 specs skip when WebGPU is unavailable, which is *absence*, not degradation.
+
+Compiled policy artifacts are regenerated offline, from the committed model-response fixtures
+and with no network call:
+
+```bash
+pnpm -C packages/compiler exec vite-node ../../scripts/compile-policies.ts
+```
 
 ---
 

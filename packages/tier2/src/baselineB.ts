@@ -142,6 +142,18 @@ const BASELINE_B_SCHEMA_JSON = JSON.stringify(BASELINE_B_SCHEMA);
  * one policy anyone has counted runs at about 4.65 characters per token, and 2
  * is roughly 2.3x conservative against it.
  *
+ * CHECKED AGAINST A REAL TOKENIZER, once, which nothing here could do when this
+ * comment was written. `apps/eval/test/baseline.spec.ts` runs this arm against
+ * `policies/p-fin.md` on `Qwen3.5-2B-q4f16_1-MLC` and the ENGINE reported
+ * 1,407-1,451 prompt tokens over three messages. The exact prompt length is not
+ * derivable from outside this module, but a LOWER bound is: the policy alone is
+ * 5,272 UTF-16 code units and is in every prompt, so the real ratio is at least
+ * 5,272 / 1,451 = 3.63 characters per token. That makes 2 at least 1.8x
+ * conservative against a measurement rather than only against `p-corp.md`'s
+ * arithmetic, and the direction is the intended one. It is a bound and not the
+ * ratio; the true figure is higher, because the instructions, the entity ids and
+ * the message are all in the numerator and none of them is counted here.
+ *
  * The estimate does not have to be tight, because it is not the enforcement.
  * READ from the shipped 0.2.84 bundle, `LLMChatPipeline` throws
  * `ContextWindowSizeExceededError` when
@@ -690,12 +702,18 @@ function createArm(options: BaselineBOptions, withTier0: boolean): BaselineB {
  * catch it.
  *
  * `tier2` must be TRUE, and the word means "a model read this message", not
- * "the compiled tier-2 judge ran". Two things depend on it and both would be
- * wrong under `false`: every `Finding` B emits carries `tier: 2`, because
- * `Finding.tier` is `0 | 1 | 2` and a model produced it; and Task 11 couples
- * `tier2Stats` on the record to `config.tier2 && error === null`, so a B row
- * recorded under `tier2: false` either carries no stats at all or is rejected
- * by the schema. WHICH arm ran is the record's arm field, not this flag.
+ * "the compiled tier-2 judge ran". Every `Finding` B emits carries `tier: 2`,
+ * because `Finding.tier` is `0 | 1 | 2` and a model produced it, so `false`
+ * would contradict every row the arm writes.
+ *
+ * WHICH arm ran is NOT this flag, and it is no longer the record's free-text
+ * `arm` field either. `RunRecordSchema` in apps/eval/src/driver/record.ts grew
+ * a required `detector` -- `"core-orchestrator"` or `"approach-b"` -- when the
+ * page gained a door onto this file, precisely because `config.tier2` is true
+ * on both methods and cannot separate them. That field is what the record's
+ * `tier2Stats`/`baselineStats` couplings key off; the paragraph here used to
+ * name `config.tier2 && error === null` as the coupling and that was true only
+ * while B had no record field of its own.
  */
 function assertArmConfig(config: TierConfig, withTier0: boolean): void {
   if (config.tier1) {

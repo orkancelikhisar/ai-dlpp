@@ -116,8 +116,9 @@ function detection(text: string, script: PageScript): unknown {
  * `waitForFunction(() => window.__sih !== undefined)` is answered by the same
  * mechanism it is in a browser rather than by a stub that always says yes.
  */
-function scriptedPage(script: PageScript = {}): { page: Page } {
+function scriptedPage(script: PageScript = {}): { page: Page; unloads: () => number } {
   let firstUseIr = true;
+  let unloads = 0;
   const api = {
     harnessDir: () => script.harnessDir ?? HARNESS_DIR,
     useIr: async (_name: string) => {
@@ -147,6 +148,14 @@ function scriptedPage(script: PageScript = {}): { page: Page } {
       storageUsageBytes: 0,
       storageQuotaBytes: 0,
     }),
+    // COUNTED rather than a bare no-op: `runBakeoff` releases each arm's engine
+    // when the arm finishes instead of leaving it to the next navigation, and an
+    // arm that is never released is a 1-3 GB allocation the next arm's model
+    // load competes with. A stub that silently accepted the call would let that
+    // release be deleted with this suite green.
+    unloadTier2: async () => {
+      unloads += 1;
+    },
     detect: async (request: { text: string }) => {
       if (script.detectThrows === true) throw new Error("the model did not answer");
       return detection(request.text, script);
@@ -190,7 +199,7 @@ function scriptedPage(script: PageScript = {}): { page: Page } {
     },
     evaluate: async (fn: (arg?: unknown) => unknown, arg?: unknown) => fn(arg),
   };
-  return { page: page as unknown as Page };
+  return { page: page as unknown as Page, unloads: () => unloads };
 }
 
 function bakeoffOptions(dir: string, overrides: Partial<BakeoffOptions> = {}): BakeoffOptions {
@@ -210,8 +219,16 @@ function bakeoffOptions(dir: string, overrides: Partial<BakeoffOptions> = {}): B
 describe("runBakeoff, against a scripted page", () => {
   it("writes one file per arm plus a gates file, and every record validates", async () => {
     const dir = outDir();
-    const { page } = scriptedPage();
+    const { page, unloads } = scriptedPage();
     const result = await runBakeoff(page, bakeoffOptions(dir, { families: ["compiled", "compiled-tier2-only"] }));
+
+    // ONE release per arm, including the last. `runBakeoff` navigates between
+    // arms rather than reloading, and navigation destroys the JS context
+    // without promising the GPU allocation goes with it -- so an arm left
+    // loaded is a 1-3 GB allocation the next arm's model load competes with.
+    // Asserted here because the browser suite cannot see it: `unloadTier2`
+    // resolving says nothing about what the GPU did.
+    expect(unloads()).toBe(2);
 
     expect(result.written).toHaveLength(2);
     expect(result.reports).toHaveLength(2);
@@ -239,10 +256,10 @@ describe("runBakeoff, against a scripted page", () => {
     const [compiled, tier2Only] = result.reports;
     expect(compiled!.family).toBe("compiled");
     expect(compiled!.escalation.hasPriors).toBe(true);
-    expect(compiled!.segmentsPerItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
+    expect(compiled!.judgedUnitsPerItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
     expect(tier2Only!.escalation.hasPriors).toBe(false);
-    expect(tier2Only!.segmentsPerItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
-    expect(compiled!.segmentChars).toEqual(result.plan.arms[0]!.segments.chars);
+    expect(tier2Only!.judgedUnitsPerItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
+    expect(compiled!.judgedUnitChars).toEqual(result.plan.arms[0]!.segments.chars);
 
     // One gates line per arm, and it is the report, so the file a reader gets is
     // the object this function returned.
