@@ -231,6 +231,16 @@ Typechecking clean across five projects.
   missing from the interface: `JudgeRequest.text` already carries the whole message verbatim,
   precisely so a message-scoped predicate is answerable, and the judge simply does not use it
   that way yet.
+
+  **This is currently a structural advantage for Approach B, and it is measured, not predicted.**
+  `baseline.spec.ts` runs all four method families over `p-fin` and asserts the split: the two
+  compiled families file `scope-unjudged` on 3 of 3 messages, and both Approach-B families file
+  0, because B puts the whole message in one call so nothing goes unasked. On the only real
+  compiled policy in this repository, the prompting baseline can answer the one predicate the
+  policy declares and the compiled pipeline cannot. That is an artifact of an unimplemented
+  feature rather than a finding about compilation, and it will move if message-scope judging
+  lands — but any head-to-head number taken before then is taken with B holding that advantage,
+  and must be read that way.
 - **The gates' `p95` is a maximum at this corpus size.** The percentile is nearest-rank, and
   `ceil(0.95 × n) = n` for every n ≤ 19 — this corpus produces at most 18 engine calls per
   compiled arm and 13 per Approach-B arm, so `maxP95TtftMs` is a ceiling on an arm's single
