@@ -50,24 +50,6 @@ const SEMANTIC_IR = JSON.parse(
  * that function did -- the hash-keyed-by-the-hash defect this project has
  * already shipped once.
  */
-/**
- * The predicate IR with `minimal-ir.json`'s rules grafted on.
- *
- * A COMPOSED unit fixture and not a claim about any shipped policy: it exists
- * because the two escalation conditions are only distinguishable on an IR that
- * has both a semantic predicate and a tier-0 rule, and no such IR is shipped
- * here. `minimal-ir.json`'s `entropy-rule` is the one Task 9 measured firing on
- * this corpus's code fence at confidence 0.7, which is under `UNCERTAIN_BELOW`
- * and therefore re-admits that fence to escalation.
- */
-const MINIMAL_IR = loadPolicyIr(readFileSync(join(REPO_ROOT, "apps", "eval", "fixtures", "minimal-ir.json"), "utf8"));
-const MIXED_IR: PolicyIr = {
-  ...SEMANTIC_IR,
-  entityTypes: [...SEMANTIC_IR.entityTypes, ...MINIMAL_IR.entityTypes],
-  rules: MINIMAL_IR.rules,
-  actions: { default: { ...SEMANTIC_IR.actions.default, ...MINIMAL_IR.actions.default } },
-};
-
 const POLICY_TEXT = "# Test standard\n\nSection 1. Do not paste secrets.\n";
 const POLICY_SHA256 = "2e337b6929ddd64f2fe2ae62feb134823c4883cf3dadd18a98fe8e2aba158396";
 const PAIRED_IR: PolicyIr = { ...SEMANTIC_IR, policyHash: POLICY_SHA256 };
@@ -344,15 +326,17 @@ describe("the two segments-per-message conditions, never mixed", () => {
     }
   });
 
-  it("gives the tier-0 arm the same escalation as the tier-2-only arm ON THIS IR, and that is a fact about the IR", () => {
-    // Not an oversight and not a splice. `semantic-ir.json` carries `rules: []`,
-    // so `runTier0` finds nothing on any item, so there are no priors to make a
-    // segment uncertain -- and the tier-0 arm's escalation is identical to the
-    // tier-2-only arm's. Task 9's "with priors" condition (p95 3, max 3) was
-    // measured against `minimal-ir.json`, which HAS entropy rules and is not an
-    // IR any tier-2 arm can run. Anything quoting 3 for this bake-off is quoting
-    // a different policy's number.
-    expect(SEMANTIC_IR.rules).toEqual([]);
+  it("escalates further WITH tier 0 than without, on the IR the bake-off actually runs", () => {
+    // Task 9 measured two conditions and the plan quotes both: with tier-0
+    // priors p50 1, p95 3, max 3; without them p50 1, p95 2, max 2. They were
+    // measured against `minimal-ir.json`, and for one commit the only IR a
+    // tier-2 arm could run carried `rules: []` -- so both numbers described a
+    // policy the bake-off never executed, and the two arms escalated alike.
+    //
+    // The premise assertion below is the guard. Strip the rules again and this
+    // fails here, loudly, rather than in a results table where two arms agree
+    // for a reason that is not about tier 0.
+    expect(SEMANTIC_IR.rules.length).toBeGreaterThan(0);
     const plan = planBakeoff({
       options: options({ families: ["compiled", "compiled-tier2-only"] }),
       ir: SEMANTIC_IR,
@@ -360,8 +344,9 @@ describe("the two segments-per-message conditions, never mixed", () => {
     });
     const withTier0 = plan.arms.find((a) => a.family === "compiled")!;
     const without = plan.arms.find((a) => a.family === "compiled-tier2-only")!;
-    expect(withTier0.segments.perItem).toEqual(without.segments.perItem);
-    expect(withTier0.segments.perItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
+    expect(withTier0.segments.perItem).not.toEqual(without.segments.perItem);
+    expect(withTier0.segments.perItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
+    expect(without.segments.perItem).toEqual({ p50: 1, p95: 2, max: 2, min: 1 });
   });
 });
 
@@ -839,7 +824,7 @@ describe("planning the slate", () => {
     // `callBudgetMs: 10_000` is what makes this test able to fail at all. At the
     // page's 60,000 ms default both families' bounds collapse onto the same
     // number -- the semantic IR's 120,000 ms message budget binds for both, so
-    // 4 calls and 2 calls produce the same ceiling and a "take the smallest"
+    // 6 calls and 2 calls produce the same ceiling and a "take the smallest"
     // implementation is indistinguishable from a correct one. This was caught by
     // mutation: the earlier version of this test survived exactly that change.
     const both = planBakeoff({
@@ -850,10 +835,13 @@ describe("planning the slate", () => {
     });
     const compiled = both.arms.find((a) => a.family === "compiled")!;
     const baseline = both.arms.find((a) => a.family === "baseline-b")!;
-    // 4 calls x (10,000 + 20) against 2 x (10,000 + 20): the per-call budget is
-    // now the binding bound for both, and it separates them.
+    // 6 calls x (10,000 + 20) against 2 x (10,000 + 20): the per-call budget is
+    // now the binding bound for both, and it separates them. Six because the
+    // compiled family runs tier 0, whose priors re-admit a third segment to
+    // escalation (max 3 segments x the one repair retry); the baseline family
+    // makes one call per message by design.
     expect(compiled.bound.bindingBound).toBe("call-budget");
-    expect(compiled.bound.boundMs).toBe(1_000 + 4 * 10_020);
+    expect(compiled.bound.boundMs).toBe(1_000 + 6 * 10_020);
     expect(baseline.bound.boundMs).toBe(1_000 + 2 * 10_020);
     expect(both.bound.boundMs).toBe(compiled.bound.boundMs);
     expect(both.bound.boundMs).toBeGreaterThan(baseline.bound.boundMs);
@@ -1076,15 +1064,18 @@ describe("the tier-0 priors reach only the arms that run tier 0", () => {
     // The structural half of "never mix the two conditions": the driver does not
     // hold one distribution and label it twice, it runs `runTier0` for the arms
     // that run tier 0 and passes nothing for the arms that do not. On
-    // `semantic-ir.json` the two coincide because it declares no rules, which is
-    // exactly why that fixture cannot prove this -- hence MIXED_IR.
+    // Proved on the SHIPPED fixture, which is the only one the bake-off can run.
+    // For one commit `semantic-ir.json` declared `rules: []`, so `runTier0` found
+    // nothing, no prior made a segment uncertain, and these two arms escalated
+    // identically -- two of the four contrasts null by construction, with the
+    // published numbers agreeing for a reason that had nothing to do with tier 0.
     //
     // 17 and 18 are Task 9's numbers, measured in test/segments.test.ts against
     // the same corpus and the same escalation policy but through a different
     // caller, so they are not this module's arithmetic restated.
     const plan = planBakeoff({
       options: options({ families: ["compiled", "compiled-tier2-only"] }),
-      ir: MIXED_IR,
+      ir: SEMANTIC_IR,
       items: ITEMS,
     });
     const withTier0 = plan.arms.find((a) => a.family === "compiled")!;

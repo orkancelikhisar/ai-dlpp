@@ -3,6 +3,48 @@
   "policyHash": "test-hash",
   "entityTypes": [
     {
+      "id": "in-pan",
+      "tier": 0,
+      "nlDefinition": "Indian PAN card number",
+      "examples": [
+        "ABCPD1234E"
+      ],
+      "counterExamples": [],
+      "severity": "high",
+      "surrogateKind": "id-number"
+    },
+    {
+      "id": "aws-key",
+      "tier": 0,
+      "nlDefinition": "AWS access key ID",
+      "examples": [
+        "AKIAIOSFODNN7EXAMPLE"
+      ],
+      "counterExamples": [],
+      "severity": "critical",
+      "neverPseudonymize": true
+    },
+    {
+      "id": "generic-secret",
+      "tier": 0,
+      "nlDefinition": "High-entropy secret string",
+      "examples": [],
+      "counterExamples": [],
+      "severity": "critical",
+      "neverPseudonymize": true
+    },
+    {
+      "id": "client-name",
+      "tier": 1,
+      "nlDefinition": "Name of a client organization",
+      "examples": [
+        "Globex"
+      ],
+      "counterExamples": [],
+      "severity": "high",
+      "surrogateKind": "org-name"
+    },
+    {
       "id": "pred:unannounced-deal",
       "tier": 2,
       "nlDefinition": "Shadow entityType for the unannounced-deal semantic predicate",
@@ -11,7 +53,29 @@
       "severity": "high"
     }
   ],
-  "rules": [],
+  "rules": [
+    {
+      "id": "pan-rule",
+      "entityType": "in-pan",
+      "regex": "\\b[A-Z]{5}[0-9]{4}[A-Z]\\b",
+      "validator": "pan-structure",
+      "contextBoost": [
+        "PAN",
+        "tax"
+      ]
+    },
+    {
+      "id": "aws-rule",
+      "entityType": "aws-key",
+      "regex": "\\bAKIA[0-9A-Z]{16}\\b"
+    },
+    {
+      "id": "entropy-rule",
+      "entityType": "generic-secret",
+      "entropyThreshold": 4,
+      "minLength": 20
+    }
+  ],
   "semanticPredicates": [
     {
       "id": "unannounced-deal",
@@ -21,6 +85,10 @@
   ],
   "actions": {
     "default": {
+      "in-pan": "block",
+      "aws-key": "block",
+      "generic-secret": "redact",
+      "client-name": "pseudonymize",
       "pred:unannounced-deal": "redact"
     }
   },
