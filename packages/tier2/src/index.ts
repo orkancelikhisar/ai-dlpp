@@ -65,8 +65,20 @@ export {
   type JudgeResponse,
   type ParseResult,
 } from "./schema.js";
+// `locateFinding` is the door both arms go through: it places the evidence
+// clause AND the mention inside it, applies the four edge-case rules, and is
+// the reason the two arms cannot place spans under different conventions.
+// `resolveQuote` and `resolveMention` are exported beside it because each
+// half is separately testable and separately meaningful -- a caller placing
+// only a clause has an evidence span and NOT a span an action may rewrite.
 export {
   MINIMUM_CANDIDATE_WORDS,
+  locateFinding,
+  resolveMention,
   resolveQuote,
+  type LocateResult,
+  type LocatedFinding,
+  type LocatedSpan,
   type ResolvedQuote,
+  type SpanRefusal,
 } from "./spans.js";

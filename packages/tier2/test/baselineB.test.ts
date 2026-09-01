@@ -178,11 +178,27 @@ const USAGE = {
   },
 };
 
-/** One scripted Approach-B answer, in B's own wire shape. */
+/**
+ * One scripted Approach-B answer, in B's own wire shape.
+ *
+ * `mention` defaults to `quote`, which is the model's "no smaller span will do"
+ * answer, so a case that does not name one is asserting on the WHOLE-CLAUSE
+ * path and its offsets are the clause's. That is deliberate for the cases where
+ * the span is incidental -- budgets, aborts, repairs, entity naming -- and it
+ * means those cases cannot show that `mention` is read at all. The "narrows the
+ * action span" block is where that is asserted.
+ */
 function answer(
-  ...findings: Array<{ entityType: string; quote: string; confidence: number }>
+  ...findings: Array<{
+    entityType: string;
+    quote: string;
+    mention?: string;
+    confidence: number;
+  }>
 ): string {
-  return JSON.stringify({ findings });
+  return JSON.stringify({
+    findings: findings.map((f) => ({ ...f, mention: f.mention ?? f.quote })),
+  });
 }
 
 function input(overrides: Partial<DetectInput> = {}): DetectInput {
@@ -548,9 +564,10 @@ describe("createBaselineB: what the prompt carries", () => {
     expect(BASELINE_B_SCHEMA.properties.findings.items.required).toEqual([
       "entityType",
       "quote",
+      "mention",
       "confidence",
     ]);
-    for (const field of ["entityType", "quote", "confidence"]) {
+    for (const field of ["entityType", "quote", "mention", "confidence"]) {
       expect(shape).toContain(`"${field}"`);
     }
     // The judge's name for the same slot, which is what a copy-paste from
@@ -1163,5 +1180,153 @@ describe("createBaselineBPlusTier0", () => {
     const r = await detector(input({ text: PAN_MSG, config: B_PLUS_T0 }));
     expect(r.findings.map((f) => f.entityType)).toEqual(["in-pan"]);
     expect(reasons(r.degraded)).toContain("2:failed-closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mention: the same four rules the compiled arm places spans under
+//
+// SYMMETRY IS THE POINT of this block. `locateFinding` in spans.ts is the one
+// implementation both arms call, so these assertions and their twins in
+// judge.test.ts are the pin that says the change was applied to both arms and
+// applied the same way. An arm placing spans under a looser rule than the other
+// would win exact-match columns for a harness reason.
+// ---------------------------------------------------------------------------
+
+describe("createBaselineB: narrows the action span", () => {
+  const armFor = (raw: string) =>
+    createBaselineB({
+      engine: armEngine({ raw }),
+      config: CONFIG,
+      policyText: POLICY,
+      budgetMs: 60_000,
+    });
+
+  it("carries the MENTION's offsets, not the clause's", async () => {
+    const detector = armFor(
+      answer({
+        entityType: "client-name",
+        quote: "review the Northwind Traders renewal",
+        mention: "Northwind Traders",
+        confidence: 0.8,
+      }),
+    );
+    const r = await detector(input());
+    expect(r.findings).toHaveLength(1);
+    const f = r.findings[0]!;
+    expect(f.start).toBe(MSG.indexOf("Northwind Traders"));
+    expect(f.end).toBe(f.start + "Northwind Traders".length);
+    expect(f.text).toBe("Northwind Traders");
+    // The clause located it and is not what the finding carries.
+    expect(MSG.indexOf("review the Northwind Traders renewal")).toBeLessThan(f.start);
+    expect(detector.stats.rung1).toBe(1);
+    expect(detector.stats.wholeClauseMentions).toBe(0);
+  });
+
+  it("counts a repeated quote as a whole-clause answer and still emits it", async () => {
+    const detector = armFor(
+      answer({ entityType: "client-name", quote: "Northwind Traders renewal", confidence: 0.8 }),
+    );
+    const r = await detector(input());
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0]!.text).toBe("Northwind Traders renewal");
+    expect(detector.stats.wholeClauseMentions).toBe(1);
+  });
+
+  it("REFUSES a mention outside its own quote, apart from an unplaced quote", async () => {
+    const detector = armFor(
+      answer({
+        entityType: "client-name",
+        quote: "review the Northwind Traders renewal",
+        mention: "Friday",
+        confidence: 0.8,
+      }),
+    );
+    const r = await detector(input());
+    expect(r.findings).toEqual([]);
+    expect(detector.stats.unresolvedMentions).toBe(1);
+    expect(detector.stats.unresolvedQuotes).toBe(0);
+    expect(MSG).toContain("Friday");
+  });
+
+  it("REFUSES a mention the clause states twice", async () => {
+    const text = "Please note: Acme sued Acme last year, per counsel.";
+    const detector = armFor(
+      answer({
+        entityType: "client-name",
+        quote: "Acme sued Acme last year",
+        mention: "Acme",
+        confidence: 0.8,
+      }),
+    );
+    const r = await detector(input({ text }));
+    expect(r.findings).toEqual([]);
+    expect(detector.stats.unresolvedMentions).toBe(1);
+  });
+
+  it("files an unplaceable CLAUSE under unresolvedQuotes and never looks at the mention", async () => {
+    const detector = armFor(
+      answer({
+        entityType: "client-name",
+        quote: "a clause that is nowhere in this message",
+        mention: "Northwind Traders",
+        confidence: 0.8,
+      }),
+    );
+    const r = await detector(input());
+    expect(r.findings).toEqual([]);
+    expect(detector.stats.unresolvedQuotes).toBe(1);
+    expect(detector.stats.unresolvedMentions).toBe(0);
+  });
+
+  it("counts a whole-clause answer ONCE when the model restates it", async () => {
+    // The judge's twin, and the same mutation-found gap: the counter is over
+    // findings EMITTED, so a model that restates one finding contributes one.
+    // Without this, `wholeClauseMentions / (rung1 + rung2)` can exceed 1 on
+    // exactly the looping model Plan 5's probe corpus caught.
+    const f = { entityType: "client-name", quote: "Northwind Traders renewal", confidence: 0.8 };
+    const detector = armFor(answer(f, f, { ...f, confidence: 0.4 }));
+    const r = await detector(input());
+    expect(r.findings).toHaveLength(1);
+    expect(detector.stats.duplicatesDropped).toBe(2);
+    expect(detector.stats.rung1).toBe(1);
+    expect(detector.stats.wholeClauseMentions).toBe(1);
+  });
+
+  it("places the SAME span the compiled judge places for the same answer", async () => {
+    // The cross-arm pin. Both arms are handed the same message, the same clause
+    // and the same mention, and must return the same offsets -- which is what
+    // "both arms changed, identically" means operationally. The two wire shapes
+    // differ (`entityType` against `predicateId`) and nothing else does.
+    const quote = "review the Northwind Traders renewal";
+    const mention = "Northwind Traders";
+
+    const b = armFor(answer({ entityType: "client-name", quote, mention, confidence: 0.8 }));
+    const bFindings = (await b(input())).findings;
+
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        findings: [{ predicateId: "client-relationship", quote, mention, confidence: 0.8 }],
+      }),
+      { budgetMs: 60_000 },
+    );
+    const verdict = await judge.judge({
+      text: MSG,
+      segments: [{ kind: "prose", start: 0, end: MSG.length, text: MSG }],
+      ir: predicateIr(),
+      priorFindings: [],
+      budgetMs: 60_000,
+    });
+
+    expect(bFindings).toHaveLength(1);
+    expect(verdict.findings).toHaveLength(1);
+    expect({ start: bFindings[0]!.start, end: bFindings[0]!.end }).toEqual({
+      start: verdict.findings[0]!.start,
+      end: verdict.findings[0]!.end,
+    });
+    expect(bFindings[0]!.text).toBe(verdict.findings[0]!.text);
+    // And the counters agree, which is what a bake-off puts side by side.
+    expect(b.stats.rung1).toBe(judge.stats.rung1);
+    expect(b.stats.wholeClauseMentions).toBe(judge.stats.wholeClauseMentions);
   });
 });

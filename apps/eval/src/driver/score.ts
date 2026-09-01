@@ -15,13 +15,38 @@ import { RunRecordSchema, type RunRecord } from "./record.js";
  * MEASURED on `runs/slate-p-fin-02.*`: the compiled judge is asked a
  * MESSAGE-SCOPED predicate (`policies/compiled/p-fin.ir.json` declares
  * `scope: "message"` for `client-relationship-disclosure`), and the models
- * answer it by returning a span covering most or all of the message --
- * `tier2only-Phi-4-mini` returns [0,74) on `pos-client-name-prose` where the
+ * answered it by returning a span covering most or all of the message --
+ * `tier2only-Phi-4-mini` returned [0,74) on `pos-client-name-prose` where the
  * adjudicated gold span is [43,59), "Tamarind Grocers". That pair is a match
  * under `overlap`, and not a match under `exact` or `iou50` (IoU 16/74 = 0.216).
  * Picking one rule would therefore have decided the headline number by picking
  * a convention, which is why `winnersByRule` exists below: it makes a
  * rule-dependent ranking visible instead of letting one rule stand in for all.
+ *
+ * ## What changed under that run, and what did NOT
+ *
+ * That disagreement was not only a scoring convention. `Finding.start/end` is
+ * what `applyActions` rewrites, so a whole-message span on a `redact` predicate
+ * replaces the whole message -- the arms were being asked for a span that was
+ * wrong for the shipping path and unscoreable on two of three rules at once.
+ * Both arms now return TWO spans (`packages/tier2/src/spans.ts`): an evidence
+ * clause that locates the finding and a mention inside it, and `Finding`
+ * carries the mention. So `exact` and `iou50` are reachable where they were
+ * structurally unreachable, and the reason those columns read 0.000 on every
+ * arm of `slate-p-fin-02` is not a fact about the models.
+ *
+ * NOTHING HERE CHANGED, and that is deliberate. The three rules still earn
+ * their places: a mention off by an article or a possessive is an `overlap`
+ * match and an `exact` miss, which is a real disagreement about a real answer
+ * rather than a disagreement about a convention. Nor is the gold set touched --
+ * it was blind-labelled and adjudicated against §3.1 before any of this, and
+ * re-reading it to suit a new span contract is the one move that would make
+ * every number below meaningless.
+ *
+ * What a reader MUST NOT do is compare a rule's number across the two
+ * conventions. `runs/slate-p-fin-02` was taken under the one-span ask; any
+ * later run is taken under the two-span one, and on `exact` and `iou50` those
+ * are different questions.
  *
  * ## What this module deliberately does NOT do
  *

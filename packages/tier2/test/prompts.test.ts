@@ -38,10 +38,17 @@ import { fakeEngine, predicateIr } from "./helpers.js";
  * still cannot fire on the two arms drifting TOGETHER, and its filter -- lines
  * starting `"- "` or two spaces -- excludes each arm's two task sentences, the
  * JSON-only instruction, the wire-shape line and the `Rules:` header outright.
- * COUNTED off both real prompts: 12 non-blank lines each, 7 of them filtered in
- * and 5 excluded, and those 5 a side were pinned by nothing at all. (An earlier
- * version of this paragraph said seven and six; neither number was either
- * prompt's.)
+ * COUNTED off both real prompts: 16 non-blank lines each, 11 of them filtered in
+ * and 5 excluded, and those 5 a side are pinned by nothing at all over there.
+ * (Two earlier versions of this paragraph said seven-and-six and then
+ * twelve-seven-five; the last was right until `mention` added four rule lines a
+ * side.)
+ *
+ * The four `mention` lines are a case that check cannot see AT ALL, which is
+ * worth stating rather than leaving to be inferred: they carry neither noun it
+ * substitutes on, so they are byte identical in the two prompts and satisfy the
+ * containment trivially in both directions. Nothing over there would notice them
+ * being dropped from BOTH arms. The contracts below are what would.
  *
  * ## What is asserted here, and why not a snapshot
  *
@@ -256,6 +263,31 @@ const JUDGE_CONTRACT: readonly PromptClause[] = [
       /not guessed at/i.test(l),
   },
   {
+    states: "the MENTION must be COPIED FROM INSIDE THE QUOTE, character for character",
+    carriedBy: (l) =>
+      /\bmention must be copied\b/i.test(l) &&
+      /from inside quote/i.test(l) &&
+      /character for character/i.test(l),
+  },
+  {
+    states: "the mention is the SHORTEST RUN OF WORDS A REWRITE MUST COVER",
+    carriedBy: (l) =>
+      /make mention the shortest run of words/i.test(l) && /a rewrite must cover/i.test(l),
+  },
+  {
+    states: "when NOTHING SHORTER WILL DO, the WHOLE QUOTE IS REPEATED as the mention",
+    carriedBy: (l) =>
+      /nothing shorter than the whole clause will do/i.test(l) &&
+      /repeat quote as mention/i.test(l),
+  },
+  {
+    states: "a mention occurring MORE THAN ONCE INSIDE THE QUOTE IS DISCARDED, NOT GUESSED AT",
+    carriedBy: (l) =>
+      /more than once inside quote/i.test(l) &&
+      /\bis discarded\b/i.test(l) &&
+      /not guessed at/i.test(l),
+  },
+  {
     states: "NEVER quote anything that is NOT IN THE PASSAGE",
     carriedBy: (l) => /never quote/i.test(l) && /not in the passage/i.test(l),
   },
@@ -330,6 +362,31 @@ const BASELINE_CONTRACT: readonly PromptClause[] = [
       /not guessed at/i.test(l),
   },
   {
+    states: "the MENTION must be COPIED FROM INSIDE THE QUOTE, character for character",
+    carriedBy: (l) =>
+      /\bmention must be copied\b/i.test(l) &&
+      /from inside quote/i.test(l) &&
+      /character for character/i.test(l),
+  },
+  {
+    states: "the mention is the SHORTEST RUN OF WORDS A REWRITE MUST COVER",
+    carriedBy: (l) =>
+      /make mention the shortest run of words/i.test(l) && /a rewrite must cover/i.test(l),
+  },
+  {
+    states: "when NOTHING SHORTER WILL DO, the WHOLE QUOTE IS REPEATED as the mention",
+    carriedBy: (l) =>
+      /nothing shorter than the whole clause will do/i.test(l) &&
+      /repeat quote as mention/i.test(l),
+  },
+  {
+    states: "a mention occurring MORE THAN ONCE INSIDE THE QUOTE IS DISCARDED, NOT GUESSED AT",
+    carriedBy: (l) =>
+      /more than once inside quote/i.test(l) &&
+      /\bis discarded\b/i.test(l) &&
+      /not guessed at/i.test(l),
+  },
+  {
     states: "NEVER quote anything that is NOT IN THE MESSAGE",
     carriedBy: (l) => /never quote/i.test(l) && /not in the message/i.test(l),
   },
@@ -382,10 +439,11 @@ describe("the compiled judge's system prompt", () => {
     expect(JUDGE_SCHEMA.properties.findings.items.required).toEqual([
       "predicateId",
       "quote",
+      "mention",
       "confidence",
     ]);
     expect(shape).toContain('"findings"');
-    for (const field of ["predicateId", "quote", "confidence"]) {
+    for (const field of ["predicateId", "quote", "mention", "confidence"]) {
       expect(shape).toContain(`"${field}"`);
     }
   });
@@ -456,6 +514,7 @@ describe("Approach B's system prompt", () => {
     expect(BASELINE_B_SCHEMA.properties.findings.items.required).toEqual([
       "entityType",
       "quote",
+      "mention",
       "confidence",
     ]);
   });

@@ -227,8 +227,18 @@ export const GATES = {
    * thing this file is for. 0.8 is a defensible starting point and nothing more.
    *
    * What to do with that: the raw counts are in `ArmGateReport.ladder`
-   * (`rung1`, `rung2`, `duplicatesDropped`, `unresolvedQuotes`), so a reader who
-   * disagrees with the number can recompute the rate.
+   * (`rung1`, `rung2`, `duplicatesDropped`, `unresolvedQuotes`,
+   * `unresolvedMentions`), so a reader who disagrees with the number can
+   * recompute the rate.
+   *
+   * WHAT THE RATE IS OVER CHANGED when the arms started returning two spans per
+   * finding, and the threshold did not move with it -- deliberately, because
+   * moving a threshold to keep a number looking the same is tuning. The
+   * denominator now also carries findings whose clause placed and whose mention
+   * did not, so an arm that quotes well and points badly is measured here where
+   * before it could not be. Every rate in `runs/slate-p-fin-01.gates.jsonl` was
+   * taken under the one-span convention and is not comparable to one taken
+   * under this one.
    *
    * THE FIRST REAL SLATE HAS NOW RUN and it did not settle the number, which is
    * worth saying rather than leaving the paragraph above to read as still
@@ -1794,6 +1804,25 @@ export interface ArmGateReport {
     readonly rung1: number;
     readonly rung2: number;
     readonly unresolvedQuotes: number;
+    /**
+     * Findings whose EVIDENCE clause placed and whose MENTION did not, so no
+     * action span existed and the finding was dropped. Counted apart from
+     * `unresolvedQuotes` because the two say different things about the model:
+     * one is a quote that is not in the text, the other is a model that quoted
+     * correctly and then pointed outside its own quote or at something the
+     * clause says twice. Both are in `resolvable-rate`'s denominator.
+     */
+    readonly unresolvedMentions: number;
+    /**
+     * Findings whose mention resolved to the whole clause -- the model
+     * answering that no smaller span will do. NOT a loss, and deliberately not
+     * gated: it is legitimate for a predicate about a clause with no
+     * extractable entity. It is reported because an arm at
+     * `wholeClauseMentions === rung1 + rung2` narrowed nothing at all, and
+     * every span it emitted is a clause `applyActions` would rewrite whole --
+     * which is invisible in every other number on this row.
+     */
+    readonly wholeClauseMentions: number;
     readonly duplicatesDropped: number;
     readonly unknownLabels: number;
     readonly failedClosed: number;
@@ -2310,6 +2339,8 @@ function normalizeArmStats(record: RunRecord):
       readonly rung1: number;
       readonly rung2: number;
       readonly unresolvedQuotes: number;
+      readonly unresolvedMentions: number;
+      readonly wholeClauseMentions: number;
       readonly duplicatesDropped: number;
       readonly unknownLabels: number;
       readonly failedClosed: number;
@@ -2332,6 +2363,8 @@ function normalizeArmStats(record: RunRecord):
       rung1: judge.rung1,
       rung2: judge.rung2,
       unresolvedQuotes: judge.unresolvedQuotes,
+      unresolvedMentions: judge.unresolvedMentions,
+      wholeClauseMentions: judge.wholeClauseMentions,
       duplicatesDropped: judge.duplicatesDropped,
       unknownLabels: judge.unknownPredicates,
       failedClosed: judge.failedClosed,
@@ -2366,6 +2399,8 @@ function normalizeArmStats(record: RunRecord):
     rung1: baseline.rung1,
     rung2: baseline.rung2,
     unresolvedQuotes: baseline.unresolvedQuotes,
+    unresolvedMentions: baseline.unresolvedMentions,
+    wholeClauseMentions: baseline.wholeClauseMentions,
     duplicatesDropped: baseline.duplicatesDropped,
     unknownLabels: baseline.unknownEntityTypes,
     failedClosed: baseline.failedClosed,
@@ -2551,6 +2586,8 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     rung1: 0,
     rung2: 0,
     unresolvedQuotes: 0,
+    unresolvedMentions: 0,
+    wholeClauseMentions: 0,
     duplicatesDropped: 0,
     unknownLabels: 0,
     failedClosed: 0,
@@ -2595,6 +2632,8 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     ladder.rung1 += stats.rung1;
     ladder.rung2 += stats.rung2;
     ladder.unresolvedQuotes += stats.unresolvedQuotes;
+    ladder.unresolvedMentions += stats.unresolvedMentions;
+    ladder.wholeClauseMentions += stats.wholeClauseMentions;
     ladder.duplicatesDropped += stats.duplicatesDropped;
     ladder.unknownLabels += stats.unknownLabels;
     ladder.failedClosed += stats.failedClosed;
@@ -2658,11 +2697,11 @@ export function gateReport(input: GateReportInput): ArmGateReport {
   const sustainedDecodeTokPerSec = decodeSeconds > 0 ? decodedTokens / decodeSeconds : undefined;
   // EVERY quote the ladder was handed, which is the population both of these
   // rates are named over -- and `duplicatesDropped` belongs in it. READ from
-  // `WebLlmJudge.#collect`, which runs `resolveQuote` BEFORE the duplicate
-  // check: a quote that did not resolve `continue`s at the unresolved counter,
-  // a duplicate `continue`s after it, and only the survivors reach `rung1` or
-  // `rung2`. So a duplicate is a quote that DID resolve, and leaving it out of
-  // the resolvable rate omitted it from both halves.
+  // `WebLlmJudge.#collect`, which runs `locateFinding` BEFORE the duplicate
+  // check: a finding that did not place `continue`s at one of the two unplaced
+  // counters, a duplicate `continue`s after it, and only the survivors reach
+  // `rung1` or `rung2`. So a duplicate is a finding that DID place, and leaving
+  // it out of the resolvable rate omitted it from both halves.
   //
   // What that cost, by arithmetic on the old expression: an arm on the shape
   // Plan 5 says to expect -- one distinct span, seven restatements of it, two
@@ -2672,8 +2711,19 @@ export function gateReport(input: GateReportInput): ArmGateReport {
   // whose quotes do not resolve. Those are different diagnoses: a model that
   // restates itself is what `duplicate-rate` is for, and a span-recovery
   // failure is what this gate is for.
+  //
+  // `unresolvedMentions` belongs in the denominator for the same reason and is
+  // NOT in the numerator. Since the arms started returning two spans per
+  // finding, a finding can be lost at either placement: the clause is not in
+  // the text (`unresolvedQuotes`), or the clause placed and the mention did not
+  // (`unresolvedMentions`). Both are findings the model produced that reached
+  // no span, which is exactly what this rate is over. Leaving the second out
+  // would let an arm whose every mention fails report a rate of 1.000 while
+  // emitting nothing -- the gate reading as a clean bill of health for the arm
+  // it exists to catch.
   const quotesResolved = ladder.rung1 + ladder.rung2 + ladder.duplicatesDropped;
-  const resolvableDenominator = quotesResolved + ladder.unresolvedQuotes;
+  const findingsUnplaced = ladder.unresolvedQuotes + ladder.unresolvedMentions;
+  const resolvableDenominator = quotesResolved + findingsUnplaced;
   const duplicateDenominator = quotesResolved;
 
   // AUDIT-10, put where a reader of the NUMBER is, not only in a field beside
@@ -2776,10 +2826,17 @@ export function gateReport(input: GateReportInput): ArmGateReport {
       oneContraryAt: (n) => (n - 1) / n,
       notMeasured: "this arm produced no quote for the span ladder to place, resolvable or not",
       measured: (observed) =>
-        `${quotesResolved} of ${resolvableDenominator} quote(s) resolved to a span ` +
+        `${quotesResolved} of ${resolvableDenominator} finding(s) resolved to an action span ` +
         `(rung 1: ${ladder.rung1}, rung 2: ${ladder.rung2}, dropped as a duplicate of a span ` +
         `already emitted: ${ladder.duplicatesDropped}), a rate of ${observed.toFixed(3)} ` +
-        `against a floor of ${GATES.minResolvableRate}`,
+        `against a floor of ${GATES.minResolvableRate}. ` +
+        // WHICH placement failed, because the two call for different responses:
+        // an unplaceable clause is a model quoting text that is not there, and
+        // an unplaceable mention is a model quoting correctly and then pointing
+        // outside its own quote or at a name its clause repeats.
+        `Of the ${findingsUnplaced} that did not, ${ladder.unresolvedQuotes} had no placeable ` +
+        `clause and ${ladder.unresolvedMentions} had a clause but no placeable mention. ` +
+        `${ladder.wholeClauseMentions} of the resolved ones cover their whole clause`,
     }),
     numericGate({
       gate: "duplicate-rate",

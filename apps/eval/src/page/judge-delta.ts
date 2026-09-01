@@ -43,6 +43,8 @@ export function judgeDelta(before: JudgeStats, after: JudgeStats): Tier2DetectSt
     rung1: after.rung1 - before.rung1,
     rung2: after.rung2 - before.rung2,
     unresolvedQuotes: after.unresolvedQuotes - before.unresolvedQuotes,
+    unresolvedMentions: after.unresolvedMentions - before.unresolvedMentions,
+    wholeClauseMentions: after.wholeClauseMentions - before.wholeClauseMentions,
     unknownPredicates: after.unknownPredicates - before.unknownPredicates,
     duplicatesDropped: after.duplicatesDropped - before.duplicatesDropped,
     repairAttempts: after.repairAttempts - before.repairAttempts,

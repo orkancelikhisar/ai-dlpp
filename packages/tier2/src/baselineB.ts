@@ -14,7 +14,7 @@ import type { Tier2Completion, Tier2Engine } from "./engine.js";
 import { completionCallRecord, priorFindingsLine, type JudgeCallRecord } from "./judge.js";
 import type { Tier2Config } from "./manifest.js";
 import { BASELINE_B_SCHEMA, parseBaselineResponse, type BaselineResponse } from "./schema.js";
-import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
+import { MINIMUM_CANDIDATE_WORDS, locateFinding } from "./spans.js";
 
 /**
  * Approach B: the whole policy, the whole message, one model call, no compiler.
@@ -45,11 +45,12 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  *
  * Equal for the same reason, one level up: the one-repair-then-fail-closed
  * rule, the four-way parse classification (`parseBaselineResponse` is the
- * judge's parser with the other zod schema), the span-recovery ladder
- * (`resolveQuote`, the same rungs, the same refusals, the same counters), the
- * drop-and-count treatment of an invented label, `normalizeFindings`, the
- * overlap merge and the cluster-strictest action resolution (`resolveFindings`
- * in core, which `detect` itself now calls).
+ * judge's parser with the other zod schema), the two-span placement
+ * (`locateFinding`, the same rungs, the same four edge-case rules, the same
+ * refusals, the same counters), the drop-and-count treatment of an invented
+ * label, `normalizeFindings`, the overlap merge and the cluster-strictest
+ * action resolution (`resolveFindings` in core, which `detect` itself now
+ * calls).
  *
  * ## Intrinsic to the method, and therefore kept
  *
@@ -59,13 +60,19 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  *   refuses rather than truncates. Chunking so that a clause is missing from the
  *   chunk that sees the message would make a violation undetectable IN
  *   PRINCIPLE, which rigs the comparison before a model loads.
- * - **A bigger haystack for the ladder, on the calls that are per segment.** B
- *   resolves a quote against the whole message; the judge resolves against the
- *   passage its model was shown, which is one segment for a segment-scoped
- *   predicate and the whole message for a message-scoped one. Uniqueness is
- *   harder in a longer string, so rung 1 is harder for B than for a segment
- *   call -- and equally hard for both on a message-scoped predicate. Each
- *   follows from what the model was shown, so neither is corrected here.
+ * - **A bigger haystack for the EVIDENCE clause, on the calls that are per
+ *   segment.** B resolves a clause against the whole message; the judge
+ *   resolves against the passage its model was shown, which is one segment for
+ *   a segment-scoped predicate and the whole message for a message-scoped one.
+ *   Uniqueness is harder in a longer string, so rung 1 is harder for B than for
+ *   a segment call -- and equally hard for both on a message-scoped predicate.
+ *   Each follows from what the model was shown, so neither is corrected here.
+ *
+ *   The MENTION step does not inherit that asymmetry, and the two-span split is
+ *   what removed it: a mention is searched inside the clause the ladder just
+ *   placed, and that clause is the same string whichever arm placed it. So
+ *   `unresolvedMentions` is comparable between the arms in a way
+ *   `unresolvedQuotes` is not.
  *
  * ## Scope: no longer a difference between the methods
  *
@@ -221,10 +228,27 @@ const CHARS_PER_TOKEN_FLOOR = 2;
  *
  * The word floor is interpolated from `MINIMUM_CANDIDATE_WORDS` rather than
  * written out, so this copy cannot drift from the one the ladder enforces.
- * What that floor gates is rung 2 only, inside the peel; rung 1 has no word
- * check at all. Asking for the whole clause anyway is still right, for the two
- * reasons `judge.ts` gives: a longer quote is likelier to occur exactly once,
- * and a quote already at the floor leaves rung 2 nothing to work with.
+ * What that floor gates is rung 2 of the EVIDENCE ladder only, inside the peel;
+ * rung 1 has no word check at all, and `mention` is not subject to it (see
+ * `resolveMention`). Asking for the whole clause anyway is still right, for the
+ * two reasons `judge.ts` gives: a longer quote is likelier to occur exactly
+ * once, and a quote already at the floor leaves rung 2 nothing to work with.
+ *
+ * ## The mention bullets, and why they are word-for-word the judge's
+ *
+ * The four lines about `mention` carry NEITHER of the two nouns the arms differ
+ * on -- not "passage"/"message", not "predicate"/"policy" -- so they are byte
+ * identical in both prompts rather than identical after a substitution. That is
+ * deliberate and it is the honest shape: the rule "point at the shortest run a
+ * rewrite must cover, inside the clause you just quoted" is a property of the
+ * SPAN CONTRACT, which both arms are scored against, and not of either method.
+ * Wording it per arm would be inventing a difference in order to have one.
+ *
+ * The change applies to both arms for the reason the standing rule about never
+ * moving the control does NOT forbid: this is a change to what is ASKED, made
+ * identically on each side. Leaving B on the old clause convention while the
+ * judge moved to mentions would score the two against different targets and
+ * hand the compiled arm an unearned win on every exact-match and IoU column.
  *
  * The policy document itself is in the USER turn rather than here. The library
  * requires a system message at index 0 and nothing else, so either would load;
@@ -237,7 +261,7 @@ const BASELINE_B_SYSTEM_PROMPT = [
   "Report every span of the message that the policy restricts.",
   "",
   "Answer with JSON and nothing else, in exactly this shape:",
-  '{"findings":[{"entityType":"<id>","quote":"<text from the message>","confidence":<number 0 to 1>}]}',
+  '{"findings":[{"entityType":"<id>","quote":"<clause from the message>","mention":"<part of that clause>","confidence":<number 0 to 1>}]}',
   "",
   "Rules:",
   "- entityType must be one of the ids listed below. Never invent one.",
@@ -245,6 +269,10 @@ const BASELINE_B_SYSTEM_PROMPT = [
   "  its punctuation and capitalisation.",
   `- Quote the whole clause that carries the evidence, and at least ${MINIMUM_CANDIDATE_WORDS} words.`,
   "  A quote that occurs more than once in the message is discarded, not guessed at.",
+  "- mention must be copied from inside quote, character for character.",
+  "  Make mention the shortest run of words a rewrite must cover: a name, an identifier, a value.",
+  "- When nothing shorter than the whole clause will do, repeat quote as mention.",
+  "  A mention that occurs more than once inside quote is discarded, not guessed at.",
   "- Never quote anything that is not in the message.",
   '- If nothing in the message is restricted by the policy, answer {"findings":[]}.',
 ].join("\n");
@@ -285,17 +313,41 @@ export interface BaselineStats {
   /** Findings that only matched after the ladder peeled the quote's tail. */
   readonly rung2: number;
   /**
-   * Quotes the ladder refused, for any of its reasons: absent from the message,
-   * ambiguous at either rung, peeled to the word floor without a unique
-   * candidate, or every candidate boundary splitting a surrogate pair.
+   * EVIDENCE quotes the ladder refused, for any of its reasons: absent from the
+   * message, ambiguous at either rung, peeled to the word floor without a
+   * unique candidate, or every candidate boundary splitting a surrogate pair.
    *
    * B is the arm most likely to accumulate these and the reason is structural
    * rather than a defect: it is the only arm shown a SECOND document, so it is
    * the only arm that can quote the policy back instead of the message. A quote
    * from the policy resolves against nothing here, which is the correct answer
    * -- the alternative is a span of the user's text the model never pointed at.
+   *
+   * A finding lost at the MENTION step is NOT here -- its clause resolved. See
+   * `unresolvedMentions`.
    */
   readonly unresolvedQuotes: number;
+  /**
+   * Findings whose clause placed but whose MENTION did not: absent from the
+   * clause the model itself quoted, occurring more than once inside it, or on a
+   * boundary that would split a surrogate pair. The judge's counter of the same
+   * name counts the same event; `spans.ts` owns all three refusals, so the two
+   * arms cannot diverge on them.
+   *
+   * This one is NOT structurally worse for B. The mention is searched inside
+   * the already-placed clause, which is the same size whichever arm placed it,
+   * so the bigger haystack that makes `unresolvedQuotes` harder for B does not
+   * reach here.
+   */
+  readonly unresolvedMentions: number;
+  /**
+   * Findings whose mention resolved to the WHOLE evidence clause -- the model
+   * answering that no smaller span will do. Legitimate for a clause with no
+   * extractable entity, and the one path by which a model can restore the
+   * whole-clause action spans this contract exists to end, so it is counted
+   * rather than trusted. Read against `rung1 + rung2`.
+   */
+  readonly wholeClauseMentions: number;
   /**
    * Findings naming an entityType the IR does not declare. Models invent
    * labels; the judge's `unknownPredicates` counts the same event on the other
@@ -370,6 +422,8 @@ const ZERO_COUNTERS: Counters = {
   rung1: 0,
   rung2: 0,
   unresolvedQuotes: 0,
+  unresolvedMentions: 0,
+  wholeClauseMentions: 0,
   unknownEntityTypes: 0,
   duplicatesDropped: 0,
   repairAttempts: 0,
@@ -938,15 +992,25 @@ function collect(
       continue;
     }
 
-    const resolved = resolveQuote(text, finding.quote);
-    if (resolved === undefined) {
-      counters.unresolvedQuotes += 1;
+    // The same two-span placement the judge performs, from the same module, so
+    // the arms cannot drift on either the rules or the refusals. B's haystack
+    // for the CLAUSE is the whole message rather than one passage -- that
+    // asymmetry is intrinsic and is kept (see the module docblock) -- but the
+    // mention is then searched inside the placed clause, which is the same size
+    // for both arms.
+    const located = locateFinding(text, finding.quote, finding.mention);
+    if (!located.ok) {
+      if (located.refused === "evidence") counters.unresolvedQuotes += 1;
+      else counters.unresolvedMentions += 1;
       continue;
     }
+    const action = located.at.action;
 
     // `start` and `end` are integers, so the first two colons separate the key
-    // unambiguously whatever an entityType contains.
-    const key = `${resolved.start}:${resolved.end}:${entity.id}`;
+    // unambiguously whatever an entityType contains. Keyed on the ACTION span,
+    // which is what this finding carries: two clauses naming the same mention
+    // are one piece of evidence about one range of the message.
+    const key = `${action.start}:${action.end}:${entity.id}`;
     if (emitted.has(key)) {
       // Models restate a finding, and Plan 5's own probe corpus caught one
       // looping a single finding until its token budget ran out.
@@ -954,15 +1018,22 @@ function collect(
       continue;
     }
     emitted.add(key);
-    if (resolved.rung === 1) counters.rung1 += 1;
+    if (located.at.rung === 1) counters.rung1 += 1;
     else counters.rung2 += 1;
+    // After the duplicate check, with the rungs, so all three are over the
+    // findings this arm EMITTED -- see the judge, which counts it in the same
+    // place for the same reason.
+    if (located.at.actionIsWholeEvidence) counters.wholeClauseMentions += 1;
 
     out.push({
-      start: resolved.start,
-      end: resolved.end,
+      // The ACTION span. `applyActions` rewrites exactly this range, so the
+      // evidence clause must not land here: on a `redact` entityType that turns
+      // the sentence around a name into a marker.
+      start: action.start,
+      end: action.end,
       // Sliced by the ladder from the message, never assembled from the model's
       // quote: core requires text === message.slice(start, end).
-      text: resolved.text,
+      text: action.text,
       entityType: entity.id,
       // From the IR. Core re-derives it anyway in `resolveFindings`, so a value
       // invented here would be invisible until a policy changed it.

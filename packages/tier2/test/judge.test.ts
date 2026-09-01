@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Finding, JudgeRequest, PolicyIr, Segment } from "@sih/core";
-import { detect, loadPolicyIr } from "@sih/core";
+import { MemoryVaultStore, Vault, applyActions, detect, loadPolicyIr } from "@sih/core";
 import { DeadlineExpired, MINIMUM_CANDIDATE_WORDS } from "../src/index.js";
 import { WebLlmJudge } from "../src/judge.js";
 import { fakeEngine, predicateIr } from "./helpers.js";
@@ -50,11 +50,36 @@ const judged = async (
   priorFindings: Finding[] = [],
 ): Promise<Finding[]> => (await instance.judge(req(segments, ir, priorFindings))).findings;
 
-const hit = (quote = QUOTE, confidence = 0.9, predicateId = "client-relationship") => ({
+/**
+ * One scripted model finding.
+ *
+ * `mention` defaults to `quote`, which is the model's "no smaller span will do"
+ * answer -- so every test below that does not name a mention is asserting on
+ * the WHOLE-CLAUSE path, and its offsets are the clause's. That default is here
+ * because those tests are about budgets, scopes, aborts, repairs and dedupe,
+ * where the span is incidental and changing it would churn the fixtures without
+ * testing anything new.
+ *
+ * It also means the default path CANNOT show that `mention` is read at all: a
+ * `#collect` that ignored the field and emitted the evidence span would pass
+ * every one of them. `narrow` below is the helper that can, and the
+ * "the span a finding carries" block is where it is used.
+ */
+const hit = (
+  quote = QUOTE,
+  confidence = 0.9,
+  predicateId = "client-relationship",
+  mention = quote,
+) => ({
   predicateId,
   quote,
+  mention,
   confidence,
 });
+
+/** A finding that NARROWS: the clause locates, `mention` is what an action gets. */
+const narrow = (quote: string, mention: string, confidence = 0.9, predicateId = "client-relationship") =>
+  hit(quote, confidence, predicateId, mention);
 
 describe("WebLlmJudge", () => {
   it("emits the SHADOW entityType, not the bare predicate id", async () => {
@@ -832,7 +857,9 @@ describe("WebLlmJudge", () => {
       "segmentsSkipped",
       "truncatedResponses",
       "unknownPredicates",
+      "unresolvedMentions",
       "unresolvedQuotes",
+      "wholeClauseMentions",
     ]);
     const { calls, ...counters } = judge.stats;
     expect(calls).toEqual([]);
@@ -1462,5 +1489,179 @@ describe("message-scoped predicates", () => {
     });
     expect(result.degraded.filter((d) => d.reason === "scope-unjudged")).toEqual([]);
     expect(result.findings.map((f) => f.text)).toEqual([QUOTE]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The span a finding CARRIES
+//
+// GOLD is `pos-client-name-prose` from corpora/fixtures/smoke.jsonl, verbatim.
+// [43,59) is the span two independent annotators adjudicated for
+// `client-relationship-disclosure`, and MODEL_ANSWER is the span
+// `tier2-Phi-4-mini-instruct-q4f16_1-MLC` actually returned for it on
+// runs/slate-p-fin-02 -- [0,74) of a 74-character message, READ OUT of that
+// run's own records. Everything below is about which of those two a `Finding`
+// carries, because that is the string `applyActions` rewrites.
+// ---------------------------------------------------------------------------
+
+const GOLD = "Can you draft a contract renewal email for Tamarind Grocers before Friday?";
+const CLAUSE = "draft a contract renewal email for Tamarind Grocers";
+const MENTION = "Tamarind Grocers";
+const MODEL_ANSWER = GOLD;
+
+const goldSegments = (): Segment[] => [{ kind: "prose", start: 0, end: GOLD.length, text: GOLD }];
+
+describe("WebLlmJudge: the span an action rewrites", () => {
+  it("carries the MENTION's offsets, not the clause's", async () => {
+    const judge = new WebLlmJudge(fakeEngine({ findings: [narrow(CLAUSE, MENTION)] }), BUDGET);
+    const found = await judged(judge, goldSegments(), predicateIr());
+    expect(found).toHaveLength(1);
+    // The adjudicated gold span, written out rather than computed from GOLD, so
+    // this file is the oracle and a shifted fixture fails here.
+    expect({ start: found[0]!.start, end: found[0]!.end }).toEqual({ start: 43, end: 59 });
+    expect(found[0]!.text).toBe(MENTION);
+    // The clause DID locate it -- 8 is where CLAUSE starts -- and is not what
+    // the finding carries. Without this line the test passes for an
+    // implementation that never read `quote` at all.
+    expect(GOLD.indexOf(CLAUSE)).toBe(8);
+  });
+
+  it("counts a narrowed finding at its clause's rung and NOT as a whole-clause answer", async () => {
+    const judge = new WebLlmJudge(fakeEngine({ findings: [narrow(CLAUSE, MENTION)] }), BUDGET);
+    await judged(judge, goldSegments(), predicateIr());
+    expect(judge.stats.rung1).toBe(1);
+    expect(judge.stats.wholeClauseMentions).toBe(0);
+    expect(judge.stats.unresolvedMentions).toBe(0);
+  });
+
+  it("counts the model repeating its quote as a WHOLE-CLAUSE answer, and still emits it", async () => {
+    // The rule that keeps a clause-shaped predicate detectable, and the one
+    // that could quietly undo the whole split -- so it emits AND it counts.
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit(CLAUSE)] }), BUDGET);
+    const found = await judged(judge, goldSegments(), predicateIr());
+    expect(found).toHaveLength(1);
+    expect({ start: found[0]!.start, end: found[0]!.end }).toEqual({ start: 8, end: 59 });
+    expect(judge.stats.wholeClauseMentions).toBe(1);
+    expect(judge.stats.rung1).toBe(1);
+  });
+
+  it("REFUSES a mention outside its own quote, and files it apart from an unplaced quote", async () => {
+    // "Friday" is in the message and not in the clause. Resolving it anyway
+    // would emit a span the model never pointed at; the two counters are
+    // separate because the two events say different things about the model.
+    const judge = new WebLlmJudge(fakeEngine({ findings: [narrow(CLAUSE, "Friday")] }), BUDGET);
+    const found = await judged(judge, goldSegments(), predicateIr());
+    expect(found).toEqual([]);
+    expect(judge.stats.unresolvedMentions).toBe(1);
+    expect(judge.stats.unresolvedQuotes).toBe(0);
+    expect(GOLD).toContain("Friday");
+  });
+
+  it("REFUSES a mention the clause states twice", async () => {
+    const text = "Please note: Acme sued Acme last year, per counsel.";
+    const judge = new WebLlmJudge(
+      fakeEngine({ findings: [narrow("Acme sued Acme last year", "Acme")] }),
+      BUDGET,
+    );
+    const found = await judged(
+      judge,
+      [{ kind: "prose", start: 0, end: text.length, text }],
+      predicateIr(),
+    );
+    expect(found).toEqual([]);
+    expect(judge.stats.unresolvedMentions).toBe(1);
+  });
+
+  it("files an unplaceable CLAUSE under unresolvedQuotes and never looks at the mention", async () => {
+    const judge = new WebLlmJudge(
+      fakeEngine({ findings: [narrow("a clause that is nowhere in this message", MENTION)] }),
+      BUDGET,
+    );
+    expect(await judged(judge, goldSegments(), predicateIr())).toEqual([]);
+    expect(judge.stats.unresolvedQuotes).toBe(1);
+    expect(judge.stats.unresolvedMentions).toBe(0);
+  });
+
+  it("de-duplicates on the ACTION span, so two clauses over one mention are one finding", async () => {
+    // Two DIFFERENT clauses, both containing the name. One piece of evidence
+    // about one range of the message, so one finding -- keying the duplicate
+    // check on the clause instead would emit two overlapping redactions of the
+    // same words.
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        findings: [
+          narrow("draft a contract renewal email for Tamarind Grocers", MENTION),
+          narrow("email for Tamarind Grocers before Friday", MENTION, 0.5),
+        ],
+      }),
+      BUDGET,
+    );
+    const found = await judged(judge, goldSegments(), predicateIr());
+    expect(found).toHaveLength(1);
+    expect(judge.stats.duplicatesDropped).toBe(1);
+    expect(judge.stats.rung1).toBe(1);
+    expect(judge.stats.wholeClauseMentions).toBe(0);
+  });
+
+  it("counts a whole-clause answer ONCE when the model restates it, not once per restatement", async () => {
+    // The population claim `#collect` makes in as many words: the rungs, the
+    // duplicate drop and this counter are all over the findings the run
+    // EMITTED. FOUND BY MUTATION -- moving the count above the duplicate check
+    // survived the whole 314-test suite, because every fixture that repeats a
+    // finding asserts only `duplicatesDropped`.
+    //
+    // What it would cost: `wholeClauseMentions / (rung1 + rung2)` is how an arm
+    // that narrows nothing is spotted, and counting restatements makes that
+    // ratio exceed 1 for a model that loops -- which is the model Plan 5's
+    // probe corpus actually caught, one finding repeated until the token budget
+    // ran out.
+    const judge = new WebLlmJudge(
+      fakeEngine({ findings: [hit(CLAUSE), hit(CLAUSE), hit(CLAUSE, 0.4)] }),
+      BUDGET,
+    );
+    const found = await judged(judge, goldSegments(), predicateIr());
+    expect(found).toHaveLength(1);
+    expect(judge.stats.duplicatesDropped).toBe(2);
+    expect(judge.stats.rung1).toBe(1);
+    expect(judge.stats.wholeClauseMentions).toBe(1);
+    expect(judge.stats.wholeClauseMentions).toBeLessThanOrEqual(
+      judge.stats.rung1 + judge.stats.rung2,
+    );
+  });
+
+  it("REWRITES only the name -- the whole reason for the split, end to end", async () => {
+    // The shipping path, not the metric. `applyActions` rewrites exactly the
+    // span it is handed, and `pred:` entityTypes resolve to `redact`, so what
+    // this asserts is that a real message survives its own finding.
+    //
+    // The CONTROL below is not a hypothetical: MODEL_ANSWER is what
+    // `tier2-Phi-4-mini` returned on `pos-client-name-prose` under the previous
+    // prompt, which asked for the whole clause and nothing else. Both halves
+    // run the same code; only the model's answer differs.
+    const ir = loadPolicyIr(JSON.stringify(predicateIr()));
+    const rewrite = async (finding: ReturnType<typeof hit>): Promise<string> => {
+      const result = await detect({
+        ir,
+        provider: "claude",
+        text: GOLD,
+        config: { tier0: false, tier1: false, tier2: true },
+        engines: { tier2: new WebLlmJudge(fakeEngine({ findings: [finding] }), BUDGET) },
+      });
+      expect(result.findings.map((f) => f.action)).toEqual(["redact"]);
+      const applied = await applyActions(
+        GOLD,
+        result.findings,
+        new Vault(new MemoryVaultStore(), "test-install-salt"),
+        "conversation-1",
+        ir,
+      );
+      return applied.text;
+    };
+
+    expect(await rewrite(narrow(CLAUSE, MENTION))).toBe(
+      "Can you draft a contract renewal email for [REDACTED:pred:client-relationship] before Friday?",
+    );
+    // The whole-message answer, rewritten: nothing of the message survives.
+    expect(await rewrite(hit(MODEL_ANSWER))).toBe("[REDACTED:pred:client-relationship]");
   });
 });

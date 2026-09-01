@@ -61,6 +61,8 @@ function makeRecord(spec: {
       rung1: 0,
       rung2: 0,
       unresolvedQuotes: 0,
+      unresolvedMentions: 0,
+      wholeClauseMentions: 0,
       unknownPredicates: 0,
       duplicatesDropped: 0,
       repairAttempts: 0,

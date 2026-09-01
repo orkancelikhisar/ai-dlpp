@@ -40,6 +40,25 @@ describe("JUDGE_SCHEMA", () => {
     expect(Object.keys(props)).not.toContain("end");
   });
 
+  it("asks for a MENTION as well, and asks for it AFTER the quote", () => {
+    // Two spans, because locating a finding and acting on one want opposite
+    // lengths -- see spans.ts. The ORDER is asserted because it is not
+    // cosmetic: MEASURED on the shipped compiler, xgrammar emits the
+    // properties in declaration order as a fixed key sequence, so the logit
+    // mask makes the model write the clause before it commits to the mention.
+    // Both orders are the same object to every parser here, so nothing else in
+    // this repository would notice a swap.
+    const items = JUDGE_SCHEMA.properties.findings.items;
+    expect(Object.keys(items.properties)).toEqual([
+      "predicateId",
+      "quote",
+      "mention",
+      "confidence",
+    ]);
+    expect(items.required).toEqual(["predicateId", "quote", "mention", "confidence"]);
+    expect(items.properties.mention).toEqual({ type: "string" });
+  });
+
   it("bounds confidence in the GRAMMAR, so an out-of-range value is unemittable", () => {
     // MEASURED on the shipped grammar compiler -- web-llm inlines xgrammar's
     // wasm and @mlc-ai/web-xgrammar@0.1.27 carries the byte-identical binary
@@ -60,7 +79,7 @@ describe("JUDGE_SCHEMA", () => {
 
 describe("parseJudgeResponse", () => {
   it("accepts a well-formed response", () => {
-    const r = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"Acme Corp is our client","confidence":0.9}]}');
+    const r = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"Acme Corp is our client","mention":"Acme Corp","confidence":0.9}]}');
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.findings[0]!.quote).toBe("Acme Corp is our client");
   });
@@ -83,7 +102,7 @@ describe("parseJudgeResponse", () => {
   it("rejects an empty quote rather than passing it to the span ladder", () => {
     // An empty quote matches at offset 0 of every message. That is a finding
     // pointing at the wrong text, which is worse than no finding.
-    const r = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"","confidence":0.9}]}');
+    const r = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"","mention":"Acme","confidence":0.9}]}');
     expect(r.ok).toBe(false);
   });
 
@@ -102,8 +121,8 @@ describe("parseJudgeResponse", () => {
 // ---------------------------------------------------------------------------
 
 const WELL_FORMED =
-  '{"findings":[{"predicateId":"p1","quote":"Acme Corp is our client","confidence":0.9},' +
-  '{"predicateId":"p2","quote":"Project Halcyon ships in Q3","confidence":0.42}]}';
+  '{"findings":[{"predicateId":"p1","quote":"Acme Corp is our client","mention":"Acme Corp","confidence":0.9},' +
+  '{"predicateId":"p2","quote":"Project Halcyon ships in Q3","mention":"Halcyon","confidence":0.42}]}';
 
 describe("truncation is classified structurally, not by sniffing the V8 error text", () => {
   it("classifies EVERY truncation boundary of a real response as truncated", () => {
@@ -257,7 +276,7 @@ describe("confidence is validated here, because core says it must be", () => {
   // at the boundary". packages/core/src/detect/types.ts documents the field as
   // "0..1". This module is that boundary -- Task 6 receives an already-trusted
   // value and should not have to re-defend it.
-  const at = (c: string) => parseJudgeResponse(`{"findings":[{"predicateId":"p1","quote":"a","confidence":${c}}]}`);
+  const at = (c: string) => parseJudgeResponse(`{"findings":[{"predicateId":"p1","quote":"a","mention":"a","confidence":${c}}]}`);
 
   it("rejects a confidence that overflowed to Infinity", () => {
     // JSON has no Infinity literal, but 1e999 parses to one. A non-finite
@@ -286,8 +305,8 @@ describe("confidence is validated here, because core says it must be", () => {
   });
 
   it("exposes the same rule through JudgeResponseSchema directly", () => {
-    expect(JudgeResponseSchema.safeParse({ findings: [{ predicateId: "p", quote: "q", confidence: 0.5 }] }).success).toBe(true);
-    expect(JudgeResponseSchema.safeParse({ findings: [{ predicateId: "p", quote: "q", confidence: 2 }] }).success).toBe(false);
+    expect(JudgeResponseSchema.safeParse({ findings: [{ predicateId: "p", quote: "q", mention: "q", confidence: 0.5 }] }).success).toBe(true);
+    expect(JudgeResponseSchema.safeParse({ findings: [{ predicateId: "p", quote: "q", mention: "q", confidence: 2 }] }).success).toBe(false);
   });
 });
 
@@ -297,15 +316,40 @@ describe("quote and predicateId are usable by the span ladder", () => {
     // message -- the same "finding pointing at the wrong text" defect the empty
     // quote check exists to prevent, one character further along.
     for (const q of [" ", "\\t", "\\n  "]) {
-      const r = parseJudgeResponse(`{"findings":[{"predicateId":"p1","quote":"${q}","confidence":0.9}]}`);
+      const r = parseJudgeResponse(`{"findings":[{"predicateId":"p1","quote":"${q}","mention":"a","confidence":0.9}]}`);
       expect(r.ok, `quote ${JSON.stringify(q)} must be rejected`).toBe(false);
     }
   });
 
   it("rejects an empty predicateId", () => {
-    const r = parseJudgeResponse('{"findings":[{"predicateId":"","quote":"a","confidence":0.9}]}');
+    const r = parseJudgeResponse('{"findings":[{"predicateId":"","quote":"a","mention":"a","confidence":0.9}]}');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("schema");
+  });
+
+  it("REQUIRES a mention: a judge-shaped answer without one is a schema failure", () => {
+    // The field is required rather than optional on purpose. An optional one is
+    // a field a grammar lets the model skip, and a model that skips it every
+    // time silently restores the whole-clause action span this split exists to
+    // end -- with no counter able to see the difference, because there would be
+    // no finding to count.
+    const r = parseJudgeResponse('{"findings":[{"predicateId":"p1","quote":"a b c","confidence":0.9}]}');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema");
+  });
+
+  it("rejects an empty or whitespace-only mention, as it does a quote", () => {
+    // `mention` decides Finding.start and Finding.end. An empty one matches at
+    // offset 0 of its clause, which is a zero-width action span at the clause's
+    // first character -- so it is held to the SAME rule as `quote` and not a
+    // looser one. `locateFinding` refuses it again at the ladder; two layers,
+    // because a body replayed from a record never met the grammar.
+    for (const m of ["", " ", "\\t", "\\n  "]) {
+      const r = parseJudgeResponse(
+        `{"findings":[{"predicateId":"p1","quote":"a b c","mention":"${m}","confidence":0.9}]}`,
+      );
+      expect(r.ok, `mention ${JSON.stringify(m)} must be rejected`).toBe(false);
+    }
   });
 
   it("preserves duplicate findings instead of quietly deduplicating them", () => {
@@ -314,7 +358,7 @@ describe("quote and predicateId are usable by the span ladder", () => {
     // ran out, and Plan 5 records Qwen3.5-2B returning the same AWS key three
     // times. Deduplicating here would hide exactly what the "no duplicate-only
     // output" kill rule has to observe.
-    const dup = '{"predicateId":"p1","quote":"Halcyon","confidence":0.9}';
+    const dup = '{"predicateId":"p1","quote":"Halcyon renewal","mention":"Halcyon","confidence":0.9}';
     const r = parseJudgeResponse(`{"findings":[${dup},${dup},${dup}]}`);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.findings).toHaveLength(3);
@@ -427,7 +471,7 @@ describe("BASELINE_B_SCHEMA", () => {
     // The independent half: the shape above is only the right shape if this is
     // the shape. Asserted against literals, not against JUDGE_SCHEMA.
     const items = BASELINE_B_SCHEMA.properties.findings.items;
-    expect(items.required).toEqual(["entityType", "quote", "confidence"]);
+    expect(items.required).toEqual(["entityType", "quote", "mention", "confidence"]);
     expect(items.additionalProperties).toBe(false);
     expect(items.properties.confidence).toEqual({ type: "number", minimum: 0, maximum: 1 });
   });
@@ -477,8 +521,10 @@ describe("the two arms are parsed under identical rules", () => {
   }
 
   it("holds each arm to its OWN field name, so a schema swap is loud", () => {
-    const asJudge = '{"findings":[{"predicateId":"p","quote":"three whole words","confidence":0.5}]}';
-    const asBaseline = '{"findings":[{"entityType":"in-pan","quote":"three whole words","confidence":0.5}]}';
+    const asJudge =
+      '{"findings":[{"predicateId":"p","quote":"three whole words","mention":"words","confidence":0.5}]}';
+    const asBaseline =
+      '{"findings":[{"entityType":"in-pan","quote":"three whole words","mention":"words","confidence":0.5}]}';
     expect(parseJudgeResponse(asJudge).ok).toBe(true);
     expect(parseBaselineResponse(asBaseline).ok).toBe(true);
     // Cross-wired, both fail as a SCHEMA mismatch rather than silently
@@ -503,10 +549,10 @@ describe("the two arms are parsed under identical rules", () => {
     ];
     for (const [quote, confidence] of cases) {
       const judge = parseJudgeResponse(
-        `{"findings":[{"predicateId":"p","quote":${quote},"confidence":${confidence}}]}`,
+        `{"findings":[{"predicateId":"p","quote":${quote},"mention":${quote},"confidence":${confidence}}]}`,
       );
       const baseline = parseBaselineResponse(
-        `{"findings":[{"entityType":"e","quote":${quote},"confidence":${confidence}}]}`,
+        `{"findings":[{"entityType":"e","quote":${quote},"mention":${quote},"confidence":${confidence}}]}`,
       );
       expect(judge.ok, `${quote} / ${confidence}`).toBe(false);
       expect(baseline.ok, `${quote} / ${confidence}`).toBe(false);
@@ -517,10 +563,14 @@ describe("the two arms are parsed under identical rules", () => {
     // The other direction, so the test above cannot pass by rejecting
     // everything.
     expect(
-      parseJudgeResponse('{"findings":[{"predicateId":"p","quote":"three whole words","confidence":1}]}').ok,
+      parseJudgeResponse(
+        '{"findings":[{"predicateId":"p","quote":"three whole words","mention":"words","confidence":1}]}',
+      ).ok,
     ).toBe(true);
     expect(
-      parseBaselineResponse('{"findings":[{"entityType":"e","quote":"three whole words","confidence":1}]}').ok,
+      parseBaselineResponse(
+        '{"findings":[{"entityType":"e","quote":"three whole words","mention":"words","confidence":1}]}',
+      ).ok,
     ).toBe(true);
   });
 });

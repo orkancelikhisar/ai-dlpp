@@ -452,8 +452,26 @@ const Tier2StatsSchema = z.object({
   rung1: JUDGE_COUNTER,
   /** Findings whose quote only matched after the ladder peeled its tail. Weaker. */
   rung2: JUDGE_COUNTER,
-  /** Quotes the ladder refused, for any of its four reasons. */
+  /** EVIDENCE quotes the ladder refused, for any of its four reasons. */
   unresolvedQuotes: JUDGE_COUNTER,
+  /**
+   * Findings whose clause placed but whose MENTION did not: absent from the
+   * clause the model itself quoted, repeated inside it, or on a boundary that
+   * splits a surrogate pair. A real loss of detections, recorded so it is not
+   * absorbed into a lower recall number with no cause attached.
+   */
+  unresolvedMentions: JUDGE_COUNTER,
+  /**
+   * Findings whose mention resolved to the WHOLE evidence clause -- the model
+   * answering that no smaller span will do.
+   *
+   * Legitimate for a predicate about a clause with no extractable entity, and
+   * the one path by which a model can restore the whole-clause action spans the
+   * two-span contract exists to end. Read against `rung1 + rung2`: equal means
+   * this item's arm narrowed nothing, and every span on the row is a clause
+   * `applyActions` would rewrite whole.
+   */
+  wholeClauseMentions: JUDGE_COUNTER,
   /** Findings naming a predicate the IR does not declare. Models invent ids. */
   unknownPredicates: JUDGE_COUNTER,
   /** Findings resolving to a span this run had already emitted. */
@@ -547,6 +565,16 @@ const BaselineStatsSchema = z.object({
    * resolves against nothing, which is the correct answer.
    */
   unresolvedQuotes: JUDGE_COUNTER,
+  /**
+   * Findings whose clause placed but whose MENTION did not. The judge's counter
+   * of the same name counts the same event, and this one is NOT structurally
+   * worse for B: the mention is searched inside the already-placed clause,
+   * which is the same size whichever arm placed it, so B's bigger haystack does
+   * not reach here.
+   */
+  unresolvedMentions: JUDGE_COUNTER,
+  /** Findings whose mention resolved to the whole clause; see Tier2StatsSchema. */
+  wholeClauseMentions: JUDGE_COUNTER,
   /** Findings naming an entityType the IR does not declare. Models invent labels. */
   unknownEntityTypes: JUDGE_COUNTER,
   /** Findings resolving to a span this message had already emitted. */

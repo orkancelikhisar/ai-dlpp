@@ -10,6 +10,27 @@ import { z } from "zod";
  * schema-valid and passes the fidelity check. Offsets are recovered locally by
  * `spans.ts` instead, and which rung recovered them is reported.
  *
+ * `quote` AND `mention`, because locating a finding and acting on one want
+ * opposite lengths -- the argument and the measurement are in `spans.ts`'s
+ * module docblock, and this schema is what makes the model answer both. The
+ * shape of the ask is the point: `quote` is the enclosing clause, long enough
+ * to occur exactly once; `mention` is the part of it a rewrite must cover.
+ *
+ * `mention` sits AFTER `quote` in `properties`, and that is a decision about
+ * decoding order rather than about reading order. MEASURED on the shipped
+ * compiler by dumping the EBNF this object produces
+ * (`Testings._jsonSchemaToEBNF`): xgrammar folds the declaration order into the
+ * grammar as a FIXED key sequence --
+ *   root_prop_0_additional ::= "{" (("\"predicateId\"" ":" basic_string
+ *     root_prop_0_additional_part_0)) "}"
+ *   root_prop_0_additional_part_0 ::= "," "\"quote\"" ":" basic_string
+ *     root_prop_0_additional_part_1
+ *   root_prop_0_additional_part_1 ::= "," "\"mention\"" ":" basic_string ...
+ * -- so the logit mask makes the model emit the clause BEFORE it commits to the
+ * mention. Reordering these two properties would reverse that, and the
+ * reordering would be invisible: both orders are the same JSON object to every
+ * parser here.
+ *
  * The keyword set is held to what has already been shown to compile. Read off
  * webllm-probe `page/main2.ts`: its schema uses `type`, `properties`, `items`,
  * `required` and `additionalProperties` and nothing else, and Plan 5's recorded
@@ -30,6 +51,20 @@ import { z } from "zod";
  * `llm_chat` itself makes, under a watchdog OUTSIDE the process because a hang
  * inside wasm blocks Node's event loop. It compiled; nothing hung. That matters
  * because an uncompilable schema HANGS rather than erroring.
+ *
+ * RE-MEASURED when `mention` was added, the same way and on the same binary --
+ * hashed again here rather than taken on trust: 727,906 bytes, sha256
+ * `80eb86a9e61e8148a45d60973ec29ffb85077a3e42cee8f042e1452fffd63774`, present
+ * byte-identically in `@mlc-ai/web-xgrammar@0.1.27` and in the installed
+ * `@mlc-ai/web-llm@0.2.84`. THIS OBJECT, not a copy of it: it was dumped to
+ * JSON straight out of this module (Node 26's own type stripping, `import
+ * { JUDGE_SCHEMA } from "./src/schema.ts"`) and the dump was fed to
+ * `_jsonSchemaToEBNF`, `Grammar.fromJSONSchema` and `compileJSONSchema` under a
+ * watchdog OUTSIDE the process. All three returned. The three-property object
+ * this replaces ran alongside as a known-good control and returned too, and a
+ * deliberate non-schema ran as a negative control and THREW -- without the last
+ * one, a harness that reported OK for everything would be indistinguishable
+ * from a compiler that accepts everything.
  *
  * The bounds are not decoration and not merely a zod convenience. xgrammar
  * folds them into the grammar itself --
@@ -62,9 +97,10 @@ export const JUDGE_SCHEMA = deepFreeze({
         properties: {
           predicateId: { type: "string" },
           quote: { type: "string" },
+          mention: { type: "string" },
           confidence: { type: "number", minimum: 0, maximum: 1 },
         },
-        required: ["predicateId", "quote", "confidence"],
+        required: ["predicateId", "quote", "mention", "confidence"],
         additionalProperties: false,
       },
     },
@@ -97,14 +133,15 @@ export const JUDGE_SCHEMA = deepFreeze({
  * folds into the grammar so an out-of-range confidence is unemittable. Only a
  * property NAME differs.
  *
- * NOT re-measured on the grammar compiler. Task 2 put `JUDGE_SCHEMA` through
- * `compileJSONSchema` -- the call `llm_chat` makes -- under an external
- * watchdog, and it compiled. This object uses that same keyword set and differs
- * from it only in the text of one property name, which is a claim about this
- * object's SHAPE (and is the thing the test above checks); it is not a claim
- * that anyone ran the compiler on this object. If a future arm needs a keyword
- * `JUDGE_SCHEMA` does not already carry, run the Node harness again -- an
- * uncompilable schema hangs rather than erroring.
+ * MEASURED on the grammar compiler in its own right when `mention` was added,
+ * rather than inferred from the judge's. THIS OBJECT was dumped out of this
+ * module and put through `_jsonSchemaToEBNF`, `Grammar.fromJSONSchema` and
+ * `compileJSONSchema` -- the call `llm_chat` makes -- under a watchdog outside
+ * the process, beside the judge's as a control and a deliberate non-schema as a
+ * negative control that threw. All three modes returned for this object;
+ * nothing hung. If a future arm needs a keyword `JUDGE_SCHEMA` does not already
+ * carry, run the Node harness again -- an uncompilable schema hangs rather than
+ * erroring.
  */
 export const BASELINE_B_SCHEMA = deepFreeze({
   type: "object",
@@ -116,9 +153,10 @@ export const BASELINE_B_SCHEMA = deepFreeze({
         properties: {
           entityType: { type: "string" },
           quote: { type: "string" },
+          mention: { type: "string" },
           confidence: { type: "number", minimum: 0, maximum: 1 },
         },
-        required: ["entityType", "quote", "confidence"],
+        required: ["entityType", "quote", "mention", "confidence"],
         additionalProperties: false,
       },
     },
@@ -127,22 +165,35 @@ export const BASELINE_B_SCHEMA = deepFreeze({
   additionalProperties: false,
 } as const);
 
-// The two field validators both response schemas use, defined once. Shared
-// rather than repeated because the arms must be parsed under IDENTICAL
-// strictness: a `quote` rule that is tighter for one arm, or a `confidence`
-// bound that is looser for the other, would show up in the bake-off as a
+// The two field validators both response schemas use, defined once and applied
+// to all three of their string/number span fields. Shared rather than repeated
+// because the arms must be parsed under IDENTICAL strictness: a `quote` rule
+// that is tighter for one arm, a `mention` rule that is looser for the other,
+// or a `confidence` bound that differs, would show up in the bake-off as a
 // difference in findings and be read as a difference in the models.
 
 /**
+ * The rule BOTH span-bearing fields obey: `quote`, which locates a finding, and
+ * `mention`, which the action rewrites.
+ *
  * An empty quote matches at offset 0 of every message, which is a finding
  * pointing at the wrong text. A whitespace-only quote is the same defect one
  * character further along -- a single space matches in almost every message --
  * so the check is "has a non-whitespace character", not `min(1)`. It must NOT
  * be written as `z.string().trim().min(1)`: zod's .trim() rewrites the value,
- * and the span ladder needs the quote verbatim to find it in the message.
+ * and the span ladder needs the text verbatim to find it.
+ *
+ * `mention` is held to the SAME rule and not a looser one, and it is the field
+ * where an empty value does the most damage: `mention` decides `Finding.start`
+ * and `Finding.end`, so an empty one that matched at offset 0 of its clause
+ * would hand `applyActions` a zero-width span at the clause's first character.
+ * `locateFinding` refuses it a second time at the ladder -- `foldQuote` of a
+ * whitespace-only string is empty and `resolveMention` returns undefined on an
+ * empty needle -- so this is one of two layers, and the doubling is deliberate:
+ * a body replayed from a record does not pass through the grammar.
  */
-const QUOTE_FIELD = z.string().refine((s) => s.trim().length > 0, {
-  message: "quote must contain a non-whitespace character",
+const SPAN_TEXT_FIELD = z.string().refine((s) => s.trim().length > 0, {
+  message: "quote and mention must each contain a non-whitespace character",
 });
 
 /**
@@ -176,7 +227,8 @@ export const JudgeResponseSchema = z.object({
   findings: z.array(
     z.object({
       predicateId: z.string().min(1),
-      quote: QUOTE_FIELD,
+      quote: SPAN_TEXT_FIELD,
+      mention: SPAN_TEXT_FIELD,
       confidence: CONFIDENCE_FIELD,
     }),
   ),
@@ -197,7 +249,8 @@ export const BaselineResponseSchema = z.object({
   findings: z.array(
     z.object({
       entityType: z.string().min(1),
-      quote: QUOTE_FIELD,
+      quote: SPAN_TEXT_FIELD,
+      mention: SPAN_TEXT_FIELD,
       confidence: CONFIDENCE_FIELD,
     }),
   ),

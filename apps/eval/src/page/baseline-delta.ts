@@ -43,6 +43,8 @@ export function baselineDelta(before: BaselineStats, after: BaselineStats): Base
     rung1: after.rung1 - before.rung1,
     rung2: after.rung2 - before.rung2,
     unresolvedQuotes: after.unresolvedQuotes - before.unresolvedQuotes,
+    unresolvedMentions: after.unresolvedMentions - before.unresolvedMentions,
+    wholeClauseMentions: after.wholeClauseMentions - before.wholeClauseMentions,
     unknownEntityTypes: after.unknownEntityTypes - before.unknownEntityTypes,
     duplicatesDropped: after.duplicatesDropped - before.duplicatesDropped,
     repairAttempts: after.repairAttempts - before.repairAttempts,

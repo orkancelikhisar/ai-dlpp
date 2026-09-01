@@ -93,6 +93,8 @@ const ZERO_STATS: Omit<Stats, "calls"> = {
   rung1: 0,
   rung2: 0,
   unresolvedQuotes: 0,
+  unresolvedMentions: 0,
+  wholeClauseMentions: 0,
   unknownPredicates: 0,
   duplicatesDropped: 0,
   repairAttempts: 0,
@@ -920,7 +922,7 @@ describe("the semantic gates", () => {
   });
 
   it("counts a dropped duplicate as a quote that RESOLVED, in both halves", () => {
-    // READ from `WebLlmJudge.#collect`: `resolveQuote` runs BEFORE the
+    // READ from `WebLlmJudge.#collect`: `locateFinding` runs BEFORE the
     // duplicate check, so an unresolved quote is dropped first and a duplicate
     // is by definition a quote the ladder DID place. Leaving duplicates out
     // omitted them from the numerator and the denominator at once, which is how
@@ -936,13 +938,68 @@ describe("the semantic gates", () => {
     expect(outcome(r, "resolvable-rate").verdict).toBe("pass");
     // And the detail says where the 8 came from, so a reader can check it
     // against `ladder` without re-deriving the rule.
-    expect(outcome(r, "resolvable-rate").detail).toContain("8 of 10 quote(s) resolved");
+    expect(outcome(r, "resolvable-rate").detail).toContain("8 of 10 finding(s) resolved");
     expect(outcome(r, "resolvable-rate").detail).toContain("duplicate");
     // The gate can still fail, and on the thing it is named for: quotes the
     // ladder refused. Same 8 resolutions, more refusals.
     const unresolvable = report([judged([call()], { rung1: 1, duplicatesDropped: 7, unresolvedQuotes: 6 })]);
     expect(outcome(unresolvable, "resolvable-rate").observed).toBeCloseTo(8 / 14, 10);
     expect(outcome(unresolvable, "resolvable-rate").verdict).toBe("fail");
+  });
+
+  it("counts a finding lost at the MENTION as one the ladder did not place", () => {
+    // The second way a finding reaches no span since the arms started returning
+    // two of them: the clause placed and the mention did not. Both losses are
+    // findings the model produced that yielded nothing, which is exactly the
+    // population this rate is over -- so leaving `unresolvedMentions` out of
+    // the denominator lets an arm whose every mention fails report 1.000 while
+    // emitting nothing, and this gate would read as a clean bill of health for
+    // the arm it exists to catch.
+    //
+    // Same shape as the fixture above and the same arithmetic, with the two
+    // refusal counters split 1/1 rather than 2/0, so the rate is identical and
+    // only a denominator that DROPS one of them can move it.
+    const split = report([
+      judged([call()], { rung1: 1, duplicatesDropped: 7, unresolvedQuotes: 1, unresolvedMentions: 1 }),
+    ]);
+    expect(outcome(split, "resolvable-rate").sample).toBe(10);
+    expect(outcome(split, "resolvable-rate").observed).toBeCloseTo(0.8, 10);
+    // The two losses are reported apart in the detail, because they call for
+    // different responses: an unplaceable clause is a model quoting text that
+    // is not there, an unplaceable mention is a model quoting correctly and
+    // then pointing outside its own quote.
+    expect(outcome(split, "resolvable-rate").detail).toContain(
+      "1 had no placeable clause and 1 had a clause but no placeable mention",
+    );
+
+    // And the gate FAILS on mention losses alone, which is the assertion a
+    // dropped denominator term cannot survive: with only `unresolvedMentions`
+    // moving, the old denominator gives 6/6 = 1.000 and a pass.
+    const mentionsOnly = report([
+      judged([call()], { rung1: 6, rung2: 0, unresolvedQuotes: 0, unresolvedMentions: 9 }),
+    ]);
+    expect(outcome(mentionsOnly, "resolvable-rate").sample).toBe(15);
+    expect(outcome(mentionsOnly, "resolvable-rate").observed).toBeCloseTo(6 / 15, 10);
+    expect(outcome(mentionsOnly, "resolvable-rate").verdict).toBe("fail");
+  });
+
+  it("reports whole-clause mentions beside the rate without gating on them", () => {
+    // A whole-clause answer is legitimate -- some predicates have no smaller
+    // operative span -- so it is NOT a loss and NOT in either half of the rate.
+    // It is on the row because an arm at `wholeClauseMentions === rung1 + rung2`
+    // narrowed nothing, and every span it emitted is a clause `applyActions`
+    // would rewrite whole, which no other number here would show.
+    // 5 and not 4: `resolvable-rate` withholds a verdict below a sample of 5,
+    // so a smaller fixture would assert "not-measured" and prove nothing about
+    // gating.
+    const r = report([judged([call()], { rung1: 5, rung2: 0, wholeClauseMentions: 5 })]);
+    expect(r.ladder.wholeClauseMentions).toBe(5);
+    expect(outcome(r, "resolvable-rate").sample).toBe(5);
+    expect(outcome(r, "resolvable-rate").observed).toBe(1);
+    expect(outcome(r, "resolvable-rate").verdict).toBe("pass");
+    expect(outcome(r, "resolvable-rate").detail).toContain(
+      "5 of the resolved ones cover their whole clause",
+    );
   });
 
   it("scores duplicates against every finding that resolved to a span", () => {
@@ -1010,7 +1067,7 @@ describe("a gate does not rule on a sample too small to be about the arm", () =>
     // The OBSERVATION survives -- this is not the empty not-measured an arm
     // that made no call gets, and a reader must be able to tell them apart on
     // the row. The counts, the rate and both sample numbers are all present.
-    expect(g.detail).toContain("1 of 2 quote(s) resolved");
+    expect(g.detail).toContain("1 of 2 finding(s) resolved");
     expect(g.detail).toContain("0.500");
     expect(g.detail).toContain("HAS NOT RULED");
     expect(g.minSample).toBe(5);
@@ -1300,8 +1357,8 @@ describe("the p95 gate is the 95th percentile and not a neighbour of it", () => 
 });
 
 describe("every ladder counter reaches the report", () => {
-  it("sums all eleven across items, each at a distinct value", () => {
-    // Seven of the eleven were summed into `ArmGateReport.ladder` and asserted
+  it("sums all thirteen across items, each at a distinct value", () => {
+    // Seven of the original eleven were summed into `ArmGateReport.ladder` and asserted
     // nowhere, so a swapped or dropped `+=` shipped silently -- and `ladder` is
     // what the gate comments tell a reader to recompute a disputed rate from.
     // Distinct primes per counter, so no two can be confused for each other, and
@@ -1310,6 +1367,8 @@ describe("every ladder counter reaches the report", () => {
       rung1: 2,
       rung2: 3,
       unresolvedQuotes: 5,
+      unresolvedMentions: 47,
+      wholeClauseMentions: 53,
       duplicatesDropped: 7,
       unknownPredicates: 11,
       failedClosed: 13,
@@ -1338,6 +1397,8 @@ describe("every ladder counter reaches the report", () => {
       rung1: 4,
       rung2: 6,
       unresolvedQuotes: 10,
+      unresolvedMentions: 94,
+      wholeClauseMentions: 106,
       duplicatesDropped: 14,
       unknownLabels: 22,
       failedClosed: 26,
@@ -1375,7 +1436,9 @@ describe("every ladder counter reaches the report", () => {
       "unitsJudged",
       "unitsSkipped",
       "unknownLabels",
+      "unresolvedMentions",
       "unresolvedQuotes",
+      "wholeClauseMentions",
     ]);
   });
 });
@@ -2736,6 +2799,8 @@ describe("the gate report over an Approach-B arm", () => {
     rung1: 0,
     rung2: 0,
     unresolvedQuotes: 0,
+    unresolvedMentions: 0,
+    wholeClauseMentions: 0,
     unknownEntityTypes: 0,
     duplicatesDropped: 0,
     repairAttempts: 0,
@@ -2809,6 +2874,8 @@ describe("the gate report over an Approach-B arm", () => {
       rung1: 2,
       rung2: 3,
       unresolvedQuotes: 5,
+      unresolvedMentions: 47,
+      wholeClauseMentions: 53,
       duplicatesDropped: 7,
       unknownEntityTypes: 11,
       failedClosed: 13,
@@ -2823,6 +2890,13 @@ describe("the gate report over an Approach-B arm", () => {
       rung1: 4,
       rung2: 6,
       unresolvedQuotes: 10,
+      // The same two counters, the same primes and the same sums as the
+      // compiled arm's test above -- which is the point: `locateFinding` is one
+      // implementation and both arms report the same events under the same
+      // names, so a `normalizeArmStats` that read one arm's mention counters
+      // out of the other's slot would differ here.
+      unresolvedMentions: 94,
+      wholeClauseMentions: 106,
       duplicatesDropped: 14,
       // `unknownEntityTypes` on this arm, `unknownPredicates` on the other.
       unknownLabels: 22,

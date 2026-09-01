@@ -43,6 +43,8 @@ const BEFORE: JudgeStats = {
   rung1: 3,
   rung2: 1,
   unresolvedQuotes: 2,
+  unresolvedMentions: 18,
+  wholeClauseMentions: 19,
   unknownPredicates: 6,
   duplicatesDropped: 4,
   repairAttempts: 5,
@@ -69,6 +71,8 @@ const OWN = {
   rung1: 20,
   rung2: 21,
   unresolvedQuotes: 22,
+  unresolvedMentions: 37,
+  wholeClauseMentions: 38,
   unknownPredicates: 23,
   duplicatesDropped: 24,
   repairAttempts: 25,
@@ -91,6 +95,8 @@ const AFTER: JudgeStats = {
   rung1: BEFORE.rung1 + OWN.rung1,
   rung2: BEFORE.rung2 + OWN.rung2,
   unresolvedQuotes: BEFORE.unresolvedQuotes + OWN.unresolvedQuotes,
+  unresolvedMentions: BEFORE.unresolvedMentions + OWN.unresolvedMentions,
+  wholeClauseMentions: BEFORE.wholeClauseMentions + OWN.wholeClauseMentions,
   unknownPredicates: BEFORE.unknownPredicates + OWN.unknownPredicates,
   duplicatesDropped: BEFORE.duplicatesDropped + OWN.duplicatesDropped,
   repairAttempts: BEFORE.repairAttempts + OWN.repairAttempts,
@@ -139,7 +145,7 @@ describe("judgeDelta", () => {
     const delta = judgeDelta(BEFORE, { ...BEFORE, calls: [...BEFORE.calls] });
     expect(delta.calls).toEqual([]);
     const { calls: _calls, ...counters } = delta;
-    expect(Object.values(counters)).toEqual(new Array(17).fill(0));
+    expect(Object.values(counters)).toEqual(new Array(19).fill(0));
   });
 
   it("projects every counter JudgeStats declares, so an upstream addition cannot go unreported", () => {

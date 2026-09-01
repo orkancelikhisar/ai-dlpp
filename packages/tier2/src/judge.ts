@@ -14,7 +14,7 @@ import type {
 import { DeadlineExpired, MAX_BUDGET_MS } from "./cancel.js";
 import type { Tier2Completion, Tier2Engine } from "./engine.js";
 import { parseJudgeResponse, type JudgeResponse } from "./schema.js";
-import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
+import { MINIMUM_CANDIDATE_WORDS, locateFinding } from "./spans.js";
 
 /**
  * Tier 2: the semantic judge core has had a seam for since Plan 1.
@@ -143,39 +143,87 @@ export interface JudgeCallRecord {
  */
 export interface JudgeStats {
   /**
-   * Findings whose quote occurred exactly once in the segment, at the ladder's
-   * first rung. The strong case -- but "verbatim" would overstate it, and used
-   * to: rung 1 matches in FOLDED space, so a quote differing from the passage
-   * only in capitalisation, in the length of its whitespace runs, or in smart
-   * versus ASCII punctuation lands here too. MEASURED against this ladder:
-   * "NORTHWIND TRADERS RENEWAL" and "Northwind   Traders\n renewal" both
-   * resolve at rung 1 against a passage reading "Northwind Traders renewal". So
-   * an arm whose model rewrites case scores identically here to one that copies
-   * exactly, and this counter cannot tell them apart. `spans.ts` owns the fold.
+   * Findings whose EVIDENCE quote occurred exactly once in the segment, at the
+   * ladder's first rung. The strong case -- but "verbatim" would overstate it,
+   * and used to: rung 1 matches in FOLDED space, so a quote differing from the
+   * passage only in capitalisation, in the length of its whitespace runs, or in
+   * smart versus ASCII punctuation lands here too. MEASURED against this
+   * ladder: "NORTHWIND TRADERS RENEWAL" and "Northwind   Traders\n renewal"
+   * both resolve at rung 1 against a passage reading "Northwind Traders
+   * renewal". So an arm whose model rewrites case scores identically here to
+   * one that copies exactly, and this counter cannot tell them apart.
+   * `spans.ts` owns the fold.
+   *
+   * The EVIDENCE quote, not the span the finding carries. Since the two spans
+   * were split, `Finding.start/end` is the MENTION inside that clause, and the
+   * mention has no rungs -- it resolves exactly once or not at all. So a rung
+   * distribution is evidence about how well an arm quotes its clauses, and says
+   * nothing about how well it narrows them; `wholeClauseMentions` is the
+   * counter for that.
    */
   readonly rung1: number;
   /**
-   * Findings whose quote only matched after the ladder peeled its tail.
-   * Weaker evidence, and reported as such. NOT word-aligned: `spans.ts` peels
-   * one code point at a time, so a rung-2 span can end inside a word.
+   * Findings whose EVIDENCE quote only matched after the ladder peeled its
+   * tail. Weaker evidence, and reported as such. NOT word-aligned: `spans.ts`
+   * peels one code point at a time, so a rung-2 clause can end inside a word.
    */
   readonly rung2: number;
   /**
-   * Quotes the ladder refused, for ANY of its reasons. Four of them share this
-   * counter: the quote is absent from the segment; it occurs more than once, at
-   * either rung, and ambiguity is refused rather than guessed; the peel reached
-   * the word floor with no unique candidate; or every candidate's boundary
-   * would have split a surrogate pair. They share it because `resolveQuote`
-   * returns a bare `undefined` for all four and reports no reason -- telling
-   * them apart means widening its return type, which nothing downstream has yet
-   * asked for.
+   * EVIDENCE quotes the ladder refused, for ANY of its reasons. Four of them
+   * share this counter: the quote is absent from the segment; it occurs more
+   * than once, at either rung, and ambiguity is refused rather than guessed;
+   * the peel reached the word floor with no unique candidate; or every
+   * candidate's boundary would have split a surrogate pair. They share it
+   * because `resolveQuote` returns a bare `undefined` for all four and reports
+   * no reason -- telling them apart means widening its return type, which
+   * nothing downstream has yet asked for.
    *
    * `resolveQuote`'s fifth refusal, a quote that folds to nothing, cannot reach
    * this counter: `JudgeResponseSchema` requires a non-whitespace character in
    * `quote` and folding never empties such a string, so an empty quote is
    * refused a stage earlier and lands in `failedClosed` or `repairAttempts`.
+   *
+   * A finding lost at the MENTION step is NOT here -- its clause resolved. See
+   * `unresolvedMentions`, and read the two together when computing what share
+   * of a model's findings the ladder placed.
    */
   readonly unresolvedQuotes: number;
+  /**
+   * Findings whose clause placed but whose MENTION did not, so no action span
+   * exists and the finding was dropped.
+   *
+   * Three refusals share this counter, and they share it for the reason
+   * `unresolvedQuotes`' four do -- `resolveMention` returns a bare `undefined`:
+   *
+   * - the mention is absent from the clause the model itself quoted, which is
+   *   a self-contradiction and is refused rather than searched for elsewhere
+   *   (`locateFinding` rule 3 says why searching elsewhere is worse);
+   * - it occurs more than once inside that clause, and ambiguity is refused
+   *   rather than picked;
+   * - its boundary would split a surrogate pair.
+   *
+   * A NON-ZERO value here is a real loss of detections and should be read as
+   * one: the model found something, said where, and pointed at a mention that
+   * could not be placed. It is the price of failing closed, and it is on the
+   * row so that price is visible rather than absorbed into a lower recall
+   * number with no cause attached.
+   */
+  readonly unresolvedMentions: number;
+  /**
+   * Findings whose mention resolved to the WHOLE evidence clause -- the model
+   * answering that no smaller span will do.
+   *
+   * Legitimate: a predicate about a clause with no extractable entity has no
+   * shorter answer, and refusing those would drop real detections. But this is
+   * also the one path by which a model can restore the behaviour the two-span
+   * split exists to end, one finding at a time and invisibly, because such a
+   * finding is indistinguishable in `findings` from a correctly-narrow one.
+   *
+   * So it is counted. Read it against `rung1 + rung2`: an arm at
+   * `wholeClauseMentions === rung1 + rung2` narrowed nothing at all, and every
+   * span it emitted is a clause for `applyActions` to rewrite.
+   */
+  readonly wholeClauseMentions: number;
   /** Findings naming a predicate the IR does not declare. Models invent ids. */
   readonly unknownPredicates: number;
   /** Findings resolving to a span this run had already emitted. */
@@ -347,6 +395,8 @@ const ZERO_COUNTERS: Counters = {
   rung1: 0,
   rung2: 0,
   unresolvedQuotes: 0,
+  unresolvedMentions: 0,
+  wholeClauseMentions: 0,
   unknownPredicates: 0,
   duplicatesDropped: 0,
   repairAttempts: 0,
@@ -390,10 +440,11 @@ const ZERO_COUNTERS: Counters = {
  *
  * What that floor actually gates, since this comment used to overstate it and
  * the prompt repeated the overstatement to the model: it gates RUNG 2 only,
- * inside the peel loop. Rung 1 has no word check at all -- MEASURED against
- * this ladder, the one-word quote "Northwind" resolves at rung 1, and so does
- * the two-word "Northwind Traders", because both occur exactly once. Nothing
- * here refuses a short quote for being short.
+ * inside the peel loop, and only for the EVIDENCE quote. Rung 1 has no word
+ * check at all -- MEASURED against this ladder, the one-word quote "Northwind"
+ * resolves at rung 1, and so does the two-word "Northwind Traders", because
+ * both occur exactly once. Nothing here refuses a short quote for being short,
+ * and nothing applies the floor to `mention` at all (`resolveMention` says why).
  *
  * Asking for the whole clause anyway is still the right instruction, for two
  * reasons that are about uniqueness and recoverability rather than about a
@@ -404,6 +455,27 @@ const ZERO_COUNTERS: Counters = {
  * deploy p", but "the dXploy pin" -- perturbed one word earlier -- recovers
  * nothing at all, because reaching a matching prefix would take the candidate
  * below the floor and the descent stops there.
+ *
+ * ## Why the prompt asks for TWO spans
+ *
+ * Asking for the whole clause is right for LOCATING and wrong for ACTING, and
+ * the second half of that was measured rather than argued. `runs/slate-p-fin-02`
+ * asked exactly the instruction above, and 5 of the 13 `pred:` findings it
+ * produced span their whole message -- `pos-client-name-prose` [0,74) of 74 on
+ * two arms, where the adjudicated gold span is the 16-character name inside it.
+ * `Finding.start/end` is what `applyActions` rewrites and the action on that
+ * predicate is `redact`, so honouring that answer replaces the whole message
+ * with a marker. So the prompt asks for the clause AND for the mention inside
+ * it, `spans.ts` places the second inside the first, and `Finding.start/end`
+ * carries the second.
+ *
+ * The instruction that a mention may be the whole quote is deliberate and is
+ * the one that could undo all of this: a model that repeats the quote every
+ * time is back to the old behaviour. It is kept because some predicates are
+ * about a clause with no extractable entity and dropping those loses a real
+ * detection -- and it is COUNTED (`wholeClauseMentions`) rather than trusted,
+ * so an arm that never narrows is visible in its own row instead of invisible
+ * in its spans.
  *
  * What is deliberately NOT in this prompt: the IR's `examples` and
  * `counterExamples`. Those are authored strings that in at least one corpus
@@ -416,7 +488,7 @@ const SYSTEM_PROMPT = [
   "Report every span of the passage that satisfies one of the predicates.",
   "",
   "Answer with JSON and nothing else, in exactly this shape:",
-  '{"findings":[{"predicateId":"<id>","quote":"<text from the passage>","confidence":<number 0 to 1>}]}',
+  '{"findings":[{"predicateId":"<id>","quote":"<clause from the passage>","mention":"<part of that clause>","confidence":<number 0 to 1>}]}',
   "",
   "Rules:",
   "- predicateId must be one of the ids listed below. Never invent one.",
@@ -424,6 +496,10 @@ const SYSTEM_PROMPT = [
   "  its punctuation and capitalisation.",
   `- Quote the whole clause that carries the evidence, and at least ${MINIMUM_CANDIDATE_WORDS} words.`,
   "  A quote that occurs more than once in the passage is discarded, not guessed at.",
+  "- mention must be copied from inside quote, character for character.",
+  "  Make mention the shortest run of words a rewrite must cover: a name, an identifier, a value.",
+  "- When nothing shorter than the whole clause will do, repeat quote as mention.",
+  "  A mention that occurs more than once inside quote is discarded, not guessed at.",
   "- Never quote anything that is not in the passage.",
   '- If nothing in the passage satisfies any predicate, answer {"findings":[]}.',
 ].join("\n");
@@ -916,11 +992,25 @@ export class WebLlmJudge implements SemanticJudge {
       // never read; searching less would refuse a message-scoped quote that
       // straddles two segments, which is the whole reason the message call
       // exists.
-      const resolved = resolveQuote(passage.text, finding.quote);
-      if (resolved === undefined) {
-        this.#counters.unresolvedQuotes += 1;
+      //
+      // TWO spans come back and they are not interchangeable: the clause is
+      // evidence and is not stored, and the mention is what this finding's
+      // offsets carry. `spans.ts` owns both placements and both refusals, so
+      // Approach B applies the identical rules -- a bake-off in which the arms
+      // placed spans differently would be comparing the placement.
+      const located = locateFinding(passage.text, finding.quote, finding.mention);
+      if (!located.ok) {
+        // Two counters, because the two refusals say different things about the
+        // model: an unplaceable clause is a quote that is not in the passage,
+        // and an unplaceable mention is a model that quoted correctly and then
+        // pointed outside its own quote or at something the clause says twice.
+        // One counter for both would report a prompt-compliance failure and a
+        // repeated name as the same event.
+        if (located.refused === "evidence") this.#counters.unresolvedQuotes += 1;
+        else this.#counters.unresolvedMentions += 1;
         continue;
       }
+      const resolved = located.at;
 
       const entityType = shadowIdFor(finding.predicateId);
       // The PASSAGE's own start, which is 0 for the whole message -- so a
@@ -928,8 +1018,14 @@ export class WebLlmJudge implements SemanticJudge {
       // segment's start added to a message-relative offset produces a span that
       // slices cleanly, satisfies core's `text === message.slice(start, end)`
       // check, and points at the wrong words.
-      const start = passage.start + resolved.start;
-      const end = passage.start + resolved.end;
+      //
+      // The ACTION span, never the evidence clause. `applyActions` rewrites
+      // exactly the span it is given, so emitting the clause here is what turns
+      // a `redact` on a message-scoped predicate into a message replaced by a
+      // marker. COUNTED over `runs/slate-p-fin-02`: 5 of its 13 `pred:`
+      // findings span their whole message; see `spans.ts`'s module docblock.
+      const start = passage.start + resolved.action.start;
+      const end = passage.start + resolved.action.end;
       // `start` and `end` are integers, so the first two colons separate the
       // key unambiguously whatever an entityType contains.
       const key = `${start}:${end}:${entityType}`;
@@ -943,6 +1039,13 @@ export class WebLlmJudge implements SemanticJudge {
       emitted.add(key);
       if (resolved.rung === 1) this.#counters.rung1 += 1;
       else this.#counters.rung2 += 1;
+      // Counted beside the rungs and after the duplicate check, so the three
+      // are over the same population: findings this run actually EMITTED. A
+      // whole-clause mention counted at resolution time would include the
+      // duplicates the line above deliberately excludes, and the ratio
+      // `wholeClauseMentions / (rung1 + rung2)` -- which is how an arm that
+      // never narrows is spotted -- could then exceed 1.
+      if (resolved.actionIsWholeEvidence) this.#counters.wholeClauseMentions += 1;
 
       out.push({
         start,
@@ -950,7 +1053,7 @@ export class WebLlmJudge implements SemanticJudge {
         // Sliced by the ladder from the segment, never assembled from the
         // model's quote: core requires text === message.slice(start, end), and
         // a segment's text is by construction the message's slice.
-        text: resolved.text,
+        text: resolved.action.text,
         entityType,
         // From the IR's shadow entityType. Core re-derives severity anyway, so
         // a value invented here would be invisible until a policy changed it.

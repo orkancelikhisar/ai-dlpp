@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { MINIMUM_CANDIDATE_WORDS, buildFoldMap, resolveQuote } from "../src/spans.js";
+import {
+  MINIMUM_CANDIDATE_WORDS,
+  buildFoldMap,
+  locateFinding,
+  resolveMention,
+  resolveQuote,
+} from "../src/spans.js";
 
 const MSG = "Hi team,\n\nAcme  Corp is our biggest client. Please don't tell Acme Corp's rival.";
 
@@ -426,5 +432,202 @@ describe("resolveQuote: quotes real models actually returned", () => {
     // merely slices cleanly.
     expect(r!.start).toBe(PROBE.indexOf("Can someone pull"));
     expect(PROBE.slice(r!.start, r!.end)).toBe(r!.text);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two spans: `resolveMention` and `locateFinding`
+//
+// GOLD is `pos-client-name-prose` from corpora/fixtures/smoke.jsonl, verbatim,
+// and [43,59) is the span two independent annotators adjudicated for
+// `client-relationship-disclosure`. COUNTED over runs/slate-p-fin-02's 208
+// records: of the 13 `pred:` findings in them, five span their whole message,
+// including [0,74) of 74 on this item from `tier2-Phi-4-mini-instruct-q4f16_1-MLC`
+// and its `tier2only-` twin -- the answer that made every exact-match and IoU
+// column on sixteen arms structurally unreachable.
+// ---------------------------------------------------------------------------
+
+const GOLD = "Can you draft a contract renewal email for Tamarind Grocers before Friday?";
+const GOLD_SPAN = { start: 43, end: 59 } as const;
+
+describe("resolveMention", () => {
+  it("places a one-word mention, which the evidence ladder's floor would refuse", () => {
+    // The floor is 3 words and gates rung 2 of the EVIDENCE ladder only. A
+    // mention is one or two words by design, so reusing that ladder here would
+    // refuse the common case; this is the assertion that the exemption is real
+    // rather than described.
+    const clause = "email for Tamarind Grocers before";
+    const r = resolveMention(clause, "Tamarind");
+    expect(r).toEqual({ start: 10, end: 18, text: "Tamarind" });
+    expect(MINIMUM_CANDIDATE_WORDS).toBeGreaterThan(1);
+  });
+
+  it("folds case and whitespace, and slices the ORIGINAL clause", () => {
+    const clause = "for  Tamarind\nGrocers before";
+    const r = resolveMention(clause, "tamarind grocers");
+    expect(clause.slice(r!.start, r!.end)).toBe("Tamarind\nGrocers");
+    expect(r!.text).toBe("Tamarind\nGrocers");
+  });
+
+  it("refuses a mention the clause states twice, rather than picking one", () => {
+    // Neither choice protects the message: rewriting one occurrence leaves the
+    // other standing verbatim, so this is not a coin flip between two adequate
+    // answers, it is a coin flip between two inadequate ones.
+    expect(resolveMention("Acme merged with Acme last year", "Acme")).toBeUndefined();
+  });
+
+  it("refuses a mention that is not in the clause", () => {
+    expect(resolveMention("email for Tamarind Grocers", "Halcyon")).toBeUndefined();
+  });
+
+  it("does NOT peel: a mention with an appended full stop is refused, not shortened", () => {
+    // The trade this module takes deliberately: a mention that does not match
+    // exactly loses its finding rather than being shortened into the value it
+    // is supposed to cover.
+    expect(resolveMention("email for Tamarind Grocers before", "Tamarind Grocers.")).toBeUndefined();
+    const creds = "the AWS key AKIAIOSFODNN7EXAMPLE is in staging";
+    expect(resolveMention(creds, "AKIAIOSFODNN7EXAMPLF")).toBeUndefined();
+  });
+
+  it("refuses the FOUR-WORD perturbed mention that the evidence ladder would place", () => {
+    // The case that separates "no peel" from "the word floor happens to stop
+    // it", and the one this file did not have: FOUND BY MUTATION. Replacing
+    // `resolveMention` with the evidence ladder survived the whole 313-test
+    // suite, because every mention asserted above is one or two words -- below
+    // `MINIMUM_CANDIDATE_WORDS`, so rung 2 breaks on its first step and the two
+    // implementations agree by accident.
+    //
+    // At FOUR words rung 2 can descend to three and still be above the floor,
+    // and then the two disagree exactly where it matters. The mention below
+    // mistypes the credential's last character; the ladder peels one code point
+    // and finds "...AKIAIOSFODNN7EXAMPL" unique in the clause, which is an
+    // action span covering 19 of the key's 20 characters and leaving the
+    // twentieth in the message -- with the finding's text and offsets in
+    // perfect agreement, so `applyActions` and core both accept it.
+    const clause = "rotate the staging key AKIAIOSFODNN7EXAMPLE now";
+    const mention = "the staging key AKIAIOSFODNN7EXAMPLF";
+    expect(mention.split(" ")).toHaveLength(4);
+    // What the EVIDENCE ladder does with it, asserted rather than asserted
+    // about: this is the behaviour being refused, and it is real.
+    const laddered = resolveQuote(clause, mention);
+    expect(laddered?.rung).toBe(2);
+    expect(laddered!.text).toBe("the staging key AKIAIOSFODNN7EXAMPL");
+    expect(clause.slice(laddered!.end)).toBe("E now");
+    // And what the mention resolver does: nothing.
+    expect(resolveMention(clause, mention)).toBeUndefined();
+    expect(locateFinding("Please " + clause, clause, mention)).toEqual({
+      ok: false,
+      refused: "mention",
+    });
+  });
+
+  it("refuses a whitespace-only mention rather than matching at offset 0", () => {
+    // The same hazard `QUOTE_FIELD` guards in the schema, asserted at the
+    // ladder too: an empty needle matches at offset 0 of every clause.
+    expect(resolveMention("email for Tamarind Grocers", "   ")).toBeUndefined();
+    expect(resolveMention("email for Tamarind Grocers", "")).toBeUndefined();
+  });
+});
+
+describe("locateFinding", () => {
+  it("acts on the mention and locates by the clause -- the whole point", () => {
+    const r = locateFinding(GOLD, "draft a contract renewal email for Tamarind Grocers", "Tamarind Grocers");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect({ start: r.at.action.start, end: r.at.action.end }).toEqual(GOLD_SPAN);
+    expect(r.at.action.text).toBe("Tamarind Grocers");
+    // The evidence is the clause and is NOT the action span. Asserted with the
+    // adjudicated numbers rather than "narrower than", so a mention resolver
+    // that returned the clause minus a character would fail here.
+    expect(r.at.evidence.start).toBe(8);
+    expect(r.at.evidence.end).toBe(59);
+    expect(r.at.actionIsWholeEvidence).toBe(false);
+    expect(r.at.rung).toBe(1);
+  });
+
+  it("places a mention that is AMBIGUOUS in the passage but unique in its clause", () => {
+    // What the split actually buys, and it is not reachable by any one-span
+    // design: "Halcyon" occurs three times in the probe message, so the ladder
+    // refuses it outright -- MEASURED above, in the Phi-4-mini test. Inside the
+    // clause the model quoted, it occurs once.
+    expect(PROBE.split("Halcyon").length - 1).toBe(3);
+    expect(resolveQuote(PROBE, "Halcyon")).toBeUndefined();
+    const r = locateFinding(PROBE, "we can hold the Halcyon renewal until Q3", "Halcyon");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.at.action.text).toBe("Halcyon");
+    expect(PROBE.slice(r.at.action.start, r.at.action.end)).toBe("Halcyon");
+    // The SECOND occurrence, which is the one inside the quoted clause.
+    expect(r.at.action.start).toBe(PROBE.indexOf("Halcyon", PROBE.indexOf("Halcyon") + 1));
+  });
+
+  it("treats mention === quote as the model saying no smaller span exists", () => {
+    const clause = "draft a contract renewal email";
+    const r = locateFinding(GOLD, clause, clause);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.at.action).toEqual(r.at.evidence);
+    expect(r.at.actionIsWholeEvidence).toBe(true);
+  });
+
+  it("carries mention === quote through a RUNG 2 evidence resolution", () => {
+    // The case a re-search cannot serve, so the short-circuit is not a
+    // convenience: at rung 2 the placed clause is a PREFIX of what the model
+    // wrote, so the model's own quote is longer than the clause and cannot
+    // occur inside it. Without the short-circuit this finding is refused.
+    const quote = "draft a contract renewal email for Tamarind Grocers before Friday?!";
+    expect(GOLD.includes(quote)).toBe(false);
+    const r = locateFinding(GOLD, quote, quote);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.at.rung).toBe(2);
+    expect(r.at.actionIsWholeEvidence).toBe(true);
+    expect(r.at.action).toEqual(r.at.evidence);
+    expect(GOLD.slice(r.at.action.start, r.at.action.end)).toBe(r.at.action.text);
+  });
+
+  it("reports a whole-clause answer by SPAN even when the strings differ", () => {
+    // A mention that is the clause with different capitalisation is not
+    // `=== quote`, so it goes down the resolution path and lands on the whole
+    // clause anyway. Reporting `false` there would put a 0 in the counter that
+    // exists to catch a model which never narrows.
+    const clause = "draft a contract renewal email";
+    const r = locateFinding(GOLD, clause, clause.toUpperCase());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.at.actionIsWholeEvidence).toBe(true);
+    expect(r.at.action).toEqual(r.at.evidence);
+  });
+
+  it("REFUSES a mention that sits outside its own quote, and does not go looking", () => {
+    // The self-contradiction rule. "Friday" is in the message and not in the
+    // quoted clause; resolving it independently would produce a finding whose
+    // action span the model never pointed at, and would do it by the one- or
+    // two-word passage-wide search the evidence floor exists to refuse.
+    const r = locateFinding(GOLD, "draft a contract renewal email", "Friday");
+    expect(r).toEqual({ ok: false, refused: "mention" });
+    expect(GOLD).toContain("Friday");
+  });
+
+  it("REFUSES a mention the clause repeats, rather than picking an occurrence", () => {
+    const msg = "Please note: Acme sued Acme last year, per counsel.";
+    const r = locateFinding(msg, "Acme sued Acme last year", "Acme");
+    expect(r).toEqual({ ok: false, refused: "mention" });
+  });
+
+  it("never consults the mention when the clause will not place", () => {
+    // Reported as an EVIDENCE refusal, not a mention one: the two say different
+    // things about the model and share no counter.
+    const r = locateFinding(GOLD, "some clause that is nowhere in this message", "Tamarind Grocers");
+    expect(r).toEqual({ ok: false, refused: "evidence" });
+  });
+
+  it("refuses an ambiguous CLAUSE before it can be narrowed to a unique mention", () => {
+    // Rule 1 stated as a test: a unique mention does not rescue a clause the
+    // ladder refused. The mention here occurs exactly once in the message.
+    const msg = "Acme Corp is our client. Please do not tell Acme Corp about Tamarind.";
+    expect(resolveQuote(msg, "Acme Corp")).toBeUndefined();
+    const r = locateFinding(msg, "Acme Corp", "Tamarind");
+    expect(r).toEqual({ ok: false, refused: "evidence" });
   });
 });

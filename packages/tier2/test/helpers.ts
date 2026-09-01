@@ -120,6 +120,16 @@ export function predicateIr(options: PredicateIrOptions = {}): PolicyIr {
 export interface FakeFinding {
   readonly predicateId: string;
   readonly quote: string;
+  /**
+   * The span an action rewrites, inside `quote`.
+   *
+   * REQUIRED, with no default here, deliberately. A default of `quote` would
+   * make every existing test scripting a finding assert the whole-clause path
+   * without saying so, which is exactly the answer this field exists to make
+   * visible -- and the suite would then be blind to a judge that stopped
+   * reading `mention` at all. Call sites that mean "the whole clause" say so.
+   */
+  readonly mention: string;
   readonly confidence: number;
 }
 
