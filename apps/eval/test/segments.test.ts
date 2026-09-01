@@ -514,3 +514,94 @@ describe("the message unit, which is Approach B's", () => {
     expect(d.escalation.hasPriors).toBe(false);
   });
 });
+
+describe("the both-scopes unit, which is a compiled arm's on a policy declaring both", () => {
+  /**
+   * The third unit, and the one no policy in this repository has.
+   *
+   * `WebLlmJudge` partitions its predicates by the scope each was DECLARED in
+   * and calls once about the whole message plus once per selected segment. On a
+   * policy carrying both scopes neither `"segment"` nor `"message"` describes
+   * that: a segment sample omits the message call the arm certainly makes, and
+   * a message sample omits every segment call. So the sample here is the union,
+   * one entry per engine call, which is what `judgedUnitChars` claims to be.
+   *
+   * Every expectation below is hand-computed off `FENCED`'s own arithmetic --
+   * prose 14 + code 32 + prose 9 = 55, the two prose runs being what the
+   * predicate branch selects -- and none is read off `segments.ts`'s output.
+   */
+  it("samples the whole message AND every selected segment, one per engine call", () => {
+    const both = segmentSizeDistribution([item("f", FENCED)], {
+      hasPredicates: true,
+      unit: "segment+message",
+    });
+    expect(both.unit).toBe("segment+message");
+    // Three calls on one item: the message, then each of the two prose runs.
+    expect(both.count).toBe(3);
+    expect(both.perItem).toEqual({ p50: 3, p95: 3, max: 3, min: 3 });
+    // chars [55, 14, 9]: nearest-rank p50 is the 2nd smallest (14) and p95 the
+    // 3rd (55). The 55 is the whole message and is in NO segment sample.
+    expect(both.chars).toEqual({ p50: 14, p95: 55, max: 55, min: 9 });
+    expect(FENCED.length).toBe(55);
+    // words [10, 3, 2]: "Look at this:" is 3 and "Any idea?" is 2, and the
+    // message is all ten whitespace-delimited runs INCLUDING the fenced ones,
+    // which no selected segment contributes.
+    expect(both.words).toEqual({ p50: 3, p95: 10, max: 10, min: 2 });
+    // ASCII throughout, so bytes track characters here; the emoji case above is
+    // where the two separate.
+    expect(both.bytes).toEqual(both.chars);
+    // The corpus fact is counted the same way under every unit.
+    expect(both.segmentsTotal).toBe(3);
+
+    // THE CONTROL, and the reason this fixture was chosen: the two candidate
+    // rules give DIFFERENT answers on it. A both-scopes arm reported under the
+    // segment rule loses the largest sample it has and one call per item.
+    const segmentsOnly = segmentSizeDistribution([item("f", FENCED)], { hasPredicates: true });
+    expect(segmentsOnly.count).toBe(2);
+    expect(segmentsOnly.chars).toEqual({ p50: 9, p95: 14, max: 14, min: 9 });
+    expect(segmentsOnly.perItem).toEqual({ p50: 2, p95: 2, max: 2, min: 2 });
+  });
+
+  it("still costs one call on a message where escalation selects nothing", () => {
+    // The shape that made the CALL CEILING undercount to zero before it was
+    // read off the IR's scopes: a message of nothing but code, which the
+    // predicate branch excludes. The message call is made anyway, so the sample
+    // is one and not none.
+    const CODE_ONLY = "```\nconst k = 1;\n```";
+    expect(CODE_ONLY.length).toBe(20);
+    const both = segmentSizeDistribution([item("c", CODE_ONLY)], {
+      hasPredicates: true,
+      unit: "segment+message",
+    });
+    expect(both.count).toBe(1);
+    expect(both.perItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
+    expect(both.chars).toEqual({ p50: 20, p95: 20, max: 20, min: 20 });
+    // The control: under the segment rule this item selects nothing at all, so
+    // the two rules disagree on whether the arm makes a call here.
+    const segmentsOnly = segmentSizeDistribution([item("c", CODE_ONLY)], { hasPredicates: true });
+    expect(segmentsOnly.count).toBe(0);
+    expect(segmentsOnly.perItem).toEqual({ p50: 0, p95: 0, max: 0, min: 0 });
+  });
+
+  it("says escalation applied, because it chose the segment half of the sample", () => {
+    // `applies` is false only under `"message"`, where no `selectSegments` call
+    // is made at all. Here it decided which segments are in the sample; it did
+    // not decide the message entry, which is unconditional.
+    const both = segmentSizeDistribution([item("f", FENCED)], {
+      hasPredicates: true,
+      unit: "segment+message",
+      priorFindings: () => [UNCERTAIN_IN_FENCE],
+    });
+    expect(both.escalation).toEqual({
+      applies: true,
+      hasPredicates: true,
+      uncertainBelow: 0.8,
+      hasPriors: true,
+    });
+    // And the priors really do move the segment half: tier 0's uncertain
+    // finding re-admits the fenced block the predicate branch excluded, so the
+    // arm makes a fourth call.
+    expect(both.count).toBe(4);
+    expect(both.perItem).toEqual({ p50: 4, p95: 4, max: 4, min: 4 });
+  });
+});

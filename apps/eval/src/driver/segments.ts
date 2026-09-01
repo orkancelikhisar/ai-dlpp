@@ -78,11 +78,27 @@ import type { CorpusItem } from "./corpus.js";
  *
  * Declared here rather than in `bakeoff.ts` because this module is the lower
  * layer -- bakeoff imports segments and not the other way round -- and both
- * `FamilyShape.judgedUnit` and `SegmentSizeDistribution.unit` have to be the
- * same union or a family could be paired with a distribution measured over the
+ * `judgedUnitFor`'s return and `SegmentSizeDistribution.unit` have to be the
+ * same union or an arm could be paired with a distribution measured over the
  * other one.
+ *
+ * THREE members and not two, and the third is the reason the union was widened.
+ * `WebLlmJudge` partitions its predicates by the scope each was DECLARED in and
+ * calls once about the whole message plus once per selected segment, so on a
+ * policy declaring BOTH scopes neither of the first two members describes the
+ * work: a segment sample omits the whole-message call the arm certainly makes,
+ * and a message sample omits every segment call. `"segment+message"` is the
+ * union of the two samples, one entry per engine call, which is what
+ * `ArmGateReport.judgedUnitChars` claims to be.
+ *
+ * The alternative considered and rejected was keeping the sample segment-based
+ * and letting the row name the message call separately. It was rejected because
+ * it reproduces, one call smaller, exactly the defect the third member exists to
+ * close: `judgedUnitChars` would describe some of the arm's prompts and be read
+ * as all of them. No policy in this repository declares both scopes, so nothing
+ * here is measured on one -- see `bakeoff.test.ts`'s constructed IR.
  */
-export type JudgedUnit = "segment" | "message";
+export type JudgedUnit = "segment" | "message" | "segment+message";
 
 export interface SizeStats {
   readonly p50: number;
@@ -96,13 +112,18 @@ export interface SegmentSizeDistribution {
    * What ONE engine call covers on the arm this distribution describes, and
    * therefore what `chars`, `bytes`, `words` and `perItem` are counted over.
    *
-   * `"segment"` is the compiled judge: escalation picks segments and the judge
-   * makes one call per selected segment. `"message"` is Approach B, which does
-   * not escalate and does not segment -- it makes one call per message with the
-   * whole policy and the whole message in it.
+   * `"segment"` is the compiled judge on a policy whose semantic predicates are
+   * all segment-scoped: escalation picks segments and the judge makes one call
+   * per selected segment. `"message"` is Approach B, which does not escalate
+   * and does not segment -- it makes one call per message with the whole policy
+   * and the whole message in it -- and it is ALSO the compiled judge on a policy
+   * whose predicates are all message-scoped, which is what
+   * `policies/compiled/p-fin.ir.json` is. `"segment+message"` is the compiled
+   * judge on a policy declaring both. So this is a property of the family AND
+   * the policy, and `judgedUnitFor` in `bakeoff.ts` is where the two meet.
    *
-   * A FIELD rather than a caller's memory of what it asked for, because the two
-   * distributions are both well-formed and neither says so anywhere else. On
+   * A FIELD rather than a caller's memory of what it asked for, because the
+   * distributions are all well-formed and none says so anywhere else. On
    * `smoke.jsonl` a segment distribution reports a p50 of 62 characters and a
    * message distribution 78: a report carrying the wrong one puts a plausible
    * number under a gate whose ceiling was derived at the other unit.
@@ -153,7 +174,9 @@ export interface SegmentSizeDistribution {
    * `undefined` only when there are no items at all -- an item that selected
    * nothing is a 0 in the sample, not an absence from it. Under
    * `unit: "message"` every sample is 1 by construction, which is the whole of
-   * what "one call per message" costs.
+   * what "one call per message" costs; under `"segment+message"` every sample
+   * is the selected count PLUS one, and it is never 0 -- an item escalation
+   * selected nothing on still costs the whole-message call.
    */
   readonly perItem: SizeStats | undefined;
   /** The raw samples, so a percentile quoted anywhere else can be re-derived. */
@@ -173,14 +196,20 @@ export interface SegmentSizeDistribution {
    */
   readonly escalation: {
     /**
-     * Whether escalation SELECTED this distribution's sample at all.
+     * Whether escalation SELECTED any of this distribution's sample.
      *
-     * False exactly when `unit` is `"message"`: Approach B judges every message
-     * unconditionally, so `hasPredicates` and `uncertainBelow` below describe
+     * False exactly when `unit` is `"message"`: that arm judges every message
+     * unconditionally -- Approach B because it never escalates, a compiled arm
+     * on a message-only policy because its one call is about the whole message
+     * either way -- so `hasPredicates` and `uncertainBelow` below describe
      * inputs that decided nothing here. They are still recorded, because they
      * are what the PAIRED compiled family escalated on and a reader comparing
      * the two families needs both sides -- but read them as the other arm's
      * condition, not as this one's.
+     *
+     * True under `"segment+message"`, and the word is "any" for that case: the
+     * segment half of the sample is escalation's, and the one message entry per
+     * item is unconditional.
      */
     readonly applies: boolean;
     readonly hasPredicates: boolean;
@@ -236,8 +265,8 @@ export interface SegmentSizeOptions {
   readonly uncertainBelow?: number;
   /**
    * What one engine call covers on the arm being sized. Defaults to
-   * `"segment"`, which is the compiled judge and was the only arm this module
-   * had when it was written.
+   * `"segment"`, which is the compiled judge on a segment-scoped policy and was
+   * the only arm this module had when it was written.
    *
    * Under `"message"` escalation is not consulted: the sample is one whole
    * message per item, `perItem` is all 1s, and `escalation.applies` is false.
@@ -245,6 +274,14 @@ export interface SegmentSizeOptions {
    * `hasPriors` -- an Approach-B arm with tier 0 in front of it really does run
    * tier 0, and `gateReport` uses that flag to refuse a report carrying the
    * other family's distribution.
+   *
+   * Under `"segment+message"` both halves are measured: the whole message once
+   * per item and every selected segment, which is one entry per engine call
+   * `WebLlmJudge` would make on a policy declaring both scopes.
+   *
+   * This module does NOT decide which of the three an arm gets. That takes the
+   * family and the IR's declared scopes together, and `judgedUnitFor` in
+   * `bakeoff.ts` is where both are in hand.
    */
   readonly unit?: JudgedUnit;
 }
@@ -309,11 +346,13 @@ export function sizeStats(values: readonly number[]): SizeStats | undefined {
 }
 
 /**
- * Segment every item, keep the segments spec 4.1's escalation policy would
- * select, and describe their sizes.
+ * Segment every item, keep the passages the arm's model would actually be shown
+ * -- the segments spec 4.1's escalation policy selects, the whole message, or
+ * both -- and describe their sizes.
  *
- * Segments are measured once per item and once each: an item contributing two
- * selected segments contributes two samples, because that is two engine calls.
+ * Passages are measured once each: an item contributing two selected segments
+ * contributes two samples, because that is two engine calls, and under
+ * `"segment+message"` it contributes three.
  */
 export function segmentSizeDistribution(
   items: readonly CorpusItem[],
@@ -335,19 +374,25 @@ export function segmentSizeDistribution(
   const perItem: number[] = [];
   let segmentsTotal = 0;
 
+  // One passage's three sizes, pushed together so no unit can add a sample to
+  // one of the three arrays and not the others.
+  const measure = (text: string): void => {
+    chars.push(text.length);
+    bytes.push(utf8Length(text));
+    words.push(countWords(text));
+  };
+
   for (const item of items) {
     const segments = segmentText(item.text);
     segmentsTotal += segments.length;
     if (unit === "message") {
       // No escalation call at all, rather than one whose result is discarded.
-      // Approach B is shown the message whatever any tier below found, and
+      // This arm is shown the message whatever any tier below found, and
       // running `selectSegments` here to throw the answer away would leave a
       // reader of this loop believing the two units differ only in how the
       // samples are aggregated.
       perItem.push(1);
-      chars.push(item.text.length);
-      bytes.push(utf8Length(item.text));
-      words.push(countWords(item.text));
+      measure(item.text);
       continue;
     }
     // `uncertainSegmentStarts` is what turns findings into the segment starts
@@ -360,12 +405,18 @@ export function segmentSizeDistribution(
     // nothing uncertain. VERIFIED by calling it with a finding start.
     const uncertain = uncertainSegmentStarts(segments, priorFindings(item), uncertainBelow);
     const selected = selectSegments(segments, { hasPredicates, uncertain });
-    perItem.push(selected.length);
-    for (const segment of selected) {
-      chars.push(segment.text.length);
-      bytes.push(utf8Length(segment.text));
-      words.push(countWords(segment.text));
-    }
+    // The whole-message call FIRST, in the order `WebLlmJudge.judge` issues
+    // them: it makes the message call before entering the segment loop, and its
+    // docblock gives the reason (the message call is exactly one call, known
+    // before the run, so a tight budget must not leave the policy's message
+    // clause covered on short messages and skipped on long ones). Order is
+    // irrelevant to every statistic below -- `percentile` sorts -- and is kept
+    // because `samples` is exported for re-derivation and a reader checking it
+    // against a run's call rows should meet the same sequence.
+    const passages = unit === "segment+message" ? [item.text] : [];
+    for (const segment of selected) passages.push(segment.text);
+    perItem.push(passages.length);
+    for (const passage of passages) measure(passage);
   }
 
   return {
@@ -378,7 +429,7 @@ export function segmentSizeDistribution(
     words: sizeStats(words),
     perItem: sizeStats(perItem),
     samples: { chars, bytes, words, perItem },
-    escalation: { applies: unit === "segment", hasPredicates, uncertainBelow, hasPriors },
+    escalation: { applies: unit !== "message", hasPredicates, uncertainBelow, hasPriors },
   };
 }
 

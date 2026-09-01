@@ -14,6 +14,7 @@ import {
   familyShape,
   gateReport,
   itemDeadlineBound,
+  judgedUnitFor,
   planBakeoff,
   runBakeoff,
   type ArmFamily,
@@ -220,6 +221,13 @@ const RUN_CONTEXT = {
   // to, which only an IR knows. `runBakeoff` passes the IR it verified against
   // the page's own digest, so this is that array.
   entityTypes: SEMANTIC_IR.entityTypes,
+  // The fifth: the scopes the policy declares, which is what decides the unit
+  // this arm's model was shown. `SEMANTIC_IR`'s only predicate is
+  // segment-scoped, so every report built through this constant is a
+  // segment-judged one -- the shape the whole file assumed while the unit was a
+  // per-family constant. The message-scoped and both-scopes shapes are their
+  // own fixtures, in the judged-unit block.
+  semanticPredicates: SEMANTIC_IR.semanticPredicates,
   // The fifth, and the only one of the five the PAGE produces rather than the
   // driver: `runBakeoff` reads all three off the same `Tier2LoadReport` whose
   // `servedModelId` it has already refused the arm on. Three values that share
@@ -243,7 +251,12 @@ const RUN_CONTEXT = {
  */
 function distributionFor(family: ArmFamily) {
   const shape = familyShape(family);
-  if (shape.judgedUnit === "message") return shape.runsTier0 ? MESSAGES_B_TIER0 : MESSAGES_B;
+  // `runsCompiledJudge` and not the unit, because this file's default IR fixes
+  // the unit: `SEMANTIC_IR` declares one segment-scoped predicate, so the
+  // compiled families are judged per segment under `RUN_CONTEXT` and only the
+  // Approach-B families are judged per message. A report built here against a
+  // differently-scoped policy has to say so and pass its own distribution.
+  if (!shape.runsCompiledJudge) return shape.runsTier0 ? MESSAGES_B_TIER0 : MESSAGES_B;
   return shape.runsTier0 ? SEGMENTS_TIER0 : SEGMENTS;
 }
 
@@ -380,9 +393,9 @@ describe("the per-item wall-clock ceiling", () => {
     // "the call ceiling is the policy's, not only the family's" below is what
     // covers that.
     expect(PAIRED_IR.semanticPredicates.map((p) => p.scope)).toEqual(["segment"]);
-    expect(familyShape("compiled").judgedUnit).toBe("segment");
-    expect(familyShape("baseline-b").judgedUnit).toBe("message");
-    expect(familyShape("baseline-b-tier0").judgedUnit).toBe("message");
+    expect(judgedUnitFor("compiled", PAIRED_IR.semanticPredicates)).toBe("segment");
+    expect(judgedUnitFor("baseline-b", PAIRED_IR.semanticPredicates)).toBe("message");
+    expect(judgedUnitFor("baseline-b-tier0", PAIRED_IR.semanticPredicates)).toBe("message");
     const plan = planBakeoff({
       options: options({ families: ["compiled", "baseline-b"] }),
       ir: PAIRED_IR,
@@ -399,14 +412,14 @@ describe("the per-item wall-clock ceiling", () => {
   });
 });
 
-describe("the call ceiling is the policy's, not only the family's", () => {
+describe("the judged unit and the call ceiling are the policy's, not only the family's", () => {
   /**
-   * `familyShape` hardcodes `judgedUnit` per family, but how many calls a
-   * compiled arm makes is decided by the SCOPES the IR declares:
-   * `WebLlmJudge` partitions its predicates by scope and never enters a loop it
-   * has no predicate for, so a message-scoped clause costs exactly one call an
-   * item and a policy with no segment-scoped clause costs no segment call at
-   * all however many segments escalation selected.
+   * WHAT a compiled arm's model is shown, and how many times, is decided by the
+   * SCOPES the IR declares: `WebLlmJudge` partitions its predicates by scope and
+   * never enters a loop it has no predicate for, so a message-scoped clause
+   * costs exactly one whole-message call an item and a policy with no
+   * segment-scoped clause costs no segment call at all however many segments
+   * escalation selected.
    *
    * Every other planning test in this file runs `SEMANTIC_IR`, whose only
    * predicate is segment-scoped -- the one shape on which counting segments and
@@ -492,10 +505,13 @@ describe("the call ceiling is the policy's, not only the family's", () => {
     const compiledBoth = armOf(both, "compiled");
     const compiledSegmentOnly = armOf(segmentOnly, "compiled");
 
-    // The same corpus and the same escalation, so the segment term is identical
-    // and the only thing that moved is the declared scope.
-    expect(compiledBoth.segments.perItem).toEqual(compiledSegmentOnly.segments.perItem);
-    expect(compiledBoth.segments.perItem!.max).toBe(3);
+    // The same corpus and the same escalation, so the SEGMENT term is identical
+    // and the only thing that moved is the declared scope -- which adds exactly
+    // one judged unit per item, the whole-message call.
+    expect(compiledSegmentOnly.segments.perItem!.max).toBe(3);
+    expect(compiledBoth.segments.perItem!.max).toBe(4);
+    expect(compiledBoth.segments.perItem).toEqual({ p50: 2, p95: 4, max: 4, min: 2 });
+    expect(compiledSegmentOnly.segments.perItem).toEqual({ p50: 1, p95: 3, max: 3, min: 1 });
     expect(compiledSegmentOnly.maxCallsPerItem).toBe(6);
     expect(compiledBoth.maxCallsPerItem).toBe(8);
     // Approach B is shown the message whatever the policy declares.
@@ -514,8 +530,96 @@ describe("the call ceiling is the policy's, not only the family's", () => {
       items: ITEMS,
     });
     const compiled = plan.arms[0]!;
-    expect(compiled.segments.perItem!.max).toBe(3);
+    // What escalation would select under this arm's own tier-0 condition, which
+    // is unchanged by the scope the predicate is declared in -- the rules are
+    // the same rules. It is the number the ceiling used to be built from.
+    expect(SEGMENTS_TIER0.perItem!.max).toBe(3);
+    // And what the arm is actually planned over: one whole message per item.
+    expect(compiled.segments.unit).toBe("message");
+    expect(compiled.segments.perItem!.max).toBe(1);
     expect(compiled.maxCallsPerItem).toBe(2);
+  });
+
+  it("derives the judged unit from the family AND the policy's declared scopes", () => {
+    // The rule `familyShape` could not state, because it cannot see the policy.
+    // Three shapes, three answers, and the middle one is what
+    // `policies/compiled/p-fin.ir.json` is -- the only compiled policy here.
+    expect(PAIRED_IR.semanticPredicates.map((p) => p.scope)).toEqual(["segment"]);
+    expect(MESSAGE_ONLY_IR.semanticPredicates.map((p) => p.scope)).toEqual(["message"]);
+    expect(BOTH_SCOPES_IR.semanticPredicates.map((p) => p.scope)).toEqual(["segment", "message"]);
+    for (const family of ["compiled", "compiled-tier2-only"] as const) {
+      expect(judgedUnitFor(family, PAIRED_IR.semanticPredicates)).toBe("segment");
+      expect(judgedUnitFor(family, MESSAGE_ONLY_IR.semanticPredicates)).toBe("message");
+      expect(judgedUnitFor(family, BOTH_SCOPES_IR.semanticPredicates)).toBe("segment+message");
+    }
+    // Approach B is the CONTROL and reads no scope at all: it has no compiler,
+    // is shown the whole document and the whole message, and makes one call
+    // whatever the policy declares. A B arm whose unit moved with the policy
+    // would be B doing something the method does not do.
+    for (const family of ["baseline-b", "baseline-b-tier0"] as const) {
+      for (const ir of [PAIRED_IR, MESSAGE_ONLY_IR, BOTH_SCOPES_IR]) {
+        expect(judgedUnitFor(family, ir.semanticPredicates)).toBe("message");
+      }
+    }
+  });
+
+  it("refuses to name a unit for a compiled arm with no predicate to judge", () => {
+    // Not a defensive flourish: `WebLlmJudge.judge` returns an empty verdict
+    // before it touches the engine when the IR declares no predicate, so such an
+    // arm judges no unit of any kind and every answer here would be a made-up
+    // one. `planBakeoff` refuses that IR one layer up; this is the same refusal
+    // where the unit is named, for the direct caller that skipped the planner.
+    expect(() => judgedUnitFor("compiled", [])).toThrow(/declares no semanticPredicates/);
+    // B still answers, and correctly: it is shown the document rather than the
+    // predicates, so a policy with no semantic clause costs it exactly the same
+    // one call per message.
+    expect(judgedUnitFor("baseline-b", [])).toBe("message");
+  });
+
+  it("plans a both-scopes arm over the union of the two samples, one per call", () => {
+    // The hard case, and the decision it records: on a policy declaring both
+    // scopes no single existing unit describes the work, so the union is
+    // measured and the row SAYS it is a union. The rejected alternative was
+    // keeping the sample segment-based and naming the message call elsewhere,
+    // which leaves `judgedUnitChars` describing some of the arm's prompts while
+    // reading as all of them.
+    const plan = planBakeoff({
+      options: options({ families: ["compiled", "baseline-b"] }),
+      ir: BOTH_SCOPES_IR,
+      items: ITEMS,
+      policyText: POLICY_TEXT,
+    });
+    const compiled = plan.arms.find((a) => a.family === "compiled")!;
+    expect(compiled.segments.unit).toBe("segment+message");
+    // One sample per engine call: every selected segment PLUS one whole message
+    // an item. 13 items, 18 segments selected under the tier-0 condition.
+    expect(compiled.segments.count).toBe(SEGMENTS_TIER0.count + ITEMS.length);
+    expect(SEGMENTS_TIER0.count).toBe(18);
+    // THE ORACLE, and it is not this module's own arithmetic: the union's
+    // character samples are exactly the segment rule's samples plus one entry
+    // per item holding that ITEM'S OWN LENGTH, which is a fact about the corpus
+    // file. Under the rejected rule the second half is missing entirely.
+    const ascending = (xs: readonly number[]) => [...xs].sort((a, b) => a - b);
+    expect(ascending(compiled.segments.samples.chars)).toEqual(
+      ascending([...SEGMENTS_TIER0.samples.chars, ...ITEMS.map((i) => i.text.length)]),
+    );
+    // The maxima cannot separate the two rules on this corpus and the median
+    // can: the largest item is 153 characters and escalation selects a segment
+    // covering all of it, so both rules report max 153, while the medians are
+    // 62 (segments), 78 (messages) and 71 for the union of the two. The 71 is
+    // the nearest-rank 16th of the 31 samples the assertion above just pinned
+    // as a multiset, so it is that multiset's median and not a number read off
+    // this arm's own `chars` summary.
+    expect(compiled.segments.chars!.max).toBe(153);
+    expect(SEGMENTS_TIER0.chars!.max).toBe(153);
+    expect(compiled.segments.count).toBe(31);
+    expect(compiled.segments.chars!.p50).toBe(71);
+    expect(SEGMENTS_TIER0.chars!.p50).toBe(62);
+    expect(MESSAGES_B_TIER0.chars!.p50).toBe(78);
+    // Approach B is untouched by the second scope.
+    const b = plan.arms.find((a) => a.family === "baseline-b")!;
+    expect(b.segments.unit).toBe("message");
+    expect(b.segments.count).toBe(ITEMS.length);
   });
 
   it("plans a message-scoped arm on a corpus where escalation selects nothing", () => {
@@ -530,12 +634,25 @@ describe("the call ceiling is the policy's, not only the family's", () => {
       ir: MESSAGE_ONLY_IR,
       items: CODE_ONLY_ITEMS,
     });
+    // The precondition, and it has to be measured on the SEGMENT rule now that
+    // the arm is not planned under it: segments exist on this corpus, and
+    // escalation selects none of them under either tier-0 condition.
+    for (const priors of [undefined, { priorFindings: () => [] }]) {
+      const bySegment = segmentSizeDistribution(CODE_ONLY_ITEMS, {
+        hasPredicates: true,
+        ...priors,
+      });
+      expect(bySegment.segmentsTotal).toBe(2);
+      expect(bySegment.count).toBe(0);
+      expect(bySegment.perItem).toEqual({ p50: 0, p95: 0, max: 0, min: 0 });
+    }
     for (const arm of plan.arms) {
-      // The precondition, read off core's own escalation through the planner:
-      // segments exist, and none of them is selected.
+      // And the arm is planned over the unit it is actually shown: one whole
+      // message per item, which is the call it makes whatever escalation did.
+      expect(arm.segments.unit, arm.arm).toBe("message");
       expect(arm.segments.segmentsTotal, arm.arm).toBe(2);
-      expect(arm.segments.count, arm.arm).toBe(0);
-      expect(arm.segments.perItem, arm.arm).toEqual({ p50: 0, p95: 0, max: 0, min: 0 });
+      expect(arm.segments.count, arm.arm).toBe(2);
+      expect(arm.segments.perItem, arm.arm).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
       expect(arm.maxCallsPerItem, arm.arm).toBe(2);
     }
   });
@@ -1035,6 +1152,13 @@ describe("every ladder counter reaches the report", () => {
     // method-neutral names -- see `ArmGateReport.ladder` -- so this asserts the
     // MAPPING as well as the sum: a `normalizeArmStats` that read
     // `segmentsSkipped` where it means `segmentsJudged` swaps 29 and 31 here.
+    //
+    // `unitsJudged` is the one entry that is a SUM rather than a rename: the
+    // compiled judge has two kinds of judged unit and B has one, so it is
+    // `segmentsJudged + messageScopeJudged`, 2 x (29 + 41). The primes still
+    // separate every misread of it -- taking `segmentsSkipped` for
+    // `segmentsJudged` gives 144, `messageScopeCalls` for `messageScopeJudged`
+    // gives 132, and dropping either term gives 58 or 82.
     expect(r.ladder).toEqual({
       rung1: 4,
       rung2: 6,
@@ -1045,7 +1169,7 @@ describe("every ladder counter reaches the report", () => {
       truncatedResponses: 34,
       abortedResponses: 38,
       repairAttempts: 46,
-      unitsJudged: 58,
+      unitsJudged: 140,
       unitsSkipped: 62,
       // `undefined` and not 0 on a compiled arm: the judge has no message-budget
       // counter at all -- `detect` files a `budget-exhausted` notice instead --
@@ -2662,6 +2786,135 @@ describe("the gate report over an Approach-B arm", () => {
     expect(plain.judgedUnitChars).toEqual(withTier0.judgedUnitChars);
     expect(plain.scoring.tiersRun).toEqual([2]);
     expect(withTier0.scoring.tiersRun).toEqual([0, 2]);
+  });
+});
+
+describe("a gates row reports the unit its arm was actually judged on", () => {
+  /**
+   * The head-to-head's shape, on a gate report rather than in the planner.
+   *
+   * `policies/compiled/p-fin.ir.json` declares ONE predicate and declares it
+   * `scope: "message"`, so a COMPILED arm on it judges whole messages and makes
+   * no segment call at all. Every fixture elsewhere in this file runs
+   * `SEMANTIC_IR`, whose one predicate is segment-scoped, so none of them can
+   * tell "the unit is the family's" from "the unit is the family's and the
+   * policy's". These can, and the run they describe is the one
+   * `test/baseline.spec.ts` performs on a GPU.
+   */
+  const MESSAGE_SCOPED: PolicyIr["semanticPredicates"] = SEMANTIC_IR.semanticPredicates.map((p) => ({
+    ...p,
+    scope: "message",
+  }));
+
+  /** A compiled+tier0 arm's rows as the head-to-head produced them: one collected message call. */
+  const messageJudged = (over: Partial<Stats> = {}) =>
+    judged([call()], { segmentsJudged: 0, messageScopeCalls: 1, messageScopeJudged: 1, ...over }, {
+      config: { tier0: true, tier1: false, tier2: true, uncertainBelow: UNCERTAIN_BELOW },
+    });
+
+  const compiledOnMessagePolicy = (segments: Parameters<typeof gateReport>[0]["segments"]) =>
+    gateReport({
+      arm: "tier2-" + MODEL,
+      family: "compiled",
+      modelId: MODEL,
+      records: [messageJudged()],
+      ...RUN_CONTEXT,
+      semanticPredicates: MESSAGE_SCOPED,
+      segments,
+    });
+
+  it("names MESSAGE on a compiled arm whose policy declares only message scope", () => {
+    const r = compiledOnMessagePolicy(MESSAGES_B_TIER0);
+    expect(r.judgedUnit).toBe("message");
+    // The distribution is the MESSAGE one, which on this policy is the same
+    // population Approach B's arm is planned over -- and that identity is the
+    // finding, not a fixture accident: on a message-only policy the compiled
+    // judge and B are shown the same text, and only the policy document B
+    // carries makes the prompts differ.
+    expect(r.judgedUnitChars).toEqual({ p50: 78, p95: 153, max: 153, min: 48 });
+    expect(r.judgedUnitsPerItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
+    // The segment distribution this row used to carry, for contrast: a p50 of
+    // 62 characters and up to 3 units an item, for an arm that judged one whole
+    // message and no segment.
+    expect(SEGMENTS_TIER0.chars!.p50).toBe(62);
+    expect(SEGMENTS_TIER0.perItem!.max).toBe(3);
+    // The whole-message call is a JUDGED UNIT, so the column the planned
+    // distribution is compared against counts it. It read 0 here.
+    expect(r.ladder.unitsJudged).toBe(1);
+    expect(r.ladder.messageScopeJudged).toBe(1);
+    // And there is no segment loop on this arm, so there is no second unit for
+    // a stop to skip past: `undefined` rather than the 0 a segment-judged arm
+    // reports.
+    expect(r.ladder.unitsSkipped).toBeUndefined();
+    // The p95 gate says the ceiling was not derived at this arm's prompt size,
+    // which it did not say on a compiled row before.
+    expect(outcome(r, "p95-ttft").detail).toContain("this arm is judged per MESSAGE");
+    // Escalation decided nothing here and the row says so, rather than quoting
+    // a threshold that selected segments no call was made about.
+    expect(r.escalation.applies).toBe(false);
+    expect(r.escalation.uncertainBelow).toBe(UNCERTAIN_BELOW);
+  });
+
+  it("refuses the segment distribution its family alone would have named", () => {
+    // The defect this closes, as a refusal: the same arm, the same rows, and
+    // the distribution `familyShape` used to supply. It is well-formed, it is
+    // this corpus, it is even this arm's own tier-0 condition -- and it
+    // describes passages the model was never shown.
+    expect(() => compiledOnMessagePolicy(SEGMENTS_TIER0)).toThrow(
+      /is shown one message per engine call, but its size distribution was measured over segments/s,
+    );
+    // And the control: the same distribution under the same family is CORRECT
+    // when the policy declares the predicate segment-scoped, so the refusal is
+    // about the scopes and not about the family.
+    expect(SEMANTIC_IR.semanticPredicates.map((p) => p.scope)).toEqual(["segment"]);
+    expect(report([judged([call()])], "compiled").judgedUnit).toBe("segment");
+  });
+
+  it("reports a both-scopes arm on the union, and counts both scopes' judged units", () => {
+    // No policy in this repository declares both scopes; this is the
+    // constructed one. The row says `segment+message` rather than picking a
+    // half, and `unitsJudged` counts the segment calls and the message call
+    // together because both are units this arm's model was shown.
+    const both: PolicyIr["semanticPredicates"] = [
+      ...SEMANTIC_IR.semanticPredicates,
+      { id: "board-confidential", nlPredicate: "whether the message names a board decision", scope: "message" },
+    ];
+    const segments = segmentSizeDistribution(ITEMS, {
+      hasPredicates: true,
+      unit: "segment+message",
+      priorFindings: (item) => runTier0(SEMANTIC_IR, item.text, segmentText(item.text)),
+    });
+    const r = gateReport({
+      arm: "tier2-" + MODEL,
+      family: "compiled",
+      modelId: MODEL,
+      records: [messageJudged({ segmentsJudged: 2 })],
+      ...RUN_CONTEXT,
+      semanticPredicates: both,
+      segments,
+    });
+    expect(r.judgedUnit).toBe("segment+message");
+    expect(r.judgedUnitsPerItem).toEqual({ p50: 2, p95: 4, max: 4, min: 2 });
+    // Two segments and one message on the one item that has rows.
+    expect(r.ladder.unitsJudged).toBe(3);
+    expect(r.ladder.messageScopeJudged).toBe(1);
+    // This arm DOES have a segment loop, so the skip counter is a number again.
+    expect(r.ladder.unitsSkipped).toBe(0);
+    expect(r.escalation.applies).toBe(true);
+    // And neither single-unit distribution is accepted for it.
+    for (const wrong of [SEGMENTS_TIER0, MESSAGES_B_TIER0]) {
+      expect(() =>
+        gateReport({
+          arm: "tier2-" + MODEL,
+          family: "compiled",
+          modelId: MODEL,
+          records: [messageJudged({ segmentsJudged: 2 })],
+          ...RUN_CONTEXT,
+          semanticPredicates: both,
+          segments: wrong,
+        }),
+      ).toThrow(/is shown one segment\+message per engine call/);
+    }
   });
 });
 

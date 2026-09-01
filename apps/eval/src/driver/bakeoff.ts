@@ -162,7 +162,11 @@ export const GATES = {
    * rather than observed -- see that field). On an Approach-B arm the
    * derivation does not transfer at all: B's prompt carries the whole policy
    * document, so `judgedUnit` on the report is what says the threshold was set
-   * for different work. A reader who finds either one out of line with the
+   * for different work. It says the same, more mildly, on a COMPILED arm whose
+   * policy declares its predicates message-scoped: the ceiling was derived at a
+   * prompt built from ONE SEGMENT and such an arm is shown whole messages,
+   * which is what `policies/compiled/p-fin.ir.json` makes both compiled arms of
+   * the head-to-head. A reader who finds either one out of line with the
    * derivation knows the gate was applied to different work.
    *
    * ## AT THIS CORPUS SIZE THIS IS A MAXIMUM, NOT A p95
@@ -366,35 +370,6 @@ export interface FamilyShape {
   /** False for the Approach-B arms, which are their own `Detector`. */
   readonly runsCompiledJudge: boolean;
   /**
-   * What ONE engine call covers, as a property of the FAMILY alone.
-   *
-   * Approach B makes one call per MESSAGE, because the whole message is what
-   * its model is shown, and that is intrinsic to "simply prompting". The
-   * compiled judge's unit is NOT a property of the family: `WebLlmJudge` asks
-   * each predicate in the scope the policy DECLARED it in, so a segment-scoped
-   * clause costs one call per SELECTED SEGMENT (escalation decides which) and a
-   * message-scoped clause costs one call about the whole message. How much the
-   * two families differ in cost is therefore a property of the policy, and on
-   * `policies/compiled/p-fin.ir.json` -- the only compiled policy here, whose
-   * one predicate is message-scoped -- they do not differ at all: all four arms
-   * make one call per message (MEASURED, `test/baseline.spec.ts`, 3 answered
-   * calls on each of the four arms over three items).
-   *
-   * This field still says "segment" on both compiled families, which is why
-   * `judgedUnitChars` and `judgedUnitsPerItem` describe a segment distribution
-   * on a message-only policy; that gap is the README's carried risk and is not
-   * closed here. What no longer depends on it is the CALL CEILING:
-   * `maxCallsPerItem` below counts the message call off the IR's declared
-   * scopes rather than off this field, because a ceiling that undercounts is a
-   * deadline a legitimate item can exceed.
-   *
-   * It is also what `SegmentSizeDistribution.unit` has to agree with, which is
-   * why the union is imported from `segments.ts` rather than restated: a family
-   * paired with a distribution measured over the other unit would put a segment
-   * p50 under an arm whose model was shown whole messages.
-   */
-  readonly judgedUnit: JudgedUnit;
-  /**
    * Engine calls per judged unit, worst case.
    *
    * TWO on both families and for the same reason: the pinned recipe makes one
@@ -413,28 +388,24 @@ const FAMILY_SHAPES: Readonly<Record<ArmFamily, FamilyShape>> = {
     family: "compiled",
     runsTier0: true,
     runsCompiledJudge: true,
-    judgedUnit: "segment",
     callsPerJudgedUnit: 2,
   },
   "compiled-tier2-only": {
     family: "compiled-tier2-only",
     runsTier0: false,
     runsCompiledJudge: true,
-    judgedUnit: "segment",
     callsPerJudgedUnit: 2,
   },
   "baseline-b": {
     family: "baseline-b",
     runsTier0: false,
     runsCompiledJudge: false,
-    judgedUnit: "message",
     callsPerJudgedUnit: 2,
   },
   "baseline-b-tier0": {
     family: "baseline-b-tier0",
     runsTier0: true,
     runsCompiledJudge: false,
-    judgedUnit: "message",
     callsPerJudgedUnit: 2,
   },
 };
@@ -449,6 +420,68 @@ export function familyShape(family: ArmFamily): FamilyShape {
     );
   }
   return shape;
+}
+
+/**
+ * What ONE engine call covers on an arm: the family AND the policy, together.
+ *
+ * It cannot be either alone, and this function exists because a field on
+ * `FamilyShape` was the other alone. Approach B makes one call per MESSAGE
+ * because the whole message is what its model is shown, and that is intrinsic to
+ * "simply prompting" -- so B's answer here does not consult the predicates at
+ * all, and must not: a B unit that moved with the policy would be the control
+ * doing something the method does not do. The compiled judge's unit is NOT
+ * intrinsic to the family: `WebLlmJudge` asks each predicate in the scope the
+ * policy DECLARED it in, so a segment-scoped clause costs one call per SELECTED
+ * segment (escalation decides which) and a message-scoped clause costs one call
+ * about the whole message.
+ *
+ * The three compiled answers, and what each is:
+ *
+ *   - all predicates segment-scoped -> `"segment"`. `apps/eval/fixtures/semantic-ir.json`.
+ *   - all message-scoped            -> `"message"`. `policies/compiled/p-fin.ir.json`,
+ *     the only compiled policy in this repository, on which all four arms make
+ *     one call per message and the two families do not differ in cost at all
+ *     (MEASURED, `test/baseline.spec.ts`, 3 answered calls on each of four arms
+ *     over three items).
+ *   - both                          -> `"segment+message"`. NO policy here.
+ *
+ * ## The both-scopes decision, and what it rejected
+ *
+ * On a policy declaring both, one arm judges segments AND the message and no
+ * single one-unit answer is true. Three rules were available: widen the union so
+ * a row can say so; keep the distribution segment-based and carry the message
+ * call as a separate column; or refuse to plan such an arm. The union was
+ * chosen. The second reproduces, one call smaller, the exact defect this
+ * function closes -- `judgedUnitChars` would describe some of the arm's prompts
+ * while reading as all of them, which is the column a reader consults to check
+ * the p95 TTFT gate was applied to comparable work. The third would refuse an
+ * arm the planner can already size correctly (`maxCallsPerItem` has counted the
+ * message call off the declared scopes since the round before this one), so it
+ * would trade a reporting gap for a capability loss.
+ *
+ * @throws when a compiled family is asked about an IR with no semantic
+ *   predicate. `WebLlmJudge.judge` returns an empty verdict before it touches
+ *   the engine in that case, so the arm judges no unit of any kind and every
+ *   answer here would be invented. `planBakeoff` refuses such an IR outright,
+ *   one layer up and with a longer message; this is the same refusal for a
+ *   direct caller of `gateReport`.
+ */
+export function judgedUnitFor(
+  family: ArmFamily,
+  semanticPredicates: PolicyIr["semanticPredicates"],
+): JudgedUnit {
+  if (!familyShape(family).runsCompiledJudge) return "message";
+  const message = semanticPredicates.some((p) => p.scope === "message");
+  const segment = semanticPredicates.some((p) => p.scope === "segment");
+  if (message && segment) return "segment+message";
+  if (message) return "message";
+  if (segment) return "segment";
+  throw new Error(
+    `family "${family}" runs the compiled judge and the IR declares no semanticPredicates, so ` +
+      `WebLlmJudge returns an empty verdict before it touches the engine: the arm judges no ` +
+      `unit of any kind and there is none to name`,
+  );
 }
 
 /** The half of an arm's file name that is not the run id. Kept file-safe. */
@@ -950,12 +983,16 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
       segmentSizeDistribution(items, {
         hasPredicates: ir.semanticPredicates.length > 0,
         uncertainBelow,
-        // The unit ONE engine call covers on this family, so the distribution
-        // describes the work the arm does rather than the work its paired
-        // family does. An Approach-B arm is shown whole messages; a segment
-        // distribution under its name would put a p50 of 62 characters beside a
-        // p95 TTFT taken on a ~5.9 kB prompt.
-        unit: shape.judgedUnit,
+        // The unit ONE engine call covers on this arm -- the family AND this
+        // policy's declared scopes -- so the distribution describes the work the
+        // arm does rather than the work its paired family does, or the work a
+        // differently-scoped policy would have made it do. An Approach-B arm is
+        // shown whole messages; a segment distribution under its name would put
+        // a p50 of 62 characters beside a p95 TTFT taken on a ~5.9 kB prompt.
+        // And on `p-fin`, whose one predicate is message-scoped, a COMPILED arm
+        // is shown whole messages too -- which is the reading this argument was
+        // hardcoded per family and could not produce.
+        unit: judgedUnitFor(family, ir.semanticPredicates),
         // The key is OMITTED rather than set to `() => []` for a family that
         // does not run tier 0, so `escalation.hasPriors` records which of the
         // two conditions this distribution is. A supplied callback that returns
@@ -966,12 +1003,6 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
       }),
     );
   }
-
-  // Which scopes this policy declares a predicate in, which is what decides how
-  // many calls the compiled judge makes per item -- see `maxUnits` below.
-  // Computed once: it is a property of the IR, not of an arm.
-  const declaresMessageScope = ir.semanticPredicates.some((p) => p.scope === "message");
-  const declaresSegmentScope = ir.semanticPredicates.some((p) => p.scope === "segment");
 
   const arms: PlannedArm[] = [];
   const owners = new Map<string, string>();
@@ -993,39 +1024,38 @@ export function planBakeoff(input: PlanInput): BakeoffPlan {
       owners.set(path, arm);
       // One call per judged unit plus the single repair retry.
       //
-      // An Approach-B arm judges one unit per item -- the message -- whatever
-      // the message contains. A compiled arm's count comes off the POLICY as
-      // well as the family, because `WebLlmJudge` partitions its predicates by
-      // the scope each was DECLARED in and never enters a loop it has no
-      // predicate for: the segment-scoped half costs one call per SELECTED
-      // segment and the message-scoped half exactly one more, per item.
+      // ONE expression over every arm, because `segments` above is now measured
+      // over the unit `judgedUnitFor` derives from the family AND the policy's
+      // declared scopes -- so `perItem` already counts the whole-message call
+      // where the policy declares a message-scoped predicate, and counts no
+      // segment call where it declares no segment-scoped one. That is the same
+      // arithmetic the previous two-term expression did, off the same
+      // `ir.semanticPredicates`, one layer up: an Approach-B arm judges one unit
+      // per item whatever the message contains, a compiled arm judges its
+      // selected segments plus one message where both scopes are declared.
       //
-      // Read off `ir.semanticPredicates` and NOT off `shape.judgedUnit`, which
-      // is hardcoded per family and cannot see the policy. Counting segments
-      // alone undercounts a both-scopes policy by `callsPerJudgedUnit` calls an
-      // item -- and `deriveItemTimeoutMs` turns an undercounted ceiling into a
-      // deadline a legitimate item exceeds, which errors the row and stamps
-      // every later row of the arm `abandonedWorkInFlight`. On a message-only
-      // policy it also undercounts to ZERO whenever escalation selects nothing,
-      // which is the refusal below firing on an arm that in fact makes one
-      // whole-message call per item.
+      // The two failures it must keep avoiding, both measured before this was
+      // read off the scopes at all. Counting segments alone undercounts a
+      // both-scopes policy by `callsPerJudgedUnit` calls an item -- and
+      // `deriveItemTimeoutMs` turns an undercounted ceiling into a deadline a
+      // legitimate item exceeds, which errors the row and stamps every later row
+      // of the arm `abandonedWorkInFlight`. On a message-only policy it also
+      // undercounts to ZERO whenever escalation selects nothing, which is the
+      // refusal below firing on an arm that in fact makes one whole-message call
+      // per item.
       //
-      // The segment term is the MAXIMUM of this arm's own per-item sample,
-      // never the p95: at n = 13 those are the same rank anyway, and a ceiling
-      // built on a percentile would be a ceiling the worst message exceeds by
-      // construction.
-      const maxUnits = shape.runsCompiledJudge
-        ? (declaresSegmentScope ? (segments.perItem?.max ?? 0) : 0) +
-          (declaresMessageScope ? 1 : 0)
-        : 1;
-      const maxCallsPerItem = shape.callsPerJudgedUnit * maxUnits;
+      // The MAXIMUM of this arm's own per-item sample, never the p95: at n = 13
+      // those are the same rank anyway, and a ceiling built on a percentile
+      // would be a ceiling the worst message exceeds by construction.
+      const maxCallsPerItem = shape.callsPerJudgedUnit * (segments.perItem?.max ?? 0);
       if (maxCallsPerItem === 0) {
         throw new Error(
           `arm "${arm}" would make no engine call on any of the ${items.length} corpus items: ` +
-            `none of the IR's ${ir.semanticPredicates.length} semantic predicate(s) is ` +
-            `message-scoped, so this arm's only calls would be segment calls, and escalation ` +
-            `selected no segment anywhere (${segments.segmentsTotal} segment(s) in total). Its ` +
-            `file would be a complete, schema-valid transcript of a model that never ran.`,
+            `its judged unit is "${segments.unit}" because none of the IR's ` +
+            `${ir.semanticPredicates.length} semantic predicate(s) is message-scoped, so this ` +
+            `arm's only calls would be segment calls, and escalation selected no segment ` +
+            `anywhere (${segments.segmentsTotal} segment(s) in total). Its file would be a ` +
+            `complete, schema-valid transcript of a model that never ran.`,
         );
       }
       arms.push({
@@ -1598,11 +1628,16 @@ export interface ArmGateReport {
    * events are the same events, and a bake-off putting the two arms in one
    * table needs one column per event. So:
    *
-   *   - `unitsJudged` is `segmentsJudged` on a compiled arm and `messagesJudged`
-   *     on a B arm. It is the denominator every rate here is taken over, and it
-   *     is deliberately NOT named for either unit: `judgedUnit` on this report
-   *     says which one, and a column named `segmentsJudged` holding a count of
-   *     messages is the defect this rename exists to prevent.
+   *   - `unitsJudged` is `segmentsJudged + messageScopeJudged` on a compiled arm
+   *     and `messagesJudged` on a B arm: every call whose answer was collected,
+   *     in whatever unit(s) `judgedUnit` on this report names. It is deliberately
+   *     NOT named for either unit -- a column named `segmentsJudged` holding a
+   *     count of messages is the defect this rename exists to prevent -- and it
+   *     is a SUM rather than a rename on the compiled side because that judge
+   *     has two kinds of judged unit where B has one. It is the population
+   *     `judgedUnitsPerItem` predicts: a healthy compiled arm on a message-only
+   *     policy plans one unit an item and judges one an item, and while this
+   *     read `segmentsJudged` alone it planned one and reported zero.
    *   - `unknownLabels` is `unknownPredicates` on a compiled arm and
    *     `unknownEntityTypes` on a B arm -- a model inventing a label, in two
    *     vocabularies.
@@ -1641,14 +1676,18 @@ export interface ArmGateReport {
      * separate message-scope call to count and a 0 would be the positive claim
      * that it made none.
      *
-     * READ THESE BESIDE `unitsJudged`, which counts SEGMENTS. On a policy whose
+     * `messageScopeJudged` is the message HALF of `unitsJudged` on a compiled
+     * arm, not a column beside it: the two are added there. On a policy whose
      * predicates are all message-scoped -- `policies/compiled/p-fin.ir.json` is
-     * one -- the judge makes no segment call at all, so `unitsJudged` is 0 while
-     * `messageScopeJudged` carries the arm's whole coverage. A reader taking
-     * `unitsJudged: 0` as "this arm judged nothing" would be reading the wrong
-     * column for that policy; `judgedUnitChars` and `judgedUnitsPerItem` are
-     * planned per SEGMENT and describe work such an arm does not do, which is
-     * recorded as a carried risk rather than fixed here.
+     * one -- the judge makes no segment call at all, so this half is the whole
+     * of the arm's coverage and `judgedUnit` on this row reads "message" to say
+     * so. The two message-scope counters are NOT the same population and the
+     * difference is not the failure count: READ from `WebLlmJudge.#judgePassage`,
+     * `onCallIssued` fires inside the repair loop, so `messageScopeCalls` counts
+     * ENGINE CALLS including a repair retry, while `messageScopeJudged` counts
+     * message PASSAGES whose answer was collected. On a message-only policy the
+     * second is at most the item count and the first exceeds it by one per
+     * message that needed a repair.
      */
     readonly messageScopeCalls: number | undefined;
     readonly messageScopeJudged: number | undefined;
@@ -1668,12 +1707,14 @@ export interface ArmGateReport {
   /** Items carrying at least one notice of that reason. One item can carry two. */
   readonly degradedItems: Readonly<Record<DegradedReason, number>>;
   /**
-   * What one engine call covers on this arm: a selected SEGMENT on the compiled
-   * families, the whole MESSAGE on the Approach-B families.
+   * What one engine call covers on this arm: the whole MESSAGE on the
+   * Approach-B families, and on a compiled family whatever the POLICY's
+   * declared scopes make it -- a selected SEGMENT, the whole message, or both.
    *
    * On the report because the two fields below are counted over it and a
-   * character p50 does not say which. Checked against the arm's family rather
-   * than copied from it -- see `gateReport`.
+   * character p50 does not say which. Derived by `judgedUnitFor` from the family
+   * and the IR's `semanticPredicates`, and CHECKED against the distribution the
+   * plan measured rather than copied from either -- see `gateReport`.
    */
   readonly judgedUnit: JudgedUnit;
   /**
@@ -1684,16 +1725,21 @@ export interface ArmGateReport {
    * quoted in -- `promptTokens` is the same calls in the engine's tokens, and
    * neither converts into the other without the model's own tokenizer.
    *
-   * READ IT WITH `judgedUnit`, and on an Approach-B arm read the p95 TTFT gate's
-   * derivation as not applying: that ceiling was derived at a ~1.1 kB WHOLE
-   * PROMPT, of which 776 characters are the judge's fixed system turn and the
-   * rest is one segment. Approach B's prompt carries the whole policy document
-   * on every call -- `policies/p-fin.md` alone is 5,272 characters -- so a B
-   * arm's prompt is several times the size the threshold was set at, and its
-   * TTFT is not measuring the same thing. The gate is still computed and still
-   * reported, because suppressing it would hide the number; what must not
-   * happen is reading a B arm's `p95-ttft` verdict as a comparable one. The
-   * evidence for saying so is on the row: this field and `promptTokens`.
+   * READ IT WITH `judgedUnit`, and on any arm whose unit is not `"segment"` read
+   * the p95 TTFT gate's derivation as not applying: that ceiling was derived at
+   * a ~1.1 kB WHOLE PROMPT, of which 776 characters are the judge's fixed system
+   * turn and the rest is ONE SEGMENT. Approach B's prompt carries the whole
+   * policy document on every call -- `policies/p-fin.md` alone is 5,272
+   * characters -- so a B arm's prompt is several times the size the threshold
+   * was set at, and its TTFT is not measuring the same thing. A COMPILED arm on
+   * a message-only policy is a milder case of the same mismatch and it is the
+   * one the head-to-head actually runs: no policy document in the prompt, but
+   * the whole message rather than one segment of it (MEASURED over `p-fin` and
+   * three items: 297 prompt tokens against B's 1,433, on message passages whose
+   * median is 110 characters where the selected segments' was 45). The gate is
+   * still computed and still reported, because suppressing it would hide the
+   * number; what must not happen is reading such a verdict as a comparable one.
+   * The evidence for saying so is on the row: this field and `promptTokens`.
    *
    * PLANNED, not observed, and the name is only as true as that: it is computed
    * in Node by `planBakeoff` before the first model loads, from core's own
@@ -1768,10 +1814,27 @@ export interface GateReportInput {
    */
   readonly entityTypes: PolicyIr["entityTypes"];
   /**
+   * The IR's `semanticPredicates`, which is the only thing that knows what UNIT
+   * this arm's model was shown.
+   *
+   * The fifth thing no record carries, and it is here for the reason
+   * `entityTypes` above is: it decides a field of the report and the rows cannot
+   * supply it. `judgedUnitFor` reads the declared scopes off this array, and the
+   * check below refuses a distribution measured over a different unit -- so a
+   * compiled arm on a message-only policy can no longer be handed the segment
+   * distribution its family used to name. Only the SCOPES are read; nothing here
+   * looks at a predicate's id or text.
+   *
+   * It carries the same honest limitation `entityTypes` does: nothing here can
+   * check the array came from the IR the arm ran. `runBakeoff` passes the IR it
+   * has already proved is the page's.
+   */
+  readonly semanticPredicates: PolicyIr["semanticPredicates"];
+  /**
    * What the arm cost to stand up, as the PAGE reported it.
    *
-   * The fifth thing no record carries, and the one that breaks the pattern of
-   * the four above: those are numbers this driver chose, and these three are
+   * The sixth thing no record carries, and the one that breaks the pattern of
+   * the five above: those are numbers this driver chose, and these three are
    * observations the page made. `runBakeoff` holds the `Tier2LoadReport` they
    * come from -- it already reads `servedModelId`, `config` and `callBudgetMs`
    * off the same object and refuses the arm on any of the three -- so on the
@@ -1782,7 +1845,7 @@ export interface GateReportInput {
   /**
    * The axes the WHOLE run crosses, which no single arm's rows can show.
    *
-   * The sixth thing no record carries, and the reason it is here rather than
+   * The seventh thing no record carries, and the reason it is here rather than
    * inferred: a gates row names one arm, and "which methods did this run
    * compare" is a question about the other rows. `experimentScope` used to
    * answer it from a constant that named four methods and four models whatever
@@ -2070,10 +2133,15 @@ function scoringBoundary(
  *
  * The mapping, and it is a mapping and not a rename of convenience:
  *
- *   segmentsJudged      <-> messagesJudged        (the unit ONE call covers)
- *   unknownPredicates   <-> unknownEntityTypes    (a model inventing a label)
- *   segmentsSkipped     <-> (none)                (no second unit to skip)
- *   (none)              <-> messageBudgetExpiries (only B owns its own message clock)
+ *   segmentsJudged
+ *     + messageScopeJudged <-> messagesJudged        (the unit ONE call covers)
+ *   unknownPredicates      <-> unknownEntityTypes    (a model inventing a label)
+ *   segmentsSkipped        <-> (none)                (no second unit to skip)
+ *   (none)                 <-> messageBudgetExpiries (only B owns its own message clock)
+ *
+ * The first row is a SUM on the compiled side and not a rename, because the
+ * compiled judge has two kinds of judged unit and B has one. See `unitsJudged`
+ * below.
  *
  * `stops` folds the three stop counters, which is what the engine-poisoning walk
  * needs and all it needs: the walk asks WHETHER this item ended in a stop, and
@@ -2117,7 +2185,16 @@ function normalizeArmStats(record: RunRecord):
       truncatedResponses: judge.truncatedResponses,
       abortedResponses: judge.abortedResponses,
       repairAttempts: judge.repairAttempts,
-      unitsJudged: judge.segmentsJudged,
+      // BOTH scopes' collected calls, because both are judged units on this
+      // arm and `judgedUnit` says which. `segmentsJudged` alone was the whole
+      // count while the unit was a per-family constant, and on a message-only
+      // policy it reads 0 for an arm that judged every message -- a row saying
+      // `judgedUnit: "message"` beside `unitsJudged: 0` while its planned
+      // distribution held one unit per item. The message half stays visible on
+      // its own as `messageScopeJudged`; this is the total, and the two
+      // counters are parallel (each counts a call whose answer was collected,
+      // and neither counts a failed-closed one).
+      unitsJudged: judge.segmentsJudged + judge.messageScopeJudged,
       unitsSkipped: judge.segmentsSkipped,
       messageBudgetExpiries: undefined,
       messageScopeCalls: judge.messageScopeCalls,
@@ -2218,9 +2295,17 @@ export function gateReport(input: GateReportInput): ArmGateReport {
   // this report that do not come off the rows: they are the PLAN's distribution,
   // measured in Node before the arm ran. That is the closest population there
   // is -- no record carries the segments the page judged -- and it is only
-  // honest while the distribution describes THIS arm's work. Two ways it can
-  // stop doing so, both of which produce a perfectly well-formed report:
+  // honest while the distribution describes THIS arm's work. Three ways it can
+  // stop doing so, all of which produce a perfectly well-formed report:
   //
+  //   - the wrong UNIT for this policy. A compiled family's unit is not the
+  //     family's alone: on `policies/compiled/p-fin.ir.json`, whose one
+  //     predicate is message-scoped, a compiled arm is shown whole messages and
+  //     makes no segment call at all. A segment distribution there reports a
+  //     p50 of 45 characters and up to 3 units an item for an arm whose calls
+  //     were 110-character messages, one an item -- and it is the column a
+  //     reader consults to check the p95 TTFT ceiling was applied to comparable
+  //     work.
   //   - the other family's condition. On `smoke.jsonl` the tier-0 families
   //     select 18 segments and the tier-2-only families 17, with a per-message
   //     maximum of 3 against 2, so a report carrying the wrong one states a
@@ -2264,12 +2349,22 @@ export function gateReport(input: GateReportInput): ArmGateReport {
         `they are attributed to, which is the only question this bake-off exists to answer`,
     );
   }
-  if (segments.unit !== shape.judgedUnit) {
+  // The unit the FAMILY and the POLICY together make this arm's, against the
+  // unit its distribution was measured over. Both halves matter and each has
+  // caught a different swap: the family half stops a B arm's row carrying the
+  // compiled families' segment distribution, and the policy half stops a
+  // compiled arm on a message-only policy carrying one -- which is what every
+  // compiled row of the head-to-head did while the unit was a per-family
+  // constant, reporting a segment p50 of 45 characters for calls made on whole
+  // messages of 110.
+  const judgedUnit = judgedUnitFor(family, input.semanticPredicates);
+  if (segments.unit !== judgedUnit) {
     throw new Error(
-      `arm "${arm}" is family "${family}", whose model is shown one ${shape.judgedUnit} per ` +
-        `engine call, but its size distribution was measured over ${segments.unit}s; ` +
-        `judgedUnitChars and judgedUnitsPerItem would describe the other family's prompts, and ` +
-        `the p95 TTFT gate's stated prompt size with them`,
+      `arm "${arm}" is family "${family}" and, under the ` +
+        `${input.semanticPredicates.length} semantic predicate(s) this policy declares, its ` +
+        `model is shown one ${judgedUnit} per engine call, but its size distribution was ` +
+        `measured over ${segments.unit}s; judgedUnitChars and judgedUnitsPerItem would describe ` +
+        `prompts other than this arm's, and the p95 TTFT gate's stated prompt size with them`,
     );
   }
   if (segments.escalation.hasPriors !== shape.runsTier0) {
@@ -2464,10 +2559,13 @@ export function gateReport(input: GateReportInput): ArmGateReport {
           : "") +
         `Read it beside promptTokens and judgedUnitChars, because the ceiling was derived at a ` +
         `~1.1 kB prompt built from ONE SEGMENT` +
-        (segments.unit === "message"
-          ? `, and this arm is judged per MESSAGE, so that is not the prompt size this number was ` +
-            `taken at`
-          : ``) +
+        // CONDITIONAL on the arm's own unit, which is the family AND the
+        // policy: a compiled arm on a message-only policy is judged per message
+        // too, and the clause is as true there as on a B arm.
+        (segments.unit === "segment"
+          ? ``
+          : `, and this arm is judged per ${segments.unit.toUpperCase()}, so that is not the ` +
+            `prompt size this number was taken at`) +
         `; and beside run.latencyBudgetTimesCompilerDefault, because these calls were ` +
         `${budgetTaken}` +
         // CONDITIONAL, because the clause is only true above 1x. A run against
@@ -2551,7 +2649,13 @@ export function gateReport(input: GateReportInput): ArmGateReport {
       // Reported as `undefined` on the family that cannot produce the event.
       // See `ArmGateReport.ladder`: a 0 is a measurement and these two are not
       // measurable on the other method.
-      unitsSkipped: shape.judgedUnit === "segment" ? ladder.unitsSkipped : undefined,
+      // Off the UNIT and not off the family: the counter is the judge's
+      // `segmentsSkipped`, and an arm with no segment loop -- Approach B, or a
+      // compiled arm on a policy declaring only message-scoped predicates --
+      // has no second unit for a stop to skip past. `WebLlmJudge` computes
+      // `segmentCallsOwed` as 0 when no predicate is segment-scoped, so a 0
+      // here would be the positive claim that such an arm skipped none.
+      unitsSkipped: segments.unit === "message" ? undefined : ladder.unitsSkipped,
       messageBudgetExpiries: shape.runsCompiledJudge ? undefined : ladder.messageBudgetExpiries,
       messageScopeCalls: shape.runsCompiledJudge ? ladder.messageScopeCalls : undefined,
       messageScopeJudged: shape.runsCompiledJudge ? ladder.messageScopeJudged : undefined,
@@ -3120,6 +3224,11 @@ export async function runBakeoff(page: Page, options: BakeoffOptions): Promise<B
       // returned. So the tier each gold entityType is scored at comes from
       // the same artifact every record's `irHash` names.
       entityTypes: ir.entityTypes,
+      // And the same artifact's declared scopes, which is what decides the unit
+      // this arm's model was shown. Read from the IR rather than from
+      // `arm.segments`, so the check below is against an independent source
+      // rather than the distribution agreeing with itself.
+      semanticPredicates: ir.semanticPredicates,
       // Off the PLAN and not off `options`: `options.families` is optional and
       // `DEFAULT_FAMILIES` fills it in, so reading the options would let the
       // default slate's row claim a method it never planned. `plan.arms` is

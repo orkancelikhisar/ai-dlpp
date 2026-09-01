@@ -165,12 +165,12 @@ Eight plans; four are done.
 | 2 | Vault, pseudonymization, rehydration | **done** — Plans 1&nbsp;+&nbsp;2 built `packages/core`, which held 276 tests when Plan 2 closed. It holds 354 now: Plan 5 added the degraded channel, message scope and the escalation policy to it, so the count is no longer attributable to these two plans. |
 | 3 | Policy compiler + policy suite | **done** offline — 139 tests. The live compile against a frontier model is deferred by choice. |
 | 4 | Tier-1 span tagger + eval harness | **done** — `packages/tier1` 219 tests. `apps/eval` is shared with Plan 5 and its count is no longer attributable to one plan. |
-| 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (272 tests); the compiler-versus-prompting head-to-head runs, see below |
+| 5 | Tier-2 judge + in-context baseline | **in progress** — `packages/tier2` (281 tests); the compiler-versus-prompting head-to-head runs, see below |
 | 6 | Extension (WXT, MV3) | not started |
 | 7 | Corpus pipeline | not started |
 | 8 | Evaluation and analysis | not started |
 
-**1,311 tests** — 1,229 vitest (core 354, tier2 272, eval 245, tier1 219, compiler 139) plus 82
+**1,329 tests** — 1,247 vitest (core 354, tier2 281, eval 254, tier1 219, compiler 139) plus 82
 Playwright specs against real Chrome, of which 81 run and **one is skipped by default**: the
 four-model bake-off, which is a deliberate command rather than part of a suite run (see below).
 Every figure here is off one `pnpm -r test` and one `playwright test --list`, the Playwright half
@@ -237,24 +237,34 @@ Typechecking clean across five projects.
   (one model, four method families, three items). The slate spec is skipped unless
   `SIH_BAKEOFF=1`, and a skipped Playwright suite still exits 0 — "the specs passed" has never
   meant "the bake-off ran".
-- **The eval's judged unit is a property of the FAMILY, and it is now a property of the policy
-  too.** `SemanticPredicate.scope` is honoured: the judge asks message-scoped predicates once
-  about the whole message and segment-scoped ones per segment, so a policy declaring only
-  message-scoped clauses makes the compiled arm judge *messages*, not segments.
-  `policies/compiled/p-fin.ir.json` is exactly that policy. `familyShape()` still hardcodes
-  `judgedUnit: "segment"` for the compiled families, so on such a policy `judgedUnitChars` and
-  `judgedUnitsPerItem` on a gate report describe a segment distribution nobody was shown, and
-  `ladder.unitsJudged` reads 0 while the arm judged every message. The row carries
-  `ladder.messageScopeCalls` / `messageScopeJudged` beside them, and `baseline.spec.ts` asserts
-  both, so nothing here is silent — but a reader who takes `judgedUnitChars` as the prompt size
-  the p95 TTFT was taken at is reading the wrong column on a message-only policy. Fixing it
-  means deriving the judged unit from the family *and* the IR's declared scopes, which reaches
-  `segmentSizeDistribution` and `gateReport`; it is unowned. What is no longer part of it is
-  `planBakeoff`'s **call ceiling**: `maxCallsPerItem` now counts the whole-message call off the
-  IR's declared scopes, because the labelling gap is cosmetic where the arithmetic gap is not —
-  an undercounted ceiling is an item deadline a legitimate item exceeds, and it also made the
-  planner refuse a message-scoped arm outright on any corpus where escalation selects no
-  segment, while both Approach-B arms planned and ran.
+- **The eval's judged unit is now derived from the family *and* the policy, and one shape of
+  policy has never been run.** `SemanticPredicate.scope` is honoured: the judge asks
+  message-scoped predicates once about the whole message and segment-scoped ones per segment, so
+  a policy declaring only message-scoped clauses makes the compiled arm judge *messages*, not
+  segments. `policies/compiled/p-fin.ir.json` is exactly that policy, and `judgedUnitFor()` now
+  reads the unit off the family and the IR's declared scopes together, so `judgedUnit`,
+  `judgedUnitChars`, `judgedUnitsPerItem` and `escalation` on a gate report describe the
+  passages the arm's model was really shown; `ladder.unitsJudged` counts both scopes' collected
+  calls; and `gateReport` refuses a distribution measured over any other unit. What that moved
+  on the head-to-head's compiled rows, MEASURED over the same three-item slice `baseline.spec.ts`
+  runs and nothing else: `judgedUnit` "segment" → "message", `judgedUnitChars`
+  {min 28, p50 45, max 66} on the tier-0 arm and {min 28, p50 45, max 65} on the tier-2-only one
+  → {min 48, p50 110, max 133} on both (which is B's own distribution — on this policy both
+  methods are shown the same three messages and only B is also shown the document),
+  `judgedUnitsPerItem` {p50 2, max 3} and {p50 2, max 2} → all 1s, `ladder.unitsJudged` 0 → 3,
+  `ladder.unitsSkipped` 0 → `undefined`. The two ladder *before* values are that same run's own
+  counters read the old way — it made 3 message calls and 0 segment calls, and `unitsJudged` was
+  `segmentsJudged` alone. No engine call, latency, token count or gate verdict changes: those
+  are the run's, and this is the labelling of it.
+  What is **not** settled by measurement is the both-scopes case. A policy declaring predicates
+  in *both* scopes makes one arm judge segments and the message, so no single unit describes it;
+  the union `"segment+message"` was chosen over keeping the sample segment-based (which
+  reproduces the same defect one call smaller) and over refusing to plan such an arm (which
+  would lose a capability the planner already has). **No policy in this repository declares both
+  scopes**, so that branch is pinned only by a constructed IR in `bakeoff.test.ts` and has never
+  been through a model. Two things a reader should know about it: the union's `judgedUnitChars`
+  is a median over a bimodal sample (segment prompts and message prompts in one column), and the
+  p95 TTFT ceiling was derived at neither.
 - **The gates' `p95` is a maximum at this corpus size.** The percentile is nearest-rank, and
   `ceil(0.95 × n) = n` for every n ≤ 19 — this corpus produces at most 18 engine calls per
   compiled arm (that is the segment-scoped worst case; on `p-fin`, whose one predicate is

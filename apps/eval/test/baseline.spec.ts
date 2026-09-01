@@ -201,13 +201,17 @@ test("runs Approach B against the compiled arms over one compiled policy", async
   expect(callsPerItem("compiled-tier2-only")).toEqual([1, 1, 1]);
   // ATTRIBUTED, so "one call" cannot be a judge that did nothing: every one of
   // those calls was a whole-message call and every one of them was answered and
-  // collected. `unitsJudged` counts SEGMENTS and is 0 for exactly that reason.
+  // collected. `unitsJudged` is the total across both scopes, so on this policy
+  // it IS the message count -- the judge made no segment call to add to it.
   for (const family of ["compiled", "compiled-tier2-only"] as const) {
     const g = byFamily.get(family)!;
     expect(g.ladder.messageScopeCalls, family).toBe(3);
     expect(g.ladder.messageScopeJudged, family).toBe(3);
     expect(g.ladder.messageScopeFailedClosed, family).toBe(0);
-    expect(g.ladder.unitsJudged, family).toBe(0);
+    expect(g.ladder.unitsJudged, family).toBe(3);
+    // And no segment loop ran, so there is no second unit a stop could have
+    // skipped past: `undefined` rather than a 0 claiming none were skipped.
+    expect(g.ladder.unitsSkipped, family).toBeUndefined();
     // Approach B's single call IS its message call, so it has no separate
     // message-scope column and a 0 there would claim it made none.
     expect(byFamily.get("baseline-b")!.ladder.messageScopeCalls).toBeUndefined();
@@ -239,15 +243,21 @@ test("runs Approach B against the compiled arms over one compiled policy", async
   const b = byFamily.get("baseline-b")!;
   const compiledOnly = byFamily.get("compiled-tier2-only")!;
   expect(b.judgedUnit).toBe("message");
-  // The family's PLANNED unit, and on this policy it describes work the arm no
-  // longer does: every call asserted above was a whole-message call.
-  // `judgedUnitChars` and `judgedUnitsPerItem` are built from that planned
-  // segment distribution, so on a message-only policy the two of them describe
-  // passages nobody was shown. `ladder.messageScopeCalls` on the same row is
-  // what says so; closing the gap means making the judged unit a function of
-  // the IR's scopes rather than of the family alone, which is recorded as a
-  // carried risk in the README rather than done here.
-  expect(compiledOnly.judgedUnit).toBe("segment");
+  // AND SO IS THE COMPILED ARM'S, on this policy. The unit is derived from the
+  // family AND the IR's declared scopes, so `p-fin`'s one message-scoped
+  // predicate makes the compiled arm message-judged too -- which is what every
+  // call asserted above actually was. While this read "segment" the row's
+  // `judgedUnitChars` and `judgedUnitsPerItem` described a segment distribution
+  // nobody was shown, on the two columns a reader consults to check the p95
+  // TTFT gate was applied to comparable work.
+  expect(compiledOnly.judgedUnit).toBe("message");
+  expect(compiledOnly.judgedUnitsPerItem).toEqual({ p50: 1, p95: 1, max: 1, min: 1 });
+  // The two arms are planned over the SAME passages, and that is the head-to-
+  // head's cleanest statement of what the methods differ by on this policy:
+  // both models are shown these three whole messages, and only B is also shown
+  // the 5,272-character policy document. The prompt-token gap below is that
+  // document.
+  expect(compiledOnly.judgedUnitChars).toEqual(b.judgedUnitChars);
   expect(b.promptTokens!.min).toBeGreaterThan(compiledOnly.promptTokens!.max);
   expect(b.gates.find((g) => g.gate === "p95-ttft")!.detail).toContain("judgedUnitChars");
 

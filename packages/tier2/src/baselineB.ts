@@ -198,9 +198,19 @@ const CHARS_PER_TOKEN_FLOOR = 2;
  * -- "passage" becomes "message", because B is shown the whole thing, and
  * "predicateId" becomes "entityType", because B names an entity class. The one
  * bullet that cannot be a substitution is the last: the judge's names
- * predicates, and B has none. `baselineB.test.ts` pins the mapping by reading
- * both prompts off real calls rather than off exported constants, so wording
- * that drifts in one arm fails there.
+ * predicates, and B has none.
+ *
+ * WHERE THAT IS PINNED, and this paragraph used to overstate it. The cross-arm
+ * check in `baselineB.test.ts` reads both prompts off real calls rather than off
+ * exported constants and requires every RULE BULLET of the judge's to appear
+ * here with the two nouns substituted -- so a bullet that drifts in one arm and
+ * not the other fails there. It is relative and it is partial: it filters to
+ * lines starting `"- "` or two spaces, which excludes the two task sentences,
+ * the JSON-only instruction, the wire-shape line and the `Rules:` header, and it
+ * cannot fire on the two arms drifting together. `prompts.test.ts` is the other
+ * half: it pins each arm's system turn line by line against that arm's OWN
+ * contract, both directions -- a dropped instruction and an added one each
+ * fail.
  *
  * The word floor is interpolated from `MINIMUM_CANDIDATE_WORDS` rather than
  * written out, so this copy cannot drift from the one the ladder enforces.

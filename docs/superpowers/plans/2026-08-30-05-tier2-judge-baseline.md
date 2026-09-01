@@ -2037,7 +2037,7 @@ answer to which method is better.
 - **One unexplained determinism break.** In one session three identical constrained calls at temperature 0 returned 175 / 588 / 599 completion tokens. Three later sessions were 26/26 byte-identical. Unexplained is not benign — log completion-token counts per call so a recurrence is visible.
 - **Upstream issue #844** (prefill over 120 tokens throwing) did not reproduce here across 36 calls at 1,480-4,360 prompt tokens, but was reported on integrated AMD/Windows. It is a portability risk, not a local one.
 
-- **`SemanticPredicate.scope: "message"` — CLOSED, see the Task 13 deviation entry.** The judge now partitions predicates by declared scope: message-scoped ones are asked once about the whole message, segment-scoped ones per segment. On `policies/compiled/p-fin.ir.json`, whose one predicate is message-scoped, both compiled families now file zero `scope-unjudged` (MEASURED, `test/baseline.spec.ts`) and make ONE call per message rather than one per selected segment. What it opened instead: `familyShape().judgedUnit` is a property of the arm's FAMILY and is now also a property of the policy's scopes, so on a message-only policy `judgedUnitChars` and `judgedUnitsPerItem` describe segment work the arm does not do. Recorded in the README's carried risks; unowned.
+- **`SemanticPredicate.scope: "message"` — CLOSED, see the Task 13 deviation entry.** The judge now partitions predicates by declared scope: message-scoped ones are asked once about the whole message, segment-scoped ones per segment. On `policies/compiled/p-fin.ir.json`, whose one predicate is message-scoped, both compiled families now file zero `scope-unjudged` (MEASURED, `test/baseline.spec.ts`) and make ONE call per message rather than one per selected segment. What it opened instead: `familyShape().judgedUnit` is a property of the arm's FAMILY and is now also a property of the policy's scopes, so on a message-only policy `judgedUnitChars` and `judgedUnitsPerItem` describe segment work the arm does not do. Recorded in the README's carried risks; CLOSED in a later commit, which replaced the field with `judgedUnitFor(family, semanticPredicates)` — see the README entry for what it moved on the head-to-head's rows and for the both-scopes decision it forced.
 
 **Next plans:** 6 — the extension; 7 — corpus pipeline; 8 — evaluation and analysis.
 
@@ -2589,7 +2589,10 @@ scope the plan did not consider at all.
   compile error until they were added — which is the seam working. Same for
   `judgeDelta` and `Tier2DetectStats`.
 - **`familyShape().judgedUnit` is now wrong on a message-only policy**, which
-  nothing anticipated. See the README's carried risks.
+  nothing anticipated. See the README's carried risks. (CLOSED in a later
+  commit: the unit is derived from the family and the IR's declared scopes
+  together, and `gateReport` refuses a distribution measured over any other
+  unit.)
 
 **This plan's acceptance criterion for the follow-on task was also wrong.** It
 asked for `scopesJudged` "containing both scopes" on `p-fin`. `p-fin` declares
