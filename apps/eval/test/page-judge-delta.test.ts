@@ -51,6 +51,9 @@ const BEFORE: JudgeStats = {
   abortedResponses: 9,
   segmentsJudged: 10,
   segmentsSkipped: 11,
+  messageScopeCalls: 15,
+  messageScopeJudged: 16,
+  messageScopeFailedClosed: 17,
   deadlineExpiries: 12,
   callerAbortsMidGeneration: 13,
   callerAbortsWhileQueued: 14,
@@ -74,6 +77,9 @@ const OWN = {
   abortedResponses: 28,
   segmentsJudged: 29,
   segmentsSkipped: 30,
+  messageScopeCalls: 34,
+  messageScopeJudged: 35,
+  messageScopeFailedClosed: 36,
   deadlineExpiries: 31,
   callerAbortsMidGeneration: 32,
   callerAbortsWhileQueued: 33,
@@ -93,6 +99,9 @@ const AFTER: JudgeStats = {
   abortedResponses: BEFORE.abortedResponses + OWN.abortedResponses,
   segmentsJudged: BEFORE.segmentsJudged + OWN.segmentsJudged,
   segmentsSkipped: BEFORE.segmentsSkipped + OWN.segmentsSkipped,
+  messageScopeCalls: BEFORE.messageScopeCalls + OWN.messageScopeCalls,
+  messageScopeJudged: BEFORE.messageScopeJudged + OWN.messageScopeJudged,
+  messageScopeFailedClosed: BEFORE.messageScopeFailedClosed + OWN.messageScopeFailedClosed,
   deadlineExpiries: BEFORE.deadlineExpiries + OWN.deadlineExpiries,
   callerAbortsMidGeneration: BEFORE.callerAbortsMidGeneration + OWN.callerAbortsMidGeneration,
   callerAbortsWhileQueued: BEFORE.callerAbortsWhileQueued + OWN.callerAbortsWhileQueued,
@@ -130,7 +139,7 @@ describe("judgeDelta", () => {
     const delta = judgeDelta(BEFORE, { ...BEFORE, calls: [...BEFORE.calls] });
     expect(delta.calls).toEqual([]);
     const { calls: _calls, ...counters } = delta;
-    expect(Object.values(counters)).toEqual(new Array(14).fill(0));
+    expect(Object.values(counters)).toEqual(new Array(17).fill(0));
   });
 
   it("projects every counter JudgeStats declares, so an upstream addition cannot go unreported", () => {

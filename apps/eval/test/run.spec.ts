@@ -123,7 +123,8 @@ const FAKE_TIER1_STATS = {
 const FAKE_TIER2_STATS = {
   rung1: 0, rung2: 0, unresolvedQuotes: 0, unknownPredicates: 0, duplicatesDropped: 0,
   repairAttempts: 0, failedClosed: 0, truncatedResponses: 0, abortedResponses: 0,
-  segmentsJudged: 0, segmentsSkipped: 0, deadlineExpiries: 0,
+  segmentsJudged: 0, segmentsSkipped: 0, messageScopeCalls: 0, messageScopeJudged: 0,
+    messageScopeFailedClosed: 0, deadlineExpiries: 0,
   callerAbortsMidGeneration: 0, callerAbortsWhileQueued: 0,
   calls: [] as unknown[],
 };
@@ -1029,7 +1030,8 @@ test("carries the judge's counters and its per-call rows onto every record", asy
     {
       rung1: 3, rung2: 1, unresolvedQuotes: 2, unknownPredicates: 6,
       duplicatesDropped: 4, repairAttempts: 5, failedClosed: 7, truncatedResponses: 8,
-      abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, deadlineExpiries: 12,
+      abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, messageScopeCalls: 0, messageScopeJudged: 0,
+    messageScopeFailedClosed: 0, deadlineExpiries: 12,
       callerAbortsMidGeneration: 13, callerAbortsWhileQueued: 14,
       calls: [
         { finishReason: "stop", promptTokens: 1105, completionTokens: 96, ttftMs: 780 },
@@ -1065,7 +1067,8 @@ test("carries the judge's counters and its per-call rows onto every record", asy
   expect(records[1]!.tier2Stats).toEqual({
     rung1: 3, rung2: 1, unresolvedQuotes: 2, unknownPredicates: 6,
     duplicatesDropped: 4, repairAttempts: 5, failedClosed: 7, truncatedResponses: 8,
-    abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, deadlineExpiries: 12,
+    abortedResponses: 9, segmentsJudged: 10, segmentsSkipped: 11, messageScopeCalls: 0, messageScopeJudged: 0,
+    messageScopeFailedClosed: 0, deadlineExpiries: 12,
     callerAbortsMidGeneration: 13, callerAbortsWhileQueued: 14,
     calls: [
       { finishReason: "stop", promptTokens: 1105, completionTokens: 96, ttftMs: 780 },

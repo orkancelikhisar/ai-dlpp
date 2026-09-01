@@ -493,11 +493,25 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
       uncertain: uncertainSegmentStarts(segments, raw, config.uncertainBelow),
     });
 
+    // Whether this message has a question escalation cannot answer.
+    //
+    // `selectSegments` decides which SEGMENTS are worth a judge, and a
+    // message-scoped predicate is not a segment question: it is asked about the
+    // whole message at once (`PredicateScope`), so the text it needs is
+    // `JudgeRequest.text` and exists whatever escalation selected. Gating it on
+    // a segment selection would leave a message that is entirely a fenced block
+    // with its whole-message clause unasked -- and `escalate.ts`'s reason for
+    // excluding code cannot justify that, because the message call is shown the
+    // fenced block either way: it is shown everything, by definition.
+    const hasMessageScoped = ir.semanticPredicates.some((p) => p.scope === "message");
+
     // The per-MESSAGE budget, enforced here because nothing else can: a judge
-    // makes one engine call per segment, each one compliant with its own
-    // per-call budget, and twelve compliant calls are twelve times the number
-    // spec 5.3 wrote down. The orchestrator is the only layer that knows both
-    // `ir.latencyBudgetMs` and how much of it the earlier tiers already spent.
+    // makes one engine call per selected segment -- plus one for the whole
+    // message when the policy declares a message-scoped predicate -- each one
+    // compliant with its own per-call budget, and twelve compliant calls are
+    // twelve times the number spec 5.3 wrote down. The orchestrator is the only
+    // layer that knows both `ir.latencyBudgetMs` and how much of it the earlier
+    // tiers already spent.
     const remaining = remainingBudgetMs(ir.latencyBudgetMs, performance.now() - messageStarted);
 
     // Tested BEFORE the budget, because the budget's notice makes a causal
@@ -520,16 +534,25 @@ export async function detect(input: DetectInput): Promise<DetectionResult> {
     //   path and unset on this one, and that is precisely how a caller asking
     //   "did tier 2 run?" tells them apart.
     //
-    // - Predicates declared but no segment selected (a message that is entirely
-    //   a code fence, with nothing uncertain in it): weaker, and reported. The
-    //   policy declares clauses that went unevaluated, which is what
-    //   `scope-unjudged` already means -- no new reason word is needed, and
-    //   inventing one would split the bake-off's count of unevaluated
+    // - SEGMENT-scoped predicates declared but no segment selected (a message
+    //   that is entirely a code fence, with nothing uncertain in it): weaker,
+    //   and reported. The policy declares clauses that went unevaluated, which
+    //   is what `scope-unjudged` already means -- no new reason word is needed,
+    //   and inventing one would split the bake-off's count of unevaluated
     //   predicates across two words that mean the same thing to a reader.
+    //
+    // A MESSAGE-scoped predicate is the case this branch must not swallow, and
+    // it is why the condition is not `escalated.length === 0` alone. The judge
+    // is called with an EMPTY segment list, which is a meaningful request
+    // rather than a degenerate one: no segment was worth a per-segment call,
+    // and the whole-message clause still is. `WebLlmJudge` answers exactly that
+    // and reports `scopesJudged: ["message"]`, so the loop after the verdict
+    // still files `scope-unjudged` for the segment scope if the policy declared
+    // one -- the same notice, arrived at from what the judge really did.
     //
     // No `timings.tier2Ms` on either path: a 0 there reads as a tier that ran
     // instantly, which is the confusion `timings`' own doc warns about.
-    if (escalated.length === 0) {
+    if (escalated.length === 0 && !hasMessageScoped) {
       // No scope was judged, because no judge ran -- hence the empty second
       // argument. The enumeration is shared with the post-verdict loop below so
       // the two paths cannot disagree about which scopes a policy declares.

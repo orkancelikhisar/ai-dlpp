@@ -147,10 +147,20 @@ export interface EscalationInput {
  * finding's uncertainty. `WebLlmJudge` emits findings whose entityType is a
  * `pred:` shadow (`judge.ts`), and no channel exists by which one tier revises
  * another tier's confidence -- so escalating a segment because tier 0 hedged
- * about a secret gets that segment's PREDICATES judged, not that secret
- * re-scored. And when the policy declares no predicates at all, `WebLlmJudge`
- * returns an empty verdict without an engine call, so an uncertainty-only
- * escalation currently costs nothing and yields nothing. The branch is wired to
+ * about a secret gets that segment's SEGMENT-SCOPED predicates judged, not that
+ * secret re-scored. And when the policy declares no predicates at all,
+ * `WebLlmJudge` returns an empty verdict without an engine call, so an
+ * uncertainty-only escalation currently costs nothing and yields nothing.
+ *
+ * The same is true when the policy declares predicates but none of them
+ * `scope: "segment"`. `WebLlmJudge` partitions by scope and never enters its
+ * segment loop without a segment-scoped clause to carry, so on such a policy --
+ * `policies/compiled/p-fin.ir.json` is one -- this function still selects every
+ * non-code segment and none of them costs a call. The selection is then a list
+ * the judge is handed and ignores, which is harmless here and is NOT harmless
+ * in `apps/eval`: its per-arm `judgedUnitChars` and `judgedUnitsPerItem` are
+ * built from this selection and would describe passages no model was shown.
+ * Recorded in the README's carried risks. The branch is wired to
  * a real source anyway (see `uncertainSegmentStarts`) because the alternative
  * is a parameter nobody populates, which reads as a working feature in every
  * test and never fires.

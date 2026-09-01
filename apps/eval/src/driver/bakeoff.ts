@@ -1590,6 +1590,26 @@ export interface ArmGateReport {
     readonly unitsSkipped: number | undefined;
     /** Approach B's own message-budget stops. `undefined` on a compiled arm. */
     readonly messageBudgetExpiries: number | undefined;
+    /**
+     * The compiled judge's whole-message calls, `undefined` on a B arm.
+     *
+     * `undefined` rather than 0 there for the reason the two fields above are:
+     * Approach B judges the whole message in its ONLY call, so it has no
+     * separate message-scope call to count and a 0 would be the positive claim
+     * that it made none.
+     *
+     * READ THESE BESIDE `unitsJudged`, which counts SEGMENTS. On a policy whose
+     * predicates are all message-scoped -- `policies/compiled/p-fin.ir.json` is
+     * one -- the judge makes no segment call at all, so `unitsJudged` is 0 while
+     * `messageScopeJudged` carries the arm's whole coverage. A reader taking
+     * `unitsJudged: 0` as "this arm judged nothing" would be reading the wrong
+     * column for that policy; `judgedUnitChars` and `judgedUnitsPerItem` are
+     * planned per SEGMENT and describe work such an arm does not do, which is
+     * recorded as a carried risk rather than fixed here.
+     */
+    readonly messageScopeCalls: number | undefined;
+    readonly messageScopeJudged: number | undefined;
+    readonly messageScopeFailedClosed: number | undefined;
   };
   /**
    * Degradation notices by reason word, summed over the arm.
@@ -2035,6 +2055,9 @@ function normalizeArmStats(record: RunRecord):
       readonly unitsJudged: number;
       readonly unitsSkipped: number | undefined;
       readonly messageBudgetExpiries: number | undefined;
+      readonly messageScopeCalls: number | undefined;
+      readonly messageScopeJudged: number | undefined;
+      readonly messageScopeFailedClosed: number | undefined;
       readonly stops: number;
       readonly calls: NonNullable<RunRecord["tier2Stats"]>["calls"];
     }
@@ -2054,6 +2077,9 @@ function normalizeArmStats(record: RunRecord):
       unitsJudged: judge.segmentsJudged,
       unitsSkipped: judge.segmentsSkipped,
       messageBudgetExpiries: undefined,
+      messageScopeCalls: judge.messageScopeCalls,
+      messageScopeJudged: judge.messageScopeJudged,
+      messageScopeFailedClosed: judge.messageScopeFailedClosed,
       stops:
         judge.deadlineExpiries +
         judge.callerAbortsMidGeneration +
@@ -2076,6 +2102,11 @@ function normalizeArmStats(record: RunRecord):
     unitsJudged: baseline.messagesJudged,
     unitsSkipped: undefined,
     messageBudgetExpiries: baseline.messageBudgetExpiries,
+    // B's single call IS its message call; a separate message-scope column for
+    // it would double-count the same call under two names.
+    messageScopeCalls: undefined,
+    messageScopeJudged: undefined,
+    messageScopeFailedClosed: undefined,
     // `messageBudgetExpiries` is IN the fold and `deadlineExpiries` is too, and
     // both belong: each is a stop that ended the run for that message, and the
     // poisoning walk's question is whether the engine was interrupted before
@@ -2242,6 +2273,9 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     // produce it.
     unitsSkipped: 0,
     messageBudgetExpiries: 0,
+    messageScopeCalls: 0,
+    messageScopeJudged: 0,
+    messageScopeFailedClosed: 0,
   };
   const degradedNotices = zeroReasons();
   const degradedItems = zeroReasons();
@@ -2279,6 +2313,9 @@ export function gateReport(input: GateReportInput): ArmGateReport {
     ladder.unitsJudged += stats.unitsJudged;
     ladder.unitsSkipped += stats.unitsSkipped ?? 0;
     ladder.messageBudgetExpiries += stats.messageBudgetExpiries ?? 0;
+    ladder.messageScopeCalls += stats.messageScopeCalls ?? 0;
+    ladder.messageScopeJudged += stats.messageScopeJudged ?? 0;
+    ladder.messageScopeFailedClosed += stats.messageScopeFailedClosed ?? 0;
 
     for (const call of stats.calls) {
       answeredCalls += 1;
@@ -2473,6 +2510,11 @@ export function gateReport(input: GateReportInput): ArmGateReport {
       // measurable on the other method.
       unitsSkipped: shape.judgedUnit === "segment" ? ladder.unitsSkipped : undefined,
       messageBudgetExpiries: shape.runsCompiledJudge ? undefined : ladder.messageBudgetExpiries,
+      messageScopeCalls: shape.runsCompiledJudge ? ladder.messageScopeCalls : undefined,
+      messageScopeJudged: shape.runsCompiledJudge ? ladder.messageScopeJudged : undefined,
+      messageScopeFailedClosed: shape.runsCompiledJudge
+        ? ladder.messageScopeFailedClosed
+        : undefined,
     },
     degradedNotices,
     degradedItems,

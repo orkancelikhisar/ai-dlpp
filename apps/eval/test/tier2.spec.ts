@@ -456,7 +456,7 @@ test("a second detect on one arm reports its own work, not the arm's running tot
   // this fixture does move are asserted above; `judge-delta.test.ts` is where
   // every slot is driven at a distinct nonzero value.
   const counters = Object.keys(run.totals).filter((k) => k !== "calls") as (keyof typeof run.totals)[];
-  expect(counters).toHaveLength(14);
+  expect(counters).toHaveLength(17);
   for (const counter of counters) {
     expect(
       (first[counter] as number) + (second[counter] as number),

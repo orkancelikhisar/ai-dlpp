@@ -99,6 +99,9 @@ const ZERO_STATS: Omit<Stats, "calls"> = {
   abortedResponses: 0,
   segmentsJudged: 0,
   segmentsSkipped: 0,
+  messageScopeCalls: 0,
+  messageScopeJudged: 0,
+  messageScopeFailedClosed: 0,
   deadlineExpiries: 0,
   callerAbortsMidGeneration: 0,
   callerAbortsWhileQueued: 0,
@@ -860,6 +863,9 @@ describe("every ladder counter reaches the report", () => {
       repairAttempts: 23,
       segmentsJudged: 29,
       segmentsSkipped: 31,
+      messageScopeCalls: 37,
+      messageScopeJudged: 41,
+      messageScopeFailedClosed: 43,
     } as const;
     const r = report([judged([call()], counters), judged([call()], counters)]);
     // The two counters `BaselineStats` renames arrive under the report's own
@@ -882,6 +888,12 @@ describe("every ladder counter reaches the report", () => {
       // counter at all -- `detect` files a `budget-exhausted` notice instead --
       // and a 0 would be the positive claim that the event happened zero times.
       messageBudgetExpiries: undefined,
+      // The whole-message calls, which are a compiled-arm event: Approach B's
+      // single call IS its message call and reporting it here too would
+      // double-count it.
+      messageScopeCalls: 74,
+      messageScopeJudged: 82,
+      messageScopeFailedClosed: 86,
     });
     // The three stop counters are NOT in `ladder` and must not be: they are the
     // stop-gate's evidence, not the ladder's, and a report that summed them here
@@ -891,6 +903,9 @@ describe("every ladder counter reaches the report", () => {
       "duplicatesDropped",
       "failedClosed",
       "messageBudgetExpiries",
+      "messageScopeCalls",
+      "messageScopeFailedClosed",
+      "messageScopeJudged",
       "repairAttempts",
       "rung1",
       "rung2",
@@ -2362,6 +2377,12 @@ describe("the gate report over an Approach-B arm", () => {
       // claim that it skipped none.
       unitsSkipped: undefined,
       messageBudgetExpiries: 62,
+      // `undefined` for the same reason: B's ONE call is its message call and
+      // is already counted as a judged unit, so a message-scope column here
+      // would report the same call twice.
+      messageScopeCalls: undefined,
+      messageScopeJudged: undefined,
+      messageScopeFailedClosed: undefined,
     });
   });
 

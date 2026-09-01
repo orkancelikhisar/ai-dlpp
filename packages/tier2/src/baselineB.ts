@@ -59,27 +59,31 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  *   refuses rather than truncates. Chunking so that a clause is missing from the
  *   chunk that sees the message would make a violation undetectable IN
  *   PRINCIPLE, which rigs the comparison before a model loads.
- * - **A bigger haystack for the ladder.** B resolves a quote against the whole
- *   message; the judge resolves against the one segment its model was shown.
- *   Uniqueness is harder in a longer string, so rung 1 is harder for B -- and in
- *   the other direction B can resolve a quote that straddles a segment boundary,
- *   which the judge cannot. Both follow from what each model was shown, so
- *   neither is corrected here.
- * - **Scope.** `SemanticPredicate.scope` is where B is stronger, and it should
- *   be said plainly rather than discovered: the judge asks per segment and
- *   reports `scopesJudged: ["segment"]`, so `detect` files a `scope-unjudged`
- *   notice for the message scope whenever the policy declares anything in it.
- *   B puts the whole message and the whole policy in one call, so nothing goes
- *   unasked and B files no such notice.
+ * - **A bigger haystack for the ladder, on the calls that are per segment.** B
+ *   resolves a quote against the whole message; the judge resolves against the
+ *   passage its model was shown, which is one segment for a segment-scoped
+ *   predicate and the whole message for a message-scoped one. Uniqueness is
+ *   harder in a longer string, so rung 1 is harder for B than for a segment
+ *   call -- and equally hard for both on a message-scoped predicate. Each
+ *   follows from what the model was shown, so neither is corrected here.
  *
- *   ONE notice per unjudged SCOPE, not one per predicate -- MEASURED against
- *   `detect` with three message-scoped predicates, which produced a single
- *   notice carrying "declares 3 semantic predicate(s)" in its detail. So a
- *   bake-off sizing "how much more does the compiled arm degrade" off notice
- *   CARDINALITY reads at most one row per scope however many clauses went
- *   unevaluated; the count it wants is in the detail, and `unjudgedScopes` in
- *   core's orchestrator is where that decision lives. Either way the difference
- *   is B having an easier scope problem, not B degrading less.
+ * ## Scope: no longer a difference between the methods
+ *
+ * This bullet used to say `SemanticPredicate.scope` was where B was stronger,
+ * and it WAS: the judge asked every predicate per segment, reported
+ * `scopesJudged: ["segment"]`, and `detect` filed a `scope-unjudged` notice for
+ * the message scope on every message. That was an unimplemented feature, not a
+ * property of either method, and it is now implemented -- `WebLlmJudge` asks
+ * message-scoped predicates once about the whole message, so both families file
+ * zero `scope-unjudged` on `p-fin` (MEASURED, `test/baseline.spec.ts`).
+ *
+ * What remains true and is worth keeping: ONE notice per unjudged SCOPE, not
+ * one per predicate -- MEASURED against `detect` with three message-scoped
+ * predicates, which produced a single notice carrying "declares 3 semantic
+ * predicate(s)" in its detail. So a bake-off sizing "how much more does the
+ * compiled arm degrade" off notice CARDINALITY reads at most one row per scope
+ * however many clauses went unevaluated; the count it wants is in the detail,
+ * and `unjudgedScopes` in core's orchestrator is where that decision lives.
  *
  * ## The concession, stated so it can be judged
  *

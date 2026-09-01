@@ -6,9 +6,9 @@ import type {
   JudgeRequest,
   JudgeVerdict,
   PolicyIr,
+  PredicateScope,
   SemanticJudge,
   SemanticPredicate,
-  Segment,
   Severity,
 } from "@sih/core";
 import { DeadlineExpired, MAX_BUDGET_MS } from "./cancel.js";
@@ -40,9 +40,10 @@ import { MINIMUM_CANDIDATE_WORDS, resolveQuote } from "./spans.js";
  *
  * Task 11's bake-off row wants `finishReason`, `promptTokens`,
  * `completionTokens` and `ttftMs`, and a message makes one engine call per
- * segment. A single `finishReason` for the message would therefore be a fact
- * about one call presented as a fact about the message, and a summed `ttftMs`
- * would be a latency nothing ever experienced. So the rows are kept whole and
+ * selected segment plus one for the whole message when the policy declares a
+ * message-scoped predicate. A single `finishReason` for the message would
+ * therefore be a fact about one call presented as a fact about the message, and
+ * a summed `ttftMs` would be a latency nothing ever experienced. So the rows are kept whole and
  * the harness decides how to reduce them; this module does not decide for it.
  *
  * Every field is copied from the response and none from the request, and
@@ -122,14 +123,23 @@ export interface JudgeCallRecord {
  *   happens to resolve, so a dropped duplicate does not inflate the
  *   distribution the bake-off reads as evidence strength.
  * - `segmentsJudged + failedClosed + segmentsSkipped` is exactly the number of
- *   segments handed to every `judge()` call THAT REACHED ITS SEGMENT LOOP. That
+ *   segments handed to every `judge()` call THAT HAD SEGMENT-SCOPED WORK. That
  *   is the denominator a findings-per-segment or recall number needs, and
  *   without `segmentsSkipped` it could not be computed at all -- see that
- *   field. A call that returned before the loop counts nothing, and
- *   deliberately: an IR with no `semanticPredicates` spends no engine call and
- *   judges nothing, so filing its segments as skipped would conflate a policy
- *   with no semantic clauses with a run a stop cut short. A malformed IR does
- *   not reach the loop either -- it throws.
+ *   field. A call with no such work counts nothing, and deliberately: an IR
+ *   with no `semanticPredicates` -- or none the policy declared
+ *   `scope: "segment"` -- spends no per-segment engine call and judges no
+ *   segment, so filing its segments as skipped would conflate a policy with no
+ *   segment-scoped clauses with a run a stop cut short. A malformed IR does not
+ *   reach the loop either -- it throws.
+ *
+ *   The three `messageScope*` counters are OUTSIDE that sum, which is why they
+ *   are separate fields rather than message-scope events folded into
+ *   `failedClosed`: the whole-message call is not a segment, and adding it to a
+ *   segment denominator is the units error `BaselineStats` exists to avoid one
+ *   package over. Their own invariant is
+ *   `messageScopeJudged + messageScopeFailedClosed <= 1` per `judge()` call,
+ *   with the gap being a stop.
  */
 export interface JudgeStats {
   /**
@@ -212,6 +222,46 @@ export interface JudgeStats {
    */
   readonly segmentsSkipped: number;
   /**
+   * Engine calls this run ISSUED with the WHOLE MESSAGE as the passage -- the
+   * cost of honouring `SemanticPredicate.scope: "message"`, and the only place
+   * it is countable.
+   *
+   * At most 2 per `judge()` call: one for every message-scoped predicate
+   * together (never one per predicate), plus the same single repair retry a
+   * segment gets. 0 when the policy declares no message-scoped predicate.
+   *
+   * ISSUED, not answered, and the difference is the point: a call a stop cut
+   * short spent real model time and produced no row in `calls`, so counting
+   * answers here would report the feature as free in exactly the runs where it
+   * blew the budget. Where the two differ is recoverable --
+   * `messageScopeJudged + messageScopeFailedClosed` counts the answers, and
+   * `repairAttempts` is shared with the segment loop so it cannot separate them
+   * on its own.
+   */
+  readonly messageScopeCalls: number;
+  /**
+   * 0 or 1: the whole-message call answered and its findings were collected.
+   *
+   * NOT the same claim `scopesJudged` makes. That names a scope this run ASKED
+   * the model about, so it survives a stop mid-answer (see `judge()`); this
+   * counts the asks that came back with something to collect. A run with
+   * `scopesJudged` naming "message" and a 0 here is one whose message-scope
+   * call was issued and produced no judgement.
+   */
+  readonly messageScopeJudged: number;
+  /**
+   * 0 or 1: the whole-message call answered and still yielded no judgement --
+   * a body unparseable after one repair retry, or a body the engine marked
+   * `"abort"` (the latched engine, which also ends the run).
+   *
+   * SEPARATE from `failedClosed` rather than folded into it. `failedClosed` is
+   * documented and consumed as a count of SEGMENTS, and it is one of the three
+   * terms of the segment invariant above; a message-scope failure landing there
+   * would make that sum exceed the number of segments handed over, which is the
+   * denominator a recall number is built from.
+   */
+  readonly messageScopeFailedClosed: number;
+  /**
    * Runs stopped by a budget expiry. NOT a per-call rate: `judge()` returns on
    * the first `DeadlineExpired`, so this is at most 1 per call by construction
    * and `deadlineExpiries / segments` is not a number that means anything. What
@@ -257,18 +307,41 @@ type Counters = Omit<JudgeStats, "calls">;
 type MutableCounters = { -readonly [K in keyof Counters]: Counters[K] };
 
 /**
- * What this judge evaluates, as a FACT about the run and not a capability.
+ * The passage one engine call is shown, and the offset it starts at in the
+ * message.
  *
- * Every predicate reaches the model once per segment, including one the policy
- * declared `scope: "message"`. Naming "message" here would erase the
- * orchestrator's `scope-unjudged` notice while changing nothing about what the
- * model was asked, which is precisely the record-states-intent defect: the
- * bake-off would count a predicate as judged in a scope no call ever used.
+ * A `Segment` is one of these structurally, and the whole message is the other:
+ * `{ text, start: 0, end: text.length }`. Written as its own type rather than
+ * synthesising a `Segment` for the message, because a `Segment` carries a
+ * `kind` and a message spanning prose AND a fenced block is not any one of
+ * them -- a synthetic `kind: "prose"` would be a field stating something the
+ * segmenter never said.
  *
- * Frozen because it is returned by reference on every verdict, and a caller
- * that sorted it in place would rewrite what every later run claims.
+ * `start` is what makes span resolution correct for both: a resolution is
+ * against `passage.text` and is then offset by `passage.start`, which is 0 for
+ * the message, so a message-scoped finding's offsets stay absolute. Adding a
+ * segment's start to a message-relative offset produces a span that still
+ * slices cleanly and points at the wrong words -- the mis-location `spans.ts`
+ * exists to make impossible rather than unlikely.
  */
-const SEGMENT_SCOPE_ONLY = Object.freeze(["segment"] as const);
+export interface JudgedPassage {
+  readonly text: string;
+  /** Absolute offset of `text[0]` in the message. 0 for the whole message. */
+  readonly start: number;
+  /** Absolute offset one past `text`'s last character. */
+  readonly end: number;
+}
+
+/** What one passage's call did, as the four outcomes its caller must tell apart. */
+type PassageOutcome =
+  /** The answer parsed and its findings were collected. */
+  | "collected"
+  /** The answer would not parse after one repair retry. The run continues. */
+  | "failed-closed"
+  /** The engine reported an abort we did not raise: it is latched, so the run ends. */
+  | "latched"
+  /** A `DeadlineExpired` -- a blown per-call budget or a caller abort. The run ends. */
+  | "stopped";
 
 const ZERO_COUNTERS: Counters = {
   rung1: 0,
@@ -282,6 +355,9 @@ const ZERO_COUNTERS: Counters = {
   abortedResponses: 0,
   segmentsJudged: 0,
   segmentsSkipped: 0,
+  messageScopeCalls: 0,
+  messageScopeJudged: 0,
+  messageScopeFailedClosed: 0,
   deadlineExpiries: 0,
   callerAbortsMidGeneration: 0,
   callerAbortsWhileQueued: 0,
@@ -397,12 +473,49 @@ export class WebLlmJudge implements SemanticJudge {
   }
 
   /**
-   * Judge each segment against the IR's semantic predicates.
+   * Judge the message's predicates in the scope each one was DECLARED in: the
+   * message-scoped ones against the whole message, in one call; the
+   * segment-scoped ones against each segment, one call apiece.
    *
-   * Returns absolute offsets into the MESSAGE, not into the segment it was
+   * Returns absolute offsets into the MESSAGE, not into the passage it was
    * asked about: core re-derives nothing and `applyActions` rewrites by offset,
-   * so a segment-relative span vaults a neighbouring word and leaves the real
+   * so a passage-relative span vaults a neighbouring word and leaves the real
    * one in the message.
+   *
+   * ## The partition, and why it is a partition rather than an addition
+   *
+   * `PredicateScope`'s own docblock in core says what a scope is: "what a
+   * semantic predicate is asked about: one segment at a time, or the whole
+   * message at once". So a `scope: "message"` predicate is NOT also sent per
+   * segment. Sending it both ways would ask a declared-once question N+1 times,
+   * put its findings in a scope the policy did not declare for it, and multiply
+   * the arm's cost by the segment count for no reading of `scope` that the type
+   * supports.
+   *
+   * The consequence is visible and worth stating rather than discovering: on a
+   * policy whose predicates are ALL message-scoped -- which
+   * `policies/compiled/p-fin.ir.json`, the only compiled policy in this
+   * repository, is -- the segment loop makes no call at all, and this judge
+   * costs ONE call per message rather than one per selected segment. On a
+   * policy carrying both, it costs `selectedSegments + 1`.
+   *
+   * ## Why the message call goes FIRST
+   *
+   * It is exactly one call, known before the run; the segment list is not. Under
+   * a budget that admits k calls -- and `p-fin` carries the compiler's real
+   * 5,000 ms against Plan 5's measured ~4.6 s per call, so k is about 1 -- a
+   * message-LAST order makes coverage of the policy's message clause depend on
+   * how many segments the message happened to have: answered on short messages,
+   * silently skipped on long ones, with the difference invisible in any
+   * aggregate. Message-first also spends that one affordable call on the same
+   * unit the Approach-B baseline spends its own single call on, so a budget that
+   * admits one call does not end up comparing a segment answer against a
+   * message answer.
+   *
+   * What it costs, honestly: on a message with segment-scoped work, the message
+   * call takes the budget the first segment would have had, and a stop there
+   * files every segment as `segmentsSkipped`. That is a reordering of which
+   * work a tight budget loses, not new loss.
    *
    * Degrades rather than throwing on a slow or cancelled engine -- spec 5.3
    * says an over-budget tier-2 run falls back to the lower tiers' findings.
@@ -425,13 +538,16 @@ export class WebLlmJudge implements SemanticJudge {
    * undo the tripwire and, since such an error carries no `reason`, would file
    * the event as a caller abort as well.
    *
-   * `scope` on a `SemanticPredicate` is STILL not honoured here, and the
-   * verdict now says so instead of a comment: every predicate is judged per
-   * segment, including one declared `scope: "message"`, so `scopesJudged` is
-   * `["segment"]` and the orchestrator turns the difference into a
-   * `scope-unjudged` notice on the result. `request.text` carries the whole
-   * message, which is what makes the message scope answerable at all -- using
-   * it is the follow-on task, not this one.
+   * `scopesJudged` names a scope this run ASKED the model about -- it pushes
+   * the word next to the call, before the answer. That is the reading
+   * `JudgeVerdict.scopesJudged` already documents ("naming a scope does NOT
+   * claim every predicate in it was reached: a run cut short reports that
+   * separately, in `degraded`"), and the same rule is applied to both scopes so
+   * a bake-off comparing them is not comparing two rules. A scope with no
+   * declared predicate, and a scope whose call was never issued, are both
+   * absent from it -- which is what turns "the judge never asked" into the
+   * orchestrator's `scope-unjudged` notice and leaves "the judge asked and was
+   * cut off" to the budget and failed-closed words that name the real cause.
    *
    * `request.budgetMs` is likewise READ BY NOTHING here. The per-call budget
    * stays the one this judge was constructed with; what bounds the message is
@@ -446,7 +562,7 @@ export class WebLlmJudge implements SemanticJudge {
    * all, so naming it would be a record stating a number nothing here measured.
    */
   async judge(request: JudgeRequest): Promise<JudgeVerdict> {
-    const { segments, ir, priorFindings, signal } = request;
+    const { text, segments, ir, priorFindings, signal } = request;
     const predicates = ir.semanticPredicates;
     // A policy with no semantic clauses is legitimate, and asking a 2 GB model
     // about nothing costs seconds per message. Checked before anything else so
@@ -457,157 +573,300 @@ export class WebLlmJudge implements SemanticJudge {
     if (predicates.length === 0) return { findings: [], scopesJudged: [] };
 
     const severityOf = shadowSeverities(ir, predicates);
+    // The partition. Both halves are computed before either call, so a policy
+    // that declares only one scope never reaches the other's loop at all --
+    // which is what makes "no segment-scoped predicate" cost zero segment
+    // calls rather than N calls carrying an empty predicate list.
+    const messageScoped = predicates.filter((p) => p.scope === "message");
+    const segmentScoped = predicates.filter((p) => p.scope === "segment");
+
     const findings: Finding[] = [];
     // Per RUN, like `emitted` below and unlike the counters: a notice names the
-    // segment it is about, and an array that outlived the call would attach one
+    // passage it is about, and an array that outlived the call would attach one
     // message's failures to the next message's result.
     const notices: EngineDegradedNotice[] = [];
-    // Per CALL, never per instance. Offsets repeat across messages -- [18, 43)
-    // is [18, 43) in every one of them -- so de-duplication state that outlived
-    // a judge() call would silently delete the next message's findings.
+    // Per CALL, never per instance, and shared by BOTH scopes' calls. Offsets
+    // repeat across messages -- [18, 43) is [18, 43) in every one of them -- so
+    // de-duplication state that outlived a judge() call would silently delete
+    // the next message's findings.
+    //
+    // Sharing it across the two scopes is safe under the key
+    // `start:end:entityType` for a reason the partition above supplies: an
+    // entityType here is `pred:<predicateId>` and a predicate has exactly ONE
+    // scope, so no entityType is carried by both the message call and the
+    // segment calls. Two findings colliding on this key therefore came from the
+    // same predicate in the same scope and are a restatement, which is what the
+    // counter is for. Two DIFFERENT predicates that name the same span survive
+    // as two findings, and should: they are two policy clauses, and core's
+    // cluster resolution is what decides the action for the overlap.
     const emitted = new Set<string>();
+    // Pushed beside the CALL, not beside the answer -- see the docblock.
+    const scopesJudged: PredicateScope[] = [];
+    // Frozen on the way out for the reason the old shared constant was: it is
+    // returned by reference, and a caller that sorted it in place would rewrite
+    // what this run claims. A fresh array per call, so nothing else can leak.
+    const verdict = (): JudgeVerdict => ({
+      findings,
+      scopesJudged: Object.freeze([...scopesJudged]),
+      degraded: notices,
+    });
 
-    for (let index = 0; index < segments.length; index += 1) {
-      const segment = segments[index]!;
-      let messages = buildMessages(segment, predicates, priorFindings);
-      let repaired = false;
+    // How many segment calls this run still owes, which is what a stop during
+    // the message call costs. 0 when there is no segment-scoped predicate: the
+    // loop below would not have run, so nothing was skipped.
+    const segmentCallsOwed = segmentScoped.length > 0 ? segments.length : 0;
 
-      for (;;) {
-        let completion: Tier2Completion;
-        try {
-          completion = await this.#engine.complete(messages, {
-            budgetMs: this.#budgetMs,
-            signal,
-          });
-        } catch (cause) {
-          // NOT a stop we own, so not ours to degrade. `engine.ts` throws on a
-          // response with no choices and on one naming no model precisely
-          // because folding either into an empty answer would report the
-          // segment CLEAN; swallowing it here would restore that false negative
-          // and, since such an error has no `reason`, file it as a caller abort
-          // on top.
-          if (!(cause instanceof DeadlineExpired)) throw cause;
-          // Every stop ends the RUN, not just this segment, and the honest
-          // reason is narrower than "the model is too slow". A budget expiry
-          // says THIS call did not finish in THIS budget; whether the next
-          // segment would is unknown, because segments differ in length and a
-          // short one can meet a budget a long one blew. What is known is that
-          // we cannot tell a slow model from a slow segment from here, and
-          // continuing risks spending a full budget per remaining segment to
-          // find out. A caller abort needs no such argument: nobody is waiting
-          // for any of it. Either way the message degrades to whatever the
-          // lower tiers found, which is what has been collected.
-          //
-          // The segment this call was for is counted as skipped along with the
-          // ones after it: it got no answer either.
-          this.#counters.segmentsSkipped += segments.length - index;
-          if (cause.reason === "budget") {
-            this.#counters.deadlineExpiries += 1;
-            // `call-budget-exhausted`, never `budget-exhausted`. The number that
-            // expired is `this.#budgetMs`, fixed when this judge was
-            // constructed; `ir.latencyBudgetMs` may have almost all of itself
-            // left, and the orchestrator files its own word for that from the
-            // timer IT armed. One word for both would have a bake-off count
-            // per-call model slowness against the spec 5.3 message budget.
-            notices.push({
-              reason: "call-budget-exhausted",
-              detail:
-                `the tier-2 call for segment ${index + 1} of ${segments.length} did not answer ` +
-                `within its ${this.#budgetMs}ms per-call budget; that segment and the ` +
-                `${segments.length - index - 1} after it were not judged`,
-            });
-          } else if (cause.interrupted) this.#counters.callerAbortsMidGeneration += 1;
-          else this.#counters.callerAbortsWhileQueued += 1;
-          // No notice on either caller abort, deliberately. The caller withdrew
-          // and already knows; the orchestrator files its own budget notice
-          // from the timer IT armed, and a second one from here would report
-          // one event twice. This judge also cannot say why a caller withdrew
-          // -- a latency budget is only one of the reasons -- so any reason it
-          // named would be a guess in a field that must state fact.
-          return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
-        }
-
-        // One row per answered call, repair retries included. Recorded before
-        // the body is looked at, because a call that will fail to parse still
-        // spent its tokens and its time-to-first-token.
-        this.#calls.push(completionCallRecord(completion));
-
-        // Counted from what the ENGINE reported, before and independently of
-        // whether the body parsed: a truncated response that happens to parse
-        // is still a response the model did not finish, and the bake-off reads
-        // this to tell a budget-killed arm from an incapable one.
-        if (completion.finishReason === "length") this.#counters.truncatedResponses += 1;
-        if (completion.finishReason === "abort") this.#counters.abortedResponses += 1;
-
-        // `finishReason` is threaded rather than left out: Task 2 measured
-        // inferring truncation from the thrown SyntaxError's wording putting 6
-        // of 16 boundary cases in the wrong bucket, and "length" is the engine
-        // stating that IT cut the response off.
-        const parsed = parseJudgeResponse(completion.content, completion.finishReason);
-        if (parsed.ok) {
-          this.#counters.segmentsJudged += 1;
-          this.#collect(parsed.value, segment, completion.model, severityOf, emitted, findings);
-          break;
-        }
-
-        // "aborted" is handled apart from "truncated", DELIBERATELY, and the
-        // decision is not to retry. Task 3 measured the engine state behind it:
-        // an interrupt sets an engine-wide flag that the non-streaming path
-        // never clears, and every later call returns instantly with an empty
-        // body and finish_reason "abort" until something writes the flag back.
-        // `runWithDeadline` clears the flag it set itself, so an "abort"
-        // arriving here is an interrupt WE did not raise -- the engine is
-        // latched, a repair retry would be answered instantly and emptily, and
-        // so would every remaining segment. Retrying would also file the event
-        // as a model failure when nothing about the model was exercised.
-        //
-        // Nothing here recovers the engine, and that is worth stating rather
-        // than leaving to be discovered: `clearInterrupt` is deliberately NOT
-        // on the `Tier2Engine` seam, and `runWithDeadline` clears only the flag
-        // it set itself. So a judge holding a latched engine fails this way on
-        // its NEXT message too, and the one after -- one wasted call per
-        // message, indefinitely, until whoever set the flag clears it or the
-        // engine is rebuilt.
-        if (parsed.reason === "aborted") {
-          this.#counters.failedClosed += 1;
-          this.#counters.segmentsSkipped += segments.length - index - 1;
-          notices.push({
-            reason: "failed-closed",
-            detail:
-              `the engine reported the response for segment ${index + 1} of ${segments.length} ` +
-              `aborted by an interrupt this judge did not raise; the engine is latched, so that ` +
-              `segment and the ${segments.length - index - 1} after it were not judged`,
-          });
-          return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
-        }
-
-        if (repaired) {
-          // One repair, then fail closed. A model that will not emit valid JSON
-          // twice must never have its prose passed through as a judgement.
-          this.#counters.failedClosed += 1;
-          // `parsed.reason` is one of `schema.ts`'s fixed words. `parsed.detail`
-          // is NOT included: it is built from the body the model produced, and
-          // a model that will not emit JSON is emitting rearranged message text.
-          notices.push({
-            reason: "failed-closed",
-            detail:
-              `segment ${index + 1} of ${segments.length} could not be parsed after one repair ` +
-              `retry (${parsed.reason}), so it was not judged`,
-          });
-          break;
-        }
-        repaired = true;
-        this.#counters.repairAttempts += 1;
-        messages = [...messages, repairMessage(parsed.reason, parsed.detail)];
+    if (messageScoped.length > 0) {
+      scopesJudged.push("message");
+      const outcome = await this.#judgePassage({
+        // `start: 0` is the whole point: a resolution against this passage is
+        // ALREADY absolute, and `#collect` adds `passage.start` to it. See
+        // `JudgedPassage`.
+        passage: { text, start: 0, end: text.length },
+        // Every message-scoped predicate in ONE call, matching what the segment
+        // loop does per segment. One call per predicate would multiply the cost
+        // by the number of clauses for no gain the batched prompt does not
+        // already give.
+        predicates: messageScoped,
+        priorFindings,
+        signal,
+        severityOf,
+        emitted,
+        findings,
+        notices,
+        unit: "the whole message",
+        lost:
+          segmentCallsOwed > 0
+            ? `that call and this message's ${segmentCallsOwed} segment(s) were not judged`
+            : `the ${messageScoped.length} message-scoped predicate(s) were not judged`,
+        onCallIssued: () => {
+          this.#counters.messageScopeCalls += 1;
+        },
+      });
+      if (outcome === "collected") this.#counters.messageScopeJudged += 1;
+      if (outcome === "failed-closed" || outcome === "latched") {
+        this.#counters.messageScopeFailedClosed += 1;
+      }
+      if (outcome === "latched" || outcome === "stopped") {
+        // Both end the RUN -- a latched engine answers every later call
+        // instantly and emptily, and a stop means nobody is waiting -- so the
+        // segments this run would have asked about got no answer either.
+        this.#counters.segmentsSkipped += segmentCallsOwed;
+        return verdict();
       }
     }
 
-    return { findings, scopesJudged: SEGMENT_SCOPE_ONLY, degraded: notices };
+    if (segmentScoped.length > 0 && segments.length > 0) {
+      scopesJudged.push("segment");
+      for (let index = 0; index < segments.length; index += 1) {
+        const outcome = await this.#judgePassage({
+          passage: segments[index]!,
+          predicates: segmentScoped,
+          priorFindings,
+          signal,
+          severityOf,
+          emitted,
+          findings,
+          notices,
+          unit: `segment ${index + 1} of ${segments.length}`,
+          lost: `that segment and the ${segments.length - index - 1} after it were not judged`,
+        });
+        if (outcome === "collected") {
+          this.#counters.segmentsJudged += 1;
+          continue;
+        }
+        if (outcome === "failed-closed") {
+          this.#counters.failedClosed += 1;
+          continue;
+        }
+        if (outcome === "latched") {
+          this.#counters.failedClosed += 1;
+          this.#counters.segmentsSkipped += segments.length - index - 1;
+          return verdict();
+        }
+        // A stop. The segment this call was for is counted as skipped along
+        // with the ones after it: it got no answer either.
+        this.#counters.segmentsSkipped += segments.length - index;
+        return verdict();
+      }
+    }
+
+    return verdict();
+  }
+
+  /**
+   * One passage, one prompt, one repair retry, and the four ways it can end.
+   *
+   * ONE implementation for both scopes, deliberately. The two calls differ in
+   * exactly two things -- the passage and which predicates it carries -- so
+   * everything else (the pinned request shape, the parse, the repair, the four
+   * stop counters, the call row, the truncation and abort counts) is shared by
+   * construction rather than by two loops kept in step by review. A bake-off
+   * that compared the two scopes' resolvable rates against differently-strict
+   * parsers would be comparing the parsers.
+   *
+   * What it deliberately does NOT do is COUNT the passage: `segmentsJudged`,
+   * `failedClosed`, `segmentsSkipped` and the three `messageScope*` counters
+   * are the caller's, because the same outcome means different things about
+   * different units and a shared counter is exactly how a message-scope failure
+   * would end up inside a segment denominator.
+   *
+   * @param unit names the passage in a notice -- "segment 2 of 5", "the whole
+   *   message". Never the passage's TEXT, which is the string this system
+   *   exists to keep out of logs.
+   * @param lost what a run-ending stop costs BEYOND this call, as a clause the
+   *   notice appends. Computed by the caller, which is the only side that knows
+   *   what work was still owed.
+   */
+  async #judgePassage(input: {
+    readonly passage: JudgedPassage;
+    readonly predicates: readonly SemanticPredicate[];
+    readonly priorFindings: readonly Finding[];
+    readonly signal: AbortSignal | undefined;
+    readonly severityOf: ReadonlyMap<string, Severity>;
+    readonly emitted: Set<string>;
+    readonly findings: Finding[];
+    readonly notices: EngineDegradedNotice[];
+    readonly unit: string;
+    readonly lost: string;
+    readonly onCallIssued?: () => void;
+  }): Promise<PassageOutcome> {
+    let messages = buildMessages(input.passage, input.predicates, input.priorFindings);
+    let repaired = false;
+
+    for (;;) {
+      let completion: Tier2Completion;
+      input.onCallIssued?.();
+      try {
+        completion = await this.#engine.complete(messages, {
+          budgetMs: this.#budgetMs,
+          signal: input.signal,
+        });
+      } catch (cause) {
+        // NOT a stop we own, so not ours to degrade. `engine.ts` throws on a
+        // response with no choices and on one naming no model precisely
+        // because folding either into an empty answer would report the
+        // passage CLEAN; swallowing it here would restore that false negative
+        // and, since such an error has no `reason`, file it as a caller abort
+        // on top.
+        if (!(cause instanceof DeadlineExpired)) throw cause;
+        // Every stop ends the RUN, not just this passage, and the honest
+        // reason is narrower than "the model is too slow". A budget expiry
+        // says THIS call did not finish in THIS budget; whether the next
+        // one would is unknown, because passages differ in length and a
+        // short one can meet a budget a long one blew. What is known is that
+        // we cannot tell a slow model from a slow passage from here, and
+        // continuing risks spending a full budget per remaining passage to
+        // find out. A caller abort needs no such argument: nobody is waiting
+        // for any of it. Either way the message degrades to whatever the
+        // lower tiers found, which is what has been collected.
+        if (cause.reason === "budget") {
+          this.#counters.deadlineExpiries += 1;
+          // `call-budget-exhausted`, never `budget-exhausted`. The number that
+          // expired is `this.#budgetMs`, fixed when this judge was
+          // constructed; `ir.latencyBudgetMs` may have almost all of itself
+          // left, and the orchestrator files its own word for that from the
+          // timer IT armed. One word for both would have a bake-off count
+          // per-call model slowness against the spec 5.3 message budget.
+          input.notices.push({
+            reason: "call-budget-exhausted",
+            detail:
+              `the tier-2 call for ${input.unit} did not answer within its ` +
+              `${this.#budgetMs}ms per-call budget; ${input.lost}`,
+          });
+        } else if (cause.interrupted) this.#counters.callerAbortsMidGeneration += 1;
+        else this.#counters.callerAbortsWhileQueued += 1;
+        // No notice on either caller abort, deliberately. The caller withdrew
+        // and already knows; the orchestrator files its own budget notice
+        // from the timer IT armed, and a second one from here would report
+        // one event twice. This judge also cannot say why a caller withdrew
+        // -- a latency budget is only one of the reasons -- so any reason it
+        // named would be a guess in a field that must state fact.
+        return "stopped";
+      }
+
+      // One row per answered call, repair retries included, and the
+      // message-scope call is in here like any other: `JudgeCallRecord` is
+      // where an arm's token and TTFT columns come from, and a call kept out of
+      // it is a cost the bake-off cannot see.
+      this.#calls.push(completionCallRecord(completion));
+
+      // Counted from what the ENGINE reported, before and independently of
+      // whether the body parsed: a truncated response that happens to parse
+      // is still a response the model did not finish, and the bake-off reads
+      // this to tell a budget-killed arm from an incapable one.
+      if (completion.finishReason === "length") this.#counters.truncatedResponses += 1;
+      if (completion.finishReason === "abort") this.#counters.abortedResponses += 1;
+
+      // `finishReason` is threaded rather than left out: Task 2 measured
+      // inferring truncation from the thrown SyntaxError's wording putting 6
+      // of 16 boundary cases in the wrong bucket, and "length" is the engine
+      // stating that IT cut the response off.
+      const parsed = parseJudgeResponse(completion.content, completion.finishReason);
+      if (parsed.ok) {
+        this.#collect(
+          parsed.value,
+          input.passage,
+          completion.model,
+          input.severityOf,
+          input.emitted,
+          input.findings,
+        );
+        return "collected";
+      }
+
+      // "aborted" is handled apart from "truncated", DELIBERATELY, and the
+      // decision is not to retry. Task 3 measured the engine state behind it:
+      // an interrupt sets an engine-wide flag that the non-streaming path
+      // never clears, and every later call returns instantly with an empty
+      // body and finish_reason "abort" until something writes the flag back.
+      // `runWithDeadline` clears the flag it set itself, so an "abort"
+      // arriving here is an interrupt WE did not raise -- the engine is
+      // latched, a repair retry would be answered instantly and emptily, and
+      // so would every remaining passage. Retrying would also file the event
+      // as a model failure when nothing about the model was exercised.
+      //
+      // Nothing here recovers the engine, and that is worth stating rather
+      // than leaving to be discovered: `clearInterrupt` is deliberately NOT
+      // on the `Tier2Engine` seam, and `runWithDeadline` clears only the flag
+      // it set itself. So a judge holding a latched engine fails this way on
+      // its NEXT message too, and the one after -- one wasted call per
+      // message, indefinitely, until whoever set the flag clears it or the
+      // engine is rebuilt.
+      if (parsed.reason === "aborted") {
+        input.notices.push({
+          reason: "failed-closed",
+          detail:
+            `the engine reported the response for ${input.unit} aborted by an interrupt this ` +
+            `judge did not raise; the engine is latched, so ${input.lost}`,
+        });
+        return "latched";
+      }
+
+      if (repaired) {
+        // One repair, then fail closed. A model that will not emit valid JSON
+        // twice must never have its prose passed through as a judgement.
+        //
+        // `parsed.reason` is one of `schema.ts`'s fixed words. `parsed.detail`
+        // is NOT included: it is built from the body the model produced, and
+        // a model that will not emit JSON is emitting rearranged message text.
+        input.notices.push({
+          reason: "failed-closed",
+          detail:
+            `the answer for ${input.unit} could not be parsed after one repair retry ` +
+            `(${parsed.reason}), so it was not judged`,
+        });
+        return "failed-closed";
+      }
+      repaired = true;
+      this.#counters.repairAttempts += 1;
+      messages = [...messages, repairMessage(parsed.reason, parsed.detail)];
+    }
   }
 
   #collect(
     response: JudgeResponse,
-    segment: Segment,
+    passage: JudgedPassage,
     model: string,
     severityOf: ReadonlyMap<string, Severity>,
     emitted: Set<string>,
@@ -623,18 +882,25 @@ export class WebLlmJudge implements SemanticJudge {
         continue;
       }
 
-      // Against the SEGMENT's text, which is the only text the model was shown.
-      // Searching the whole message would let a quote resolve to a passage the
-      // model never read.
-      const resolved = resolveQuote(segment.text, finding.quote);
+      // Against the PASSAGE's text, which is the only text the model was shown.
+      // Searching more than that would let a quote resolve somewhere the model
+      // never read; searching less would refuse a message-scoped quote that
+      // straddles two segments, which is the whole reason the message call
+      // exists.
+      const resolved = resolveQuote(passage.text, finding.quote);
       if (resolved === undefined) {
         this.#counters.unresolvedQuotes += 1;
         continue;
       }
 
       const entityType = shadowIdFor(finding.predicateId);
-      const start = segment.start + resolved.start;
-      const end = segment.start + resolved.end;
+      // The PASSAGE's own start, which is 0 for the whole message -- so a
+      // message-scoped resolution is already absolute and is not shifted. A
+      // segment's start added to a message-relative offset produces a span that
+      // slices cleanly, satisfies core's `text === message.slice(start, end)`
+      // check, and points at the wrong words.
+      const start = passage.start + resolved.start;
+      const end = passage.start + resolved.end;
       // `start` and `end` are integers, so the first two colons separate the
       // key unambiguously whatever an entityType contains.
       const key = `${start}:${end}:${entityType}`;
@@ -745,8 +1011,21 @@ function shadowSeverities(
 }
 
 /**
- * One prompt per segment: a system turn holding the instructions and a user
- * turn holding this segment's predicates, context and text.
+ * One prompt per passage: a system turn holding the instructions and a user
+ * turn holding this passage's predicates, context and text.
+ *
+ * IDENTICAL in shape for a segment and for the whole message, and that is a
+ * decision rather than an omission. The two calls are meant to be comparable --
+ * same instructions, same JSON contract, same quoting rule, same word floor --
+ * so the only things that differ are the predicates the policy declared for
+ * that scope and the passage they are asked about. A second system prompt for
+ * the message call would be a second thing to keep in step, and would make the
+ * two scopes' resolvable and duplicate rates incomparable within one arm.
+ *
+ * Nothing tells the model which scope it is in, deliberately: a message-scoped
+ * predicate's own `nlPredicate` says "the message" (p-fin's reads "The message
+ * discloses that a named organisation is..."), and the instruction that matters
+ * -- quote from the passage in front of you -- is the same either way.
  *
  * The shape is dictated by the library, not by taste. READ from the shipped
  * 0.2.84 bundle: `postInitAndCheckFields` throws `SystemMessageOrderError` for
@@ -756,7 +1035,7 @@ function shadowSeverities(
  * surfaces as a bare TypeError from inside the library.
  */
 function buildMessages(
-  segment: Segment,
+  passage: JudgedPassage,
   predicates: readonly SemanticPredicate[],
   priorFindings: readonly Finding[],
 ): ChatCompletionMessageParam[] {
@@ -764,7 +1043,7 @@ function buildMessages(
   for (const predicate of predicates) {
     lines.push(`- ${predicate.id}: ${predicate.nlPredicate}`);
   }
-  lines.push("", priorFindingsLine(segment, priorFindings), "", "Passage:", segment.text);
+  lines.push("", priorFindingsLine(passage, priorFindings), "", "Passage:", passage.text);
   return [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: lines.join("\n") },
@@ -782,19 +1061,25 @@ function buildMessages(
  * label says what kind of thing is nearby, which is the whole context a judge
  * needs; the passage itself carries the value.
  *
- * Restricted to priors that OVERLAP this segment, since a label from three
- * paragraphs away is noise about a passage the model cannot see.
+ * Restricted to priors that OVERLAP this passage, since a label from three
+ * paragraphs away is noise about a passage the model cannot see. For the
+ * whole-message call that is every prior on the message, which is the same set
+ * Approach B's own prompt carries -- so the two arms' models are told the same
+ * thing about the same lower tier when they are shown the same text.
  *
  * Exported for the Approach-B-plus-tier-0 arm, which hands its model the same
  * context about the same lower tier. The leak this function exists to prevent
  * is the one that matters most for a bake-off, so there is one implementation
- * of it rather than one per arm; B passes the whole message as the "segment",
- * which is exactly the passage its model was shown.
+ * of it rather than one per arm; B passes the whole message as its passage,
+ * which is exactly what its model was shown.
  */
-export function priorFindingsLine(segment: Segment, priorFindings: readonly Finding[]): string {
+export function priorFindingsLine(
+  passage: JudgedPassage,
+  priorFindings: readonly Finding[],
+): string {
   const counts = new Map<string, number>();
   for (const prior of priorFindings) {
-    if (prior.start >= segment.end || prior.end <= segment.start) continue;
+    if (prior.start >= passage.end || prior.end <= passage.start) continue;
     counts.set(prior.entityType, (counts.get(prior.entityType) ?? 0) + 1);
   }
   if (counts.size === 0) return "Earlier tiers found nothing in this passage.";

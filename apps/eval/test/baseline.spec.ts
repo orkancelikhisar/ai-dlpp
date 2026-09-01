@@ -170,19 +170,48 @@ test("runs Approach B against the compiled arms over one compiled policy", async
     }
   }
 
-  // ONE CALL PER MESSAGE against one per selected segment, which is the one
-  // place the two methods legitimately differ in cost. Asserted off the CALL
-  // ROWS, so it is what the engine did rather than what the plan expected.
+  // WHAT ONE MESSAGE COSTS EACH METHOD, off the CALL ROWS -- what the engine
+  // did, not what the plan expected.
   const callsPerItem = (family: ArmFamily): number[] =>
     rowsByFamily
       .get(family)!
       .map((r) => (r.baselineStats ?? r.tier2Stats)!.calls.length);
   expect(callsPerItem("baseline-b")).toEqual([1, 1, 1]);
   expect(callsPerItem("baseline-b-tier0")).toEqual([1, 1, 1]);
-  // The compiled arms make more, because escalation selects several segments
-  // from these three messages. `> 3` rather than an exact figure: the exact
-  // count is `planBakeoff`'s business and `bakeoff.test.ts` pins it there.
-  expect(callsPerItem("compiled").reduce((a, b) => a + b, 0)).toBeGreaterThan(3);
+  // AND ONE ON THE COMPILED ARMS TOO, on THIS policy. `p-fin` declares exactly
+  // one semantic predicate and its scope is "message", so the judge asks it
+  // once about the whole message and enters no segment loop at all -- there is
+  // no segment-scoped clause for a per-segment call to carry, and a call
+  // carrying an empty predicate list is seconds of a 2 GB model spent on
+  // nothing. A policy declaring both scopes costs `selectedSegments + 1`; this
+  // one costs 1, which is the cost the compiled arm used to pay 2-6 times over
+  // while answering the predicate in a scope it was not declared in.
+  expect(callsPerItem("compiled")).toEqual([1, 1, 1]);
+  expect(callsPerItem("compiled-tier2-only")).toEqual([1, 1, 1]);
+  // ATTRIBUTED, so "one call" cannot be a judge that did nothing: every one of
+  // those calls was a whole-message call and every one of them was answered and
+  // collected. `unitsJudged` counts SEGMENTS and is 0 for exactly that reason.
+  for (const family of ["compiled", "compiled-tier2-only"] as const) {
+    const g = byFamily.get(family)!;
+    expect(g.ladder.messageScopeCalls, family).toBe(3);
+    expect(g.ladder.messageScopeJudged, family).toBe(3);
+    expect(g.ladder.messageScopeFailedClosed, family).toBe(0);
+    expect(g.ladder.unitsJudged, family).toBe(0);
+    // Approach B's single call IS its message call, so it has no separate
+    // message-scope column and a 0 there would claim it made none.
+    expect(byFamily.get("baseline-b")!.ladder.messageScopeCalls).toBeUndefined();
+  }
+  // AND THE MESSAGE BUDGET HELD. `p-fin` carries the compiler's real 5,000 ms
+  // and the orchestrator arms ONE deadline over the whole `judge()` call, so a
+  // second call per message is the thing that could have blown it. It did not,
+  // on this machine and this model: no arm filed a budget notice. This is a
+  // MEASUREMENT and not a guarantee -- it is one call per message here because
+  // the policy is message-only, and a policy declaring both scopes would spend
+  // this call and then start the segment loop inside the same 5,000 ms.
+  for (const g of gates) {
+    expect(g.degradedNotices["budget-exhausted"], g.arm).toBe(0);
+    expect(g.degradedNotices["call-budget-exhausted"], g.arm).toBe(0);
+  }
 
   // THE ASYMMETRY THAT DECIDES HOW TO READ THE LATENCY GATE, asserted rather
   // than described. B carries the whole 5,272-character policy document in
@@ -194,20 +223,41 @@ test("runs Approach B against the compiled arms over one compiled policy", async
   const b = byFamily.get("baseline-b")!;
   const compiledOnly = byFamily.get("compiled-tier2-only")!;
   expect(b.judgedUnit).toBe("message");
+  // The family's PLANNED unit, and on this policy it describes work the arm no
+  // longer does: every call asserted above was a whole-message call.
+  // `judgedUnitChars` and `judgedUnitsPerItem` are built from that planned
+  // segment distribution, so on a message-only policy the two of them describe
+  // passages nobody was shown. `ladder.messageScopeCalls` on the same row is
+  // what says so; closing the gap means making the judged unit a function of
+  // the IR's scopes rather than of the family alone, which is recorded as a
+  // carried risk in the README rather than done here.
   expect(compiledOnly.judgedUnit).toBe("segment");
   expect(b.promptTokens!.min).toBeGreaterThan(compiledOnly.promptTokens!.max);
   expect(b.gates.find((g) => g.gate === "p95-ttft")!.detail).toContain("judgedUnitChars");
 
-  // THE SCOPE DIFFERENCE, which is B's advantage and is intrinsic rather than a
-  // harness artifact. p-fin's one semantic predicate is declared
-  // `scope: "message"`; `WebLlmJudge` evaluates every predicate against a
-  // SEGMENT and reports `scopesJudged: ["segment"]`, so the orchestrator files
-  // one `scope-unjudged` notice per message. B puts the whole message in one
-  // call, so nothing goes unasked and it files none.
-  expect(compiledOnly.degradedNotices["scope-unjudged"]).toBe(3);
-  expect(byFamily.get("compiled")!.degradedNotices["scope-unjudged"]).toBe(3);
-  expect(b.degradedNotices["scope-unjudged"]).toBe(0);
-  expect(byFamily.get("baseline-b-tier0")!.degradedNotices["scope-unjudged"]).toBe(0);
+  // THE SCOPE DIFFERENCE, CLOSED, and the count is the record of it. p-fin's
+  // one semantic predicate is declared `scope: "message"`. Until the judge
+  // honoured that it evaluated every predicate against a SEGMENT and reported
+  // `scopesJudged: ["segment"]`, so the orchestrator filed one `scope-unjudged`
+  // notice per message on BOTH compiled families -- 3 of 3 here -- while both
+  // Approach-B families filed none, because B puts the whole message in one
+  // call. That was read as B's structural advantage on the only real compiled
+  // policy in this repository, and it was not: it was an unimplemented feature,
+  // and every head-to-head number taken before this line changed was taken with
+  // the compiled arm unable to answer the one predicate the policy declares.
+  //
+  // All four are 0 now, and all four for the same reason: every arm asks its
+  // model about the whole message.
+  for (const g of gates) expect(g.degradedNotices["scope-unjudged"], g.arm).toBe(0);
+  // And the 0s are not vacuous: this policy really does declare a predicate in
+  // a scope `unjudgedScopes` enumerates, so a judge that stopped naming
+  // "message" would put the 3s straight back. Read off the IR FILE, which is
+  // the independent oracle -- reading it off the run would be the record
+  // agreeing with itself.
+  const declaredScopes = (
+    JSON.parse(readFileSync(IR_PATH, "utf8")) as { semanticPredicates: { scope: string }[] }
+  ).semanticPredicates.map((p) => p.scope);
+  expect(declaredScopes).toEqual(["message"]);
 
   // And the tier-0 half really does differ between the paired arms, which is
   // what makes the intermediate arm worth its GPU time: `absent` is filed once

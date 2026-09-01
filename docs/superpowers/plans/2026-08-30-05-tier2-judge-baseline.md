@@ -1163,7 +1163,7 @@ git add -A && git commit -m "feat(tier2): WebLlmJudge emitting shadow entityType
 
 *Gaps as Task 6 left them. All three were closed by the degraded-channel commit; each entry below now records what closed it and what it left open:*
 
-3. **CLOSED (`feat(core)`, the degraded-channel commit) — `SemanticPredicate.scope` was unhonoured.** Every predicate is still judged per segment, including `scope: "message"`, but the gap is now *reported* rather than silent: `JudgeVerdict.scopesJudged` is required, `WebLlmJudge` answers `["segment"]`, and the orchestrator turns "the policy declares a scope you did not evaluate" into a `scope-unjudged` notice on every affected row. `JudgeRequest.text` now carries the whole message, so a judge that wants to answer the message scope can; doing so is Task 7's, and until it does the bake-off says so in every row instead of in a write-up nobody reads.
+3. **CLOSED — `SemanticPredicate.scope` is honoured.** In two commits. The degraded-channel commit made the gap *reported* rather than silent: `JudgeVerdict.scopesJudged` is required, and the orchestrator turns "the policy declares a scope you did not evaluate" into a `scope-unjudged` notice on every affected row. The message-scope commit closed the gap itself: `WebLlmJudge` partitions its predicates by declared scope, asks the message-scoped ones once about `JudgeRequest.text`, and names each scope it actually asked about. See the Task 13 deviation entry for the design and for the two claims in this plan it disproved.
 4. **CLOSED — nothing bounded the whole-message tier-2 budget. Owner: THE ORCHESTRATOR.** `detect` reads `ir.latencyBudgetMs`, subtracts what tiers 0 and 1 already spent (`remainingBudgetMs`), refuses to call the judge at all on a spent budget, and arms a single `AbortController` deadline at what is left — a deadline, never a `Promise.race`, since Task 3 measured that racing wedges the engine. The judge still spends a per-call budget per segment; what the orchestrator adds is the ceiling across N of them. The remaining seam is that `JudgeRequest.budgetMs` is informational — `WebLlmJudge` reads it for nothing and sizes its calls from its constructor budget — so sizing per-call budgets from what is left of the message is still open, and belongs with Task 12, which measures the result.
 5. **CLOSED — "fail closed to flag for user review" now has a channel.** `DetectionResult.degraded` is a REQUIRED `DegradedNotice[]`: `{ tier, reason, detail }`, with `reason` one of `failed-closed`, `call-budget-exhausted`, `budget-exhausted`, `absent`, `scope-unjudged`. An empty tier-2 return is no longer indistinguishable from a clean message. Read the field's own docblock before consuming it: `absent` is filed for every deliberately-disabled tier, so `degraded.length` is NOT a cleanliness test, and tier 1 has no channel into it at all (`SpanTagger.tag` returns findings with no verdict), so a truncated tier-1 read is still invisible here. Giving tier 1 a channel is the one piece of this gap still open, and has no owner.
 
@@ -2037,9 +2037,7 @@ answer to which method is better.
 - **One unexplained determinism break.** In one session three identical constrained calls at temperature 0 returned 175 / 588 / 599 completion tokens. Three later sessions were 26/26 byte-identical. Unexplained is not benign — log completion-token counts per call so a recurrence is visible.
 - **Upstream issue #844** (prefill over 120 tokens throwing) did not reproduce here across 36 calls at 1,480-4,360 prompt tokens, but was reported on integrated AMD/Windows. It is a portability risk, not a local one.
 
-- **`SemanticPredicate.scope: "message"` is declared by the IR and not honoured by the judge, and it is the scope the only compiled real policy uses.** `WebLlmJudge` evaluates every predicate against one SEGMENT and returns `scopesJudged: ["segment"]` whatever the predicate declares, so the orchestrator files a `scope-unjudged` notice per message. `judge.ts` says this in its own docblock; what nothing said is how much it costs. MEASURED: `policies/compiled/p-fin.ir.json` — the one compiled artifact in this repository, and the only IR here that can be paired with the document it came from — declares exactly one semantic predicate, `client-relationship-disclosure`, with `scope: "message"`. `apps/eval/fixtures/semantic-ir.json`, the hand-written fixture every bake-off arm runs against by default, declares its one predicate as `scope: "segment"`. So the bake-off is judgeable today only because it runs the fixture: moving it onto the real compiled policy files **100% of the tier-2 work as unjudged**, and the arms would still produce complete, schema-valid files.
-
-  Nothing is missing from the interface. `JudgeRequest.text` already carries the whole message verbatim, and core's own docblock says it exists for precisely this — "a message-scoped predicate whose evidence spans two segments is invisible to a judge that only sees segments". So the work is in `judge.ts` and needs no change to core, to the record schema or to the IR.
+- **`SemanticPredicate.scope: "message"` — CLOSED, see the Task 13 deviation entry.** The judge now partitions predicates by declared scope: message-scoped ones are asked once about the whole message, segment-scoped ones per segment. On `policies/compiled/p-fin.ir.json`, whose one predicate is message-scoped, both compiled families now file zero `scope-unjudged` (MEASURED, `test/baseline.spec.ts`) and make ONE call per message rather than one per selected segment. What it opened instead: `familyShape().judgedUnit` is a property of the arm's FAMILY and is now also a property of the policy's scopes, so on a message-only policy `judgedUnitChars` and `judgedUnitsPerItem` describe segment work the arm does not do. Recorded in the README's carried risks; unowned.
 
 **Next plans:** 6 — the extension; 7 — corpus pipeline; 8 — evaluation and analysis.
 
@@ -2570,3 +2568,75 @@ total's "1.41 GiB" is the `.onnx`-only figure and the with-metadata one is 1.45;
 the README's "about a dozen" page functions are seventeen; and
 `docs/assets/webgpu-divergence.svg` still carried the unqualified collapse story
 that the prose three lines below it now hedges twice.
+
+### Task 13: `SemanticPredicate.scope: "message"`, honoured
+
+**The plan said the work was in `judge.ts` and "needs no change to core, to the
+record schema or to the IR". Two of those three were wrong**, and the third is a
+scope the plan did not consider at all.
+
+- **Core changed.** `detect` refused to call the judge whenever escalation
+  selected no segment, so a message that is entirely a fenced block had its
+  whole-message clause filed unjudged. Escalation is a decision about SEGMENTS
+  and a message-scoped predicate is not a segment question; the condition is now
+  `escalated.length === 0 && !hasMessageScoped`, and the judge is called with an
+  EMPTY segment list, which `JudgeRequest.segments` now documents as a real
+  request. `escalate.ts`'s own reason for excluding code cannot justify the old
+  behaviour, because the message call is shown the fenced block either way — it
+  is shown everything, by definition.
+- **The record schema changed**, and it had to: `Tier2StatsSchema` is
+  `satisfies Record<keyof JudgeStats, ZodType>`, so the three new counters were a
+  compile error until they were added — which is the seam working. Same for
+  `judgeDelta` and `Tier2DetectStats`.
+- **`familyShape().judgedUnit` is now wrong on a message-only policy**, which
+  nothing anticipated. See the README's carried risks.
+
+**This plan's acceptance criterion for the follow-on task was also wrong.** It
+asked for `scopesJudged` "containing both scopes" on `p-fin`. `p-fin` declares
+exactly one semantic predicate and its scope is `"message"`; it declares NO
+segment-scoped predicate, so there is nothing for the segment scope to evaluate
+and naming it would be a record claiming a scope no call carried. What the
+criterion was really after — `scope-unjudged: 0` — holds, because
+`unjudgedScopes` only reports a scope the policy declares a predicate in.
+
+**The design, and what was rejected.**
+
+- The two scopes PARTITION the predicate list rather than the message call being
+  an ADDITION to unchanged per-segment calls. `PredicateScope`'s own definition
+  in core is the authority: "what a semantic predicate is asked about: one
+  segment at a time, or the whole message at once". Sending a message-scoped
+  predicate per segment as well asks a declared-once question N+1 times and puts
+  its findings in a scope the policy did not declare for it. The consequence on
+  `p-fin` is that the compiled arm makes ONE call per message, not
+  `selectedSegments + 1` — the segment loop has no clause to carry.
+- The message call goes FIRST. It is exactly one call, known before the run,
+  where the segment list is not; message-LAST makes coverage of the policy's
+  message clause depend on how many segments a message happened to have, and
+  under a budget that admits ~1 call it would never be reached. Message-first
+  also spends that call on the same unit Approach B spends its own single call
+  on. MEASURED: moving the block after the segment loop fails four tests.
+- One call for ALL message-scoped predicates together, per the plan's own
+  decision, and matching what the segment loop already does per segment.
+- `scopesJudged` names a scope this run ASKED about — the word is pushed beside
+  the call, not beside the answer. That is the reading `JudgeVerdict.scopesJudged`
+  already documented ("a run cut short reports that separately, in `degraded`")
+  and the one `judge.test.ts`'s "files no scope-unjudged notice for a run its own
+  budget cut short" already pinned, and the SAME rule is now applied to both
+  scopes rather than one rule each.
+
+**What the budget did, measured under `p-fin`'s real 5,000 ms.** Nothing broke.
+On this machine, `Qwen3.5-2B-q4f16_1-MLC`, `test/baseline.spec.ts`: both compiled
+families make 3 answered calls over 3 items (one per message), p50 TTFT ~0.56 s,
+p50 prompt 297 and 305 tokens, and no arm files `budget-exhausted` or
+`call-budget-exhausted`. Both Approach-B families also make 3 calls, at a p50
+TTFT of ~2.7 s on p50 prompts of 1,433 and 1,450 tokens (two runs agreed on the
+token counts exactly and on the latencies to within 2%) — so B fails
+`p95-ttft` and both compiled arms pass it. The extra call this task was expected
+to add does not exist on this policy, and the one call it does make is 4.8x
+faster than B's because the compiled prompt carries one predicate where B's
+carries the whole 5,272-character document.
+
+**`scope-unjudged` on `p-fin` went from 3-of-3 on both compiled families to 0 on
+all four.** `baseline.spec.ts`'s assertions and their comment are updated: the
+comment used to explain B's advantage as intrinsic to the method, and it was
+intrinsic to an unimplemented feature.

@@ -204,7 +204,16 @@ export interface JudgeRequest {
    * only sees segments -- that is the whole reason this field exists.
    */
   readonly text: string;
-  /** The segments this judge is asked to look at, with absolute offsets into `text`. */
+  /**
+   * The segments this judge is asked to look at, with absolute offsets into
+   * `text`.
+   *
+   * MAY BE EMPTY, and empty is a request rather than a degenerate call: it says
+   * escalation found no segment worth a per-segment call while the policy still
+   * declares a `scope: "message"` predicate, which is a question about `text`
+   * and not about any segment. `detect` skips the judge entirely when there is
+   * neither, so an empty list here always means there is message-scoped work.
+   */
   readonly segments: Segment[];
   readonly ir: PolicyIr;
   /** A snapshot of what the earlier tiers found; see the call site in `detect`. */

@@ -822,6 +822,9 @@ describe("WebLlmJudge", () => {
       "deadlineExpiries",
       "duplicatesDropped",
       "failedClosed",
+      "messageScopeCalls",
+      "messageScopeFailedClosed",
+      "messageScopeJudged",
       "repairAttempts",
       "rung1",
       "rung2",
@@ -1023,5 +1026,330 @@ describe("judge verdict", () => {
     expect(result.findings).toEqual([]);
     expect(result.degraded.filter((d) => d.reason === "failed-closed")).toHaveLength(1);
     expect(result.degraded.every((d) => d.tier === 2 || d.reason === "absent")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message scope: the predicates the policy declared about the WHOLE message.
+// ---------------------------------------------------------------------------
+
+/**
+ * `PredicateScope`'s own definition in core is what these pin: "what a semantic
+ * predicate is asked about: one segment at a time, or the whole message at
+ * once". So the two scopes PARTITION the predicate list -- a message-scoped
+ * predicate is asked once, about everything, and is not also sent per segment.
+ *
+ * `policies/compiled/p-fin.ir.json`, the only compiled policy in this
+ * repository, declares exactly one semantic predicate and its scope is
+ * "message", so the all-message shape below is the shipped one rather than a
+ * corner case.
+ */
+describe("message-scoped predicates", () => {
+  const messagePredicate = (id = "client-relationship") => ({
+    id,
+    nlPredicate: `whether the message discloses ${id}`,
+    scope: "message" as const,
+  });
+  const segmentPredicate = (id: string) => ({
+    id,
+    nlPredicate: `whether this passage contains ${id}`,
+    scope: "segment" as const,
+  });
+
+  /** Two prose segments with a one-character gap, as `req` assembles them. */
+  const LEFT = "Northwind Traders is the counterparty";
+  const RIGHT = "on the renewal we discussed on Friday.";
+  const twoSegments = (): Segment[] => [
+    { kind: "prose", start: 0, end: LEFT.length, text: LEFT },
+    { kind: "prose", start: LEFT.length + 1, end: LEFT.length + 1 + RIGHT.length, text: RIGHT },
+  ];
+
+  it("asks one call about the whole message, carrying every message-scoped predicate", async () => {
+    // Both halves of decision 1: ONE extra call (not one per predicate), and
+    // all the message-scoped predicates together in it. TWO message-scoped
+    // predicates, because at one the batched and per-predicate shapes make the
+    // same number of calls and the test cannot tell them apart.
+    const ir = predicateIr({
+      predicates: [messagePredicate("m1"), messagePredicate("m2"), segmentPredicate("s1")],
+    });
+    const engine = fakeEngine({ findings: [] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const request = req(twoSegments(), ir);
+    await judge.judge(request);
+
+    // One message call, then one per segment.
+    expect(engine.calls).toHaveLength(3);
+    const message = engine.promptOf(0);
+    expect(message).toContain("- m1: ");
+    expect(message).toContain("- m2: ");
+    // The segment-scoped clause is NOT in the message call: it was declared
+    // about a segment, and asking it here would judge it in a scope the policy
+    // did not name for it.
+    expect(message).not.toContain("- s1: ");
+    // The whole message, including the gap `req` puts between the segments --
+    // which is the text no segment call is ever shown.
+    expect(message).toContain(request.text);
+
+    for (const index of [1, 2]) {
+      expect(engine.promptOf(index)).toContain("- s1: ");
+      expect(engine.promptOf(index)).not.toContain("- m1: ");
+      expect(engine.promptOf(index)).not.toContain("- m2: ");
+    }
+  });
+
+  it("resolves a message-scoped quote to ABSOLUTE offsets, not offsets into a segment", async () => {
+    // The hazard `spans.ts` was built around: a span shifted by a segment's
+    // start still satisfies core's `text === message.slice(start, end)` check,
+    // because the shifted slice is sliced from the same string -- so it passes
+    // every guard and points at the wrong words. The segment here starts at a
+    // NON-ZERO offset, which is what makes a `+ segment.start` visible: at
+    // offset 0 the right answer and the wrong one are the same number.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const segments: Segment[] = [{ kind: "prose", start: 12, end: 12 + MSG.length, text: MSG }];
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET);
+    const request = req(segments, ir);
+    const verdict = await judge.judge(request);
+
+    // The expectation is read off the REQUEST's own text, not off anything the
+    // judge computed.
+    const at = request.text.indexOf(QUOTE);
+    expect(at).toBeGreaterThan(0);
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]!.start).toBe(at);
+    expect(verdict.findings[0]!.end).toBe(at + QUOTE.length);
+    expect(request.text.slice(verdict.findings[0]!.start, verdict.findings[0]!.end)).toBe(QUOTE);
+    // And the ladder reports on it like any other finding: a message-scoped
+    // resolution is not exempt from the rung the bake-off reads as evidence
+    // strength. `rung1 + rung2` is documented as exactly the findings returned.
+    expect(judge.stats.rung1).toBe(1);
+    expect(judge.stats.rung2).toBe(0);
+  });
+
+  it("answers a quote that straddles two segments, which no segment call can", async () => {
+    // The reason `JudgeRequest.text` exists, in core's own words: "a
+    // message-scoped predicate whose evidence spans two segments is invisible
+    // to a judge that only sees segments". The quote below crosses the gap
+    // between the two segments, so it occurs in NEITHER of them.
+    const straddling = "counterparty on the renewal";
+    const segments = twoSegments();
+    expect(segments.every((s) => !s.text.includes(straddling))).toBe(true);
+
+    const message = predicateIr({ predicates: [messagePredicate()] });
+    const judge = new WebLlmJudge(fakeEngine({ findings: [hit(straddling)] }), BUDGET);
+    const request = req(segments, message);
+    const found = (await judge.judge(request)).findings;
+    expect(found).toHaveLength(1);
+    expect(request.text.slice(found[0]!.start, found[0]!.end)).toBe(straddling);
+
+    // THE CONTROL, and it is what makes the assertion above about the message
+    // scope rather than about the ladder: the identical quote under a
+    // SEGMENT-scoped predicate resolves nowhere, once per segment.
+    const perSegment = predicateIr({ predicates: [segmentPredicate("client-relationship")] });
+    const other = new WebLlmJudge(fakeEngine({ findings: [hit(straddling)] }), BUDGET);
+    expect((await other.judge(req(segments, perSegment))).findings).toEqual([]);
+    expect(other.stats.unresolvedQuotes).toBe(2);
+  });
+
+  it("spends NO segment call when every predicate is message-scoped", async () => {
+    // The shipped shape: `p-fin` declares one predicate, message-scoped. A
+    // segment call would carry an empty predicate list -- seconds of a 2 GB
+    // model spent asking about nothing -- so the loop is not entered at all,
+    // and the segments are not filed as skipped either: no stop cut anything
+    // short.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const engine = fakeEngine({ findings: [hit()] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const verdict = await judge.judge(req(twoSegments(), ir));
+
+    expect(engine.calls).toHaveLength(1);
+    expect(verdict.scopesJudged).toEqual(["message"]);
+    expect(judge.stats.messageScopeCalls).toBe(1);
+    expect(judge.stats.messageScopeJudged).toBe(1);
+    expect(judge.stats.segmentsJudged).toBe(0);
+    expect(judge.stats.segmentsSkipped).toBe(0);
+  });
+
+  it("spends NO message call when every predicate is segment-scoped", async () => {
+    // The other half of the partition, and the arm that was already shipping:
+    // an extra whole-message call under a policy with no message-scoped clause
+    // would be a call spent on nothing.
+    const engine = fakeEngine({ findings: [] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const verdict = await judge.judge(req(twoSegments(), predicateIr()));
+    expect(engine.calls).toHaveLength(2);
+    expect(verdict.scopesJudged).toEqual(["segment"]);
+    expect(judge.stats.messageScopeCalls).toBe(0);
+    expect(judge.stats.messageScopeJudged).toBe(0);
+  });
+
+  it("names both scopes, in the order it asked about them, when the policy declares both", async () => {
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const judge = new WebLlmJudge(fakeEngine({ findings: [] }), BUDGET);
+    const verdict = await judge.judge(req(twoSegments(), ir));
+    expect(verdict.scopesJudged).toEqual(["message", "segment"]);
+  });
+
+  it("judges the message scope even when it was handed no segment at all", async () => {
+    // Escalation is a decision about SEGMENTS. A message-scoped predicate is
+    // not a segment question, so an empty segment list is not a reason to skip
+    // it -- the orchestrator hands one over precisely when nothing qualified.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const engine = fakeEngine({ findings: [hit()] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const verdict = await judge.judge({
+      text: MSG,
+      segments: [],
+      ir,
+      priorFindings: [],
+      budgetMs: 30_000,
+    });
+    expect(engine.calls).toHaveLength(1);
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.scopesJudged).toEqual(["message"]);
+  });
+
+  it("claims no scope when a segment-scoped policy was handed no segment", async () => {
+    // The mirror, and it is a fact this judge used to get wrong: with an empty
+    // segment list it made no call and still answered `["segment"]`, which
+    // erased the orchestrator's `scope-unjudged` notice for a scope nothing had
+    // asked about.
+    const engine = fakeEngine({ findings: [] });
+    const judge = new WebLlmJudge(engine, BUDGET);
+    const verdict = await judge.judge({
+      text: MSG,
+      segments: [],
+      ir: predicateIr(),
+      priorFindings: [],
+      budgetMs: 30_000,
+    });
+    expect(engine.calls).toEqual([]);
+    expect(verdict.scopesJudged).toEqual([]);
+  });
+
+  it("counts the message call's repair retry against the message, and rows it like any other", async () => {
+    // `messageScopeCalls` counts ISSUED calls, so the retry is in it; the
+    // per-call rows carry both, because a call that failed to parse still spent
+    // its tokens and its time-to-first-token.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const judge = new WebLlmJudge(
+      fakeEngine({ script: [{ raw: "not json at all" }, { findings: [hit()] }] }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(whole(), ir));
+    expect(verdict.findings).toHaveLength(1);
+    expect(judge.stats.messageScopeCalls).toBe(2);
+    expect(judge.stats.repairAttempts).toBe(1);
+    expect(judge.stats.messageScopeJudged).toBe(1);
+    expect(judge.stats.calls).toHaveLength(2);
+  });
+
+  it("charges a failed-closed message call to the message, never to the segment accounting", async () => {
+    // `failedClosed` is documented and consumed as a count of SEGMENTS, and it
+    // is one of the three terms of the segment invariant. A message-scope
+    // failure landing there makes that sum exceed the segments handed over,
+    // which is the denominator a recall number is built from.
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        script: [
+          { raw: "not json" },
+          { raw: "still not json" },
+          { findings: [hit(QUOTE, 0.9, "s1")] },
+        ],
+      }),
+      BUDGET,
+    );
+    const segments = twoSegments();
+    const verdict = await judge.judge(req(segments, ir));
+
+    expect(judge.stats.messageScopeFailedClosed).toBe(1);
+    expect(judge.stats.failedClosed).toBe(0);
+    // The run CONTINUES: one unit failing closed is not a stop.
+    expect(judge.stats.segmentsJudged).toBe(2);
+    expect(judge.stats.segmentsJudged + judge.stats.failedClosed + judge.stats.segmentsSkipped).toBe(
+      segments.length,
+    );
+    expect(verdict.degraded?.map((n) => n.reason)).toEqual(["failed-closed"]);
+    expect(verdict.degraded?.[0]!.detail).toContain("the whole message");
+  });
+
+  it("files the segments as skipped when a stop ends the run on the message call", async () => {
+    // Message-first means a stop there costs the segments, and a scorer's
+    // denominator has to say so -- `deadlineExpiries` is 1 whether the budget
+    // blew on the message call or on segment 39.
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const judge = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("budget", 30_000, true) }),
+      BUDGET,
+    );
+    const segments = twoSegments();
+    const verdict = await judge.judge(req(segments, ir));
+
+    expect(judge.stats.messageScopeCalls).toBe(1);
+    expect(judge.stats.messageScopeJudged).toBe(0);
+    expect(judge.stats.messageScopeFailedClosed).toBe(0);
+    expect(judge.stats.deadlineExpiries).toBe(1);
+    expect(judge.stats.segmentsSkipped).toBe(segments.length);
+    expect(judge.stats.segmentsJudged).toBe(0);
+    // The scope was ASKED about -- see the verdict's own docblock -- so it is
+    // named, and the budget word is what says the answer never arrived.
+    expect(verdict.scopesJudged).toEqual(["message"]);
+    expect(verdict.degraded?.[0]!.detail).toContain("the whole message");
+    expect(verdict.degraded?.[0]!.detail).toContain("2 segment(s) were not judged");
+  });
+
+  it("skips no segment when the stopped message call was the only work there was", async () => {
+    // The control for the count above: with no segment-scoped predicate the
+    // loop would not have run, so nothing was skipped and the notice says what
+    // was actually lost.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const judge = new WebLlmJudge(
+      fakeEngine({ throws: new DeadlineExpired("budget", 30_000, true) }),
+      BUDGET,
+    );
+    const verdict = await judge.judge(req(twoSegments(), ir));
+    expect(judge.stats.segmentsSkipped).toBe(0);
+    expect(verdict.degraded?.[0]!.detail).toContain("1 message-scoped predicate(s) were not judged");
+  });
+
+  it("keeps two clauses that name the same span, and drops one clause restated", async () => {
+    // The de-duplication key is `start:end:entityType`, and it is still the
+    // right key across the two calls because a predicate has exactly ONE scope:
+    // no entityType is carried by both the message call and the segment calls,
+    // so a collision means one clause restated and never two clauses agreeing.
+    const ir = predicateIr({ predicates: [messagePredicate("m1"), segmentPredicate("s1")] });
+    const judge = new WebLlmJudge(
+      fakeEngine({
+        script: [
+          // The message call restates its own finding, which IS a duplicate.
+          { findings: [hit(QUOTE, 0.9, "m1"), hit(QUOTE, 0.7, "m1")] },
+          { findings: [hit(QUOTE, 0.9, "s1")] },
+        ],
+      }),
+      BUDGET,
+    );
+    const found = (await judge.judge(req(whole(), ir))).findings;
+    expect(judge.stats.duplicatesDropped).toBe(1);
+    // Two POLICY CLAUSES over one span survive as two findings: core's cluster
+    // resolution is what decides the action for the overlap, and collapsing
+    // them here would silently drop one clause's severity.
+    expect(found.map((f) => f.entityType)).toEqual(["pred:m1", "pred:s1"]);
+    expect(new Set(found.map((f) => `${f.start}:${f.end}`)).size).toBe(1);
+  });
+
+  it("files no scope-unjudged notice through detect() for a message-scoped policy", async () => {
+    // The end of the chain, and the defect this closes: `p-fin`'s one predicate
+    // is message-scoped, so every message used to carry a `scope-unjudged`
+    // notice while the prompting baseline answered the same clause in one call.
+    const ir = predicateIr({ predicates: [messagePredicate()] });
+    const result = await detect({
+      ir: loadPolicyIr(JSON.stringify(ir)),
+      provider: "claude",
+      text: MSG,
+      config: { tier0: false, tier1: false, tier2: true },
+      engines: { tier2: new WebLlmJudge(fakeEngine({ findings: [hit()] }), BUDGET) },
+    });
+    expect(result.degraded.filter((d) => d.reason === "scope-unjudged")).toEqual([]);
+    expect(result.findings.map((f) => f.text)).toEqual([QUOTE]);
   });
 });

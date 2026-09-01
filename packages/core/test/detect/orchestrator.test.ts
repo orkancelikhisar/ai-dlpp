@@ -717,6 +717,60 @@ describe("tier-2 escalation", () => {
     expect(result.degraded[0]!.detail).toContain("was not called");
   });
 
+  it("calls the judge with an EMPTY segment list for a message-scoped predicate", async () => {
+    // Escalation decides which SEGMENTS are worth a judge. A message-scoped
+    // predicate is asked about the whole message at once, so no segment has to
+    // qualify for it to be answerable -- `JudgeRequest.text` is right there.
+    // CODE_ONLY selects nothing, which used to skip the judge and file the
+    // clause as unjudged on every message that is a paste.
+    const { calls, engine } = spyJudge();
+    const result = await detect({
+      ir: irWith({ semanticPredicates: [predicate("m1", "message")] }),
+      provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: tagger([]), tier2: engine },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.segments).toEqual([]);
+    // The whole message is still there, which is the only thing the call needs.
+    expect(calls[0]!.text).toBe(CODE_ONLY);
+    // It really ran, so it has a timing -- the field that tells "did tier 2
+    // run?" apart from "did it find nothing?".
+    expect(result.timings.tier2Ms).toBeDefined();
+  });
+
+  it("still reports the SEGMENT scope unjudged when escalation selected nothing", async () => {
+    // The mixed policy, which is the case a single-scope test cannot separate:
+    // the judge is called for the message clause, and the segment clause really
+    // did go unevaluated because no segment qualified. One notice, for that
+    // scope, from what the judge reported rather than from the skip branch.
+    // A judge answering `["message"]`, which is what `WebLlmJudge` really
+    // reports when it is handed an empty segment list and a message-scoped
+    // predicate -- pinned on the other side of the package boundary by
+    // `packages/tier2/test/judge.test.ts`, since core cannot import tier 2.
+    const calls: JudgeRequest[] = [];
+    const messageJudge: SemanticJudge = {
+      judge: async (request) => {
+        calls.push(request);
+        return { findings: [], scopesJudged: ["message"] };
+      },
+    };
+    const result = await detect({
+      ir: irWith({
+        semanticPredicates: [predicate("m1", "message"), predicate("s1", "segment")],
+      }),
+      provider: "chatgpt", text: CODE_ONLY, config: T2,
+      engines: { tier1: tagger([]), tier2: messageJudge },
+    });
+    expect(calls).toHaveLength(1);
+    expect(kinds(result)).toEqual([{ tier: 2, reason: "scope-unjudged" }]);
+    expect(result.degraded[0]!.detail).toContain('scope "segment"');
+    // From the post-verdict loop, NOT the escalation-skip branch: the judge was
+    // called, so a detail claiming it was not would be a record stating the
+    // opposite of what happened.
+    expect(result.degraded[0]!.detail).toContain("the tier-2 judge reported evaluating");
+    expect(result.degraded[0]!.detail).not.toContain("escalation selected none");
+  });
+
   it("reports nothing when the skipped message had no predicate to judge either", async () => {
     const result = await detect({
       ir, provider: "chatgpt", text: CODE_ONLY, config: T2,

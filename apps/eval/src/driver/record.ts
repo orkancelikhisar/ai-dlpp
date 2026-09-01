@@ -464,6 +464,21 @@ const Tier2StatsSchema = z.object({
   segmentsJudged: JUDGE_COUNTER,
   /** Segments a stop ended the run before reaching, plus the one whose call raised it. */
   segmentsSkipped: JUDGE_COUNTER,
+  /**
+   * Engine calls ISSUED with the whole message as the passage -- what honouring
+   * `SemanticPredicate.scope: "message"` costs, per item. At most 2 (the call
+   * plus its repair retry); 0 when the policy declares no message-scoped
+   * predicate. The calls themselves are in `calls` like any other.
+   */
+  messageScopeCalls: JUDGE_COUNTER,
+  /** 0 or 1: the whole-message call answered and its findings were collected. */
+  messageScopeJudged: JUDGE_COUNTER,
+  /**
+   * 0 or 1: the whole-message call answered and yielded no judgement. Kept out
+   * of `failedClosed`, which is a count of SEGMENTS and a term of the segment
+   * denominator.
+   */
+  messageScopeFailedClosed: JUDGE_COUNTER,
   /** Runs stopped by a budget expiry; at most 1 per judge() call by construction. */
   deadlineExpiries: JUDGE_COUNTER,
   /** Caller aborts that really interrupted a generation. */
