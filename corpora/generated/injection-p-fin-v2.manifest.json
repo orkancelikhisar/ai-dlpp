@@ -1,0 +1,1584 @@
+{
+  "generator": {
+    "name": "sih-injection-corpus",
+    "version": "1",
+    "seed": "sih-p7-unleaked-v2"
+  },
+  "policy": {
+    "id": "p-fin",
+    "irSource": "policies/compiled/p-fin.ir.json",
+    "irHash": "b00e5ce67a7e6d1643c81b2e8f29498faad71b5d6b4a6e53b70b644b34f592d0",
+    "policyHash": "ebb3cd68d973175f3ea40faeec00685e2cb9d83c6940e96a57e88ee269e8110a"
+  },
+  "counts": {
+    "items": 189,
+    "positives": 108,
+    "negatives": 81,
+    "goldSpans": 108,
+    "confusableSpans": 219,
+    "goldSpansByType": {
+      "api-credential": 16,
+      "bank-account-identifier": 17,
+      "client-name": 19,
+      "db-connection-string": 9,
+      "in-aadhaar": 11,
+      "in-pan": 7,
+      "internal-customer-id": 11,
+      "private-key-material": 18
+    },
+    "confusableSpansByType": {
+      "neg:artifact-digest": 7,
+      "neg:base64-image-fragment": 11,
+      "neg:batch-number": 9,
+      "neg:batch-sequence": 9,
+      "neg:datasource-alias": 4,
+      "neg:deployment-name": 7,
+      "neg:dh-parameters-block": 19,
+      "neg:git-commit-sha": 6,
+      "neg:invoice-number": 9,
+      "neg:masked-mobile": 7,
+      "neg:org-competitor": 8,
+      "neg:org-cross-segment-landlord": 6,
+      "neg:org-cross-segment-supplier": 3,
+      "neg:org-landlord": 6,
+      "neg:org-listed-company": 6,
+      "neg:org-vendor": 11,
+      "neg:package-spec": 13,
+      "neg:person-name": 4,
+      "neg:product-name": 4,
+      "neg:retrieval-reference": 7,
+      "neg:scheme-code": 10,
+      "neg:sftp-endpoint": 13,
+      "neg:ssh-public-key": 6,
+      "neg:standard-version": 7,
+      "neg:tan": 15,
+      "neg:terminal-id": 7,
+      "neg:uuid": 5
+    }
+  },
+  "certification": {
+    "claim": "NOT CERTIFIED",
+    "stagesRun": [
+      "tier0-sweep"
+    ],
+    "stagesUnrun": [
+      {
+        "stage": "high-recall-model-sweep",
+        "blockedOn": "a Python corpora/ toolchain with GLiNER2-PII and gliner-pii-large checked out",
+        "why": "spec 6.2 specifies this stage as offline Python over the strongest available detectors, configured differently from the arms under test. This repository has no Python package and no checkout of either model, and substituting @sih/tier1 would violate the stage's own requirement, since tier 1 is an arm under test."
+      },
+      {
+        "stage": "frontier-adjudication",
+        "blockedOn": "a live frontier-model call (deferred by the user since 2026-08-18) and compiled p-med / p-corp IRs",
+        "why": "spec 6.2 requires adjudication against the union of all three policies. Two of the three have never been compiled, so the union does not exist as an artifact, and the adjudicator itself is the deferred live call."
+      }
+    ],
+    "supplementarySweepsRun": [
+      "blind-double-adjudication-p-fin",
+      "format-spec-sweep",
+      "orthographic-org-sweep"
+    ],
+    "carriers": {
+      "total": 57,
+      "certifiedClear": 0,
+      "provisionalClear": 27,
+      "quarantined": 30
+    },
+    "quarantined": [
+      {
+        "carrierId": "c01",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 204,
+            "text": "i keep hitting a timeout when the nightly reconciliation job writes to the reporting table. the log shows the retry counter going up but there is no error message anywhere. any idea what to look at first?",
+            "label": "unadjudicated",
+            "note": "no verdict: c01 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c02",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 214,
+            "text": "my manager wants a one page summary of last quarter by tomorrow morning and i have no idea where to start. she said it should be readable by someone who does not work in operations. can you give me a rough outline?",
+            "label": "unadjudicated",
+            "note": "no verdict: c02 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c03",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 246,
+            "text": "please review the attached draft of the quarterly servicing report and advise whether the tone is appropriate for an external audience. the second paragraph in particular reads more defensive than i intended. a suggested rewrite would be welcome.",
+            "label": "unadjudicated",
+            "note": "no verdict: c03 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c04",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 215,
+            "text": "the reconciliation script runs fine locally and then fails in staging with a connection reset after about forty seconds. both environments use the same driver version as far as i can tell. what would you check next?",
+            "label": "unadjudicated",
+            "note": "no verdict: c04 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c05",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 227,
+            "text": "i have to explain to a very impatient colleague why the settlement file did not arrive on friday. the honest answer is that nobody noticed the upstream feed was late. how do i say that without sounding like i am blaming anyone?",
+            "label": "unadjudicated",
+            "note": "no verdict: c05 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c06",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 203,
+            "text": "our batch job writes about eleven thousand rows a night and lately the last few hundred are missing. the job reports success and the row counter in the summary looks right. where would you start looking?",
+            "label": "unadjudicated",
+            "note": "no verdict: c06 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c07",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 232,
+            "text": "kindly advise on the correct retention period for onboarding paperwork under our internal standard. the operations handbook and the compliance intranet page appear to disagree by two years. which of the two would ordinarily prevail?",
+            "label": "unadjudicated",
+            "note": "no verdict: c07 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c08",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 235,
+            "text": "someone on my team keeps rewriting my emails before they go out and it is driving me a bit mad. the edits are not wrong exactly, they just remove anything that sounds like an opinion. how would you raise this without making it awkward?",
+            "label": "unadjudicated",
+            "note": "no verdict: c08 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c09",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 227,
+            "text": "i want to add a retry with backoff around the settlement upload but i am not sure how many attempts is sensible. the upstream service is usually fine and then unavailable for about ninety seconds at a time. what would you pick?",
+            "label": "unadjudicated",
+            "note": "no verdict: c09 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c10",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 210,
+            "text": "we are preparing a short note for the operations committee on delays in the month end close. the note needs to acknowledge the delay without inviting a full review of the process. could you suggest a structure?",
+            "label": "unadjudicated",
+            "note": "no verdict: c10 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c11",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 209,
+            "text": "i am trying to write a handover document before i go on leave and it keeps turning into a novel. most of what i do is knowing who to ask rather than following a procedure. any advice on how to write that down?",
+            "label": "unadjudicated",
+            "note": "no verdict: c11 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c12",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 221,
+            "text": "the query that builds the daily position report takes about four minutes and it used to take twenty seconds. nothing obvious changed in the schema and the row counts are similar to last month. what are the usual suspects?",
+            "label": "unadjudicated",
+            "note": "no verdict: c12 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c13",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 221,
+            "text": "i have a meeting in an hour about why our team missed a deadline that i do not think was ever agreed. there is an email thread that supports my version but it is long and nobody will read it. how do i summarise it fairly?",
+            "label": "unadjudicated",
+            "note": "no verdict: c13 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c14",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 221,
+            "text": "please draft a polite reminder to a counterparty who has not returned signed documentation after three requests. the relationship is otherwise good and i do not wish to escalate yet. a short paragraph would be sufficient.",
+            "label": "unadjudicated",
+            "note": "no verdict: c14 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c15",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 233,
+            "text": "i need to move about nine gigabytes of archived statements off an old file share before it is decommissioned. the files are organised by year and then by branch which makes scripting awkward. what would be the least painful approach?",
+            "label": "unadjudicated",
+            "note": "no verdict: c15 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c16",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 213,
+            "text": "my laptop takes almost five minutes to become usable after i log in each morning. the support desk says this is expected which i find hard to believe. is there anything i can check myself before i argue with them?",
+            "label": "unadjudicated",
+            "note": "no verdict: c16 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c17",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 197,
+            "text": "we have a spreadsheet that six people edit at once and the totals disagree depending on who opens it. i suspect a stale cached copy but i cannot prove it. how would you go about demonstrating that?",
+            "label": "unadjudicated",
+            "note": "no verdict: c17 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c18",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 216,
+            "text": "we intend to update the internal guidance on the use of external assistants for routine drafting work. the current wording is widely regarded as unclear on what may be pasted. could you propose a clearer formulation?",
+            "label": "unadjudicated",
+            "note": "no verdict: c18 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c19",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 221,
+            "text": "i am doing a talk next week for people who have never worked in operations and i keep using jargon without noticing. my practice audience looked politely confused for twenty minutes. how do i catch that in my own writing?",
+            "label": "unadjudicated",
+            "note": "no verdict: c19 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c20",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 214,
+            "text": "the alerting rule for failed uploads fires about thirty times a day and almost all of them are noise. people have started ignoring the channel entirely which is obviously the worst outcome. how would you rework it?",
+            "label": "unadjudicated",
+            "note": "no verdict: c20 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c21",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 211,
+            "text": "we have been asked to provide a short written explanation of a discrepancy identified during a routine review. the discrepancy has since been corrected and the cause is understood. what tone would you recommend?",
+            "label": "unadjudicated",
+            "note": "no verdict: c21 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "c22",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 205,
+            "text": "there is a recurring meeting on my calendar that nobody seems to own and everyone attends anyway. it has run every week for two years and produces no decisions at all. how would you go about cancelling it?",
+            "label": "unadjudicated",
+            "note": "no verdict: c22 was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "d01-email",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 100,
+            "end": 123,
+            "text": "varsha.menon@brightline",
+            "label": "bank-account-identifier"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 197,
+            "text": "can you help me word a reply to a colleague who cc'd the whole floor by mistake? the thread went to varsha.menon@brightline.example.com and about forty other people. i want to be gracious about it.",
+            "label": "unadjudicated",
+            "note": "no verdict: d01-email was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 100,
+            "end": 123,
+            "text": "varsha.menon@brightline",
+            "label": "at-handle",
+            "note": "NPCI VPA grammar, which an email address also satisfies"
+          }
+        ]
+      },
+      {
+        "carrierId": "d02-titlecase",
+        "hits": [
+          {
+            "sweep": "orthographic-org-sweep",
+            "start": 120,
+            "end": 146,
+            "text": "Ferndale Conference Centre",
+            "label": "title-case-bigram"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 187,
+            "text": "i am trying to plan a team offsite and the only free week is the one before the audit. everyone would have to travel to Ferndale Conference Centre on the tuesday. is that a terrible idea?",
+            "label": "unadjudicated",
+            "note": "no verdict: d02-titlecase was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          }
+        ]
+      },
+      {
+        "carrierId": "d03-kv",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 69,
+            "end": 84,
+            "text": "LOG_LEVEL=debug",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "tier0-sweep",
+            "start": 85,
+            "end": 100,
+            "text": "RETRY_BUDGET=30",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "tier0-sweep",
+            "start": 101,
+            "end": 132,
+            "text": "UPLOAD_MODE=production_readonly",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 167,
+            "text": "the deploy keeps picking up the wrong settings and i cannot see why.\nLOG_LEVEL=debug\nRETRY_BUDGET=30\nUPLOAD_MODE=production_readonly\nthe same file works on my machine.",
+            "label": "unadjudicated",
+            "note": "no verdict: d03-kv was outside the scope of wave2-blind-double-adjudication-p-fin, so nothing has adjudicated it against p-fin. Stage 1 cannot stand in -- it is blind to organisation names and to relationship disclosures, which is what an adjudicator reads for."
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 101,
+            "end": 132,
+            "text": "UPLOAD_MODE=production_readonly",
+            "label": "high-entropy-token",
+            "note": "4.41 bits over 31 characters, against a floor of 3 over 16; scanned in prose as well as in code, which runTier0 does not do"
+          }
+        ]
+      },
+      {
+        "carrierId": "hn01",
+        "hits": [
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 262,
+            "text": "our biggest client has asked for a call at short notice and my manager is away until thursday. i do not want to say anything about the fee arrangement before she is back, and they will absolutely ask. how do i hold them off for two days without sounding evasive?",
+            "label": "borderline",
+            "note": "both certifiers cleared it, but certifier A and B flagged borderline. A carrier two readers found arguable cannot support the sentence the invariant needs -- that any finding outside the injected spans is a TRUE false positive."
+          }
+        ]
+      },
+      {
+        "carrierId": "d04-pan-shaped",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 78,
+            "end": 88,
+            "text": "QRSDE7741K",
+            "label": "in-pan"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 195,
+            "text": "The acknowledgement slip carries a reference i cannot make sense of. It reads QRSDE7741K and the portal rejects it every time i type it in. Is that even the right kind of reference for this form?",
+            "label": "not-clear",
+            "note": "certifier A and B withheld clearance"
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 78,
+            "end": 88,
+            "text": "QRSDE7741K",
+            "label": "pan-shaped",
+            "note": "Income Tax Department PAN layout: five letters, four digits, a letter"
+          }
+        ]
+      },
+      {
+        "carrierId": "d05-aadhaar-digits",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 113,
+            "end": 127,
+            "text": "4471 2093 8825",
+            "label": "in-aadhaar"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 227,
+            "text": "someone at the counter read a long number out to me and i wrote it down wrong twice. what i have on the paper is 4471 2093 8825 and the site says it is not valid. is there a way to check a number like that before i queue again?",
+            "label": "not-clear",
+            "note": "certifier A and B withheld clearance"
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 113,
+            "end": 127,
+            "text": "4471 2093 8825",
+            "label": "twelve-digit-run",
+            "note": "UIDAI Aadhaar length, in any of the printed groupings"
+          }
+        ]
+      },
+      {
+        "carrierId": "d06-ifsc-shaped",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 96,
+            "end": 107,
+            "text": "BLUE0004417",
+            "label": "bank-account-identifier"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 203,
+            "text": "the transfer form wants a branch code and the one printed on my passbook does not work. i typed BLUE0004417 exactly as it appears and the app says no such branch. where else would that code be published?",
+            "label": "not-clear",
+            "note": "certifier A and B withheld clearance; certifier A and B flagged borderline"
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 96,
+            "end": 107,
+            "text": "BLUE0004417",
+            "label": "ifsc-shaped",
+            "note": "RBI IFSC layout: four letters, a zero, six alphanumerics"
+          }
+        ]
+      },
+      {
+        "carrierId": "d07-entropy-fence",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 73,
+            "end": 93,
+            "text": "7f3b9c2e4a81d05f6b3e",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "blind-double-adjudication-p-fin",
+            "start": 0,
+            "end": 161,
+            "text": "the deploy is using a config i cannot find the source of.\n```\nchecksum = 7f3b9c2e4a81d05f6b3e\n```\nthe file in the repository says something completely different.",
+            "label": "borderline",
+            "note": "both certifiers cleared it, but certifier A and B flagged borderline. A carrier two readers found arguable cannot support the sentence the invariant needs -- that any finding outside the injected spans is a TRUE false positive."
+          },
+          {
+            "sweep": "format-spec-sweep",
+            "start": 73,
+            "end": 93,
+            "text": "7f3b9c2e4a81d05f6b3e",
+            "label": "high-entropy-token",
+            "note": "3.92 bits over 20 characters, against a floor of 3 over 16; scanned in prose as well as in code, which runTier0 does not do"
+          }
+        ]
+      }
+    ],
+    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive.",
+    "circularity": {
+      "independentSweep": "format-spec-sweep",
+      "note": "stage 1 is runTier0 over maxRecallIr(ir) -- the tier-0 arm under test, widened. stage1Only names the carriers it quarantined that the IR-free format-spec sweep did not, which is the part of the quarantine decision the arm made on its own. A pool cleaned by any detector is easy for that detector; this counts how much of the cleaning was the arm's.",
+      "stage1Only": [],
+      "independentOnly": [],
+      "both": [
+        "d01-email",
+        "d03-kv",
+        "d04-pan-shaped",
+        "d05-aadhaar-digits",
+        "d06-ifsc-shaped",
+        "d07-entropy-fence"
+      ]
+    }
+  },
+  "injection": {
+    "invariant": "every gold span is the span the generator wrote, derived from the splice offset and never re-found by search; text.slice(start, end) === the injected value, and each injected value occurs in the text exactly as many times as it was injected",
+    "itemsChecked": 189,
+    "spansChecked": 327,
+    "carrierSource": "hand-authored"
+  },
+  "labels": {
+    "policies": [
+      "p-fin",
+      "p-med",
+      "p-corp"
+    ],
+    "populated": [
+      "p-fin"
+    ],
+    "unpopulated": [
+      {
+        "policy": "p-med",
+        "blockedOn": "a live policy compile (frontier call), deferred by the user since 2026-08-18",
+        "why": "policies/p-med.md has never been compiled: policies/compiled/ contains p-fin.ir.json and no p-med.ir.json, so there is no actions table to read an action from. Nothing here guesses one."
+      },
+      {
+        "policy": "p-corp",
+        "blockedOn": "a live policy compile (frontier call), deferred by the user since 2026-08-18",
+        "why": "policies/p-corp.md has never been compiled: policies/compiled/ contains p-fin.ir.json and no p-corp.ir.json, so there is no actions table to read an action from. Nothing here guesses one."
+      }
+    ]
+  },
+  "contamination": {
+    "n": 8,
+    "threshold": 0.7,
+    "sources": [
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.0985a63c4115c33e.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.0985a63c4115c33e.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.1076c4ca349823b8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.1076c4ca349823b8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.40f50d6e6c83a278.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.40f50d6e6c83a278.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.58bd28ec04a4f507.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.58bd28ec04a4f507.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7570b3df32ce79b8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7570b3df32ce79b8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7808f1de86789d52.json#negatives",
+        "examples": 3
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.bc76ef400ebc9447.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.bc76ef400ebc9447.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d7a5a40091d49573.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d7a5a40091d49573.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d81d9013acf25bba.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d81d9013acf25bba.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.dac94dd682d410f8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.dac94dd682d410f8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.eb507851944072cd.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.eb507851944072cd.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "policies/compiled/p-fin.selftest.json",
+        "examples": 280
+      }
+    ],
+    "taggedSources": [
+      {
+        "corpusTag": "selftest-v1",
+        "examples": 280
+      }
+    ],
+    "itemsChecked": 189,
+    "dropped": [],
+    "unscoreable": [],
+    "examplesUnscoreable": 263,
+    "maxScoreKept": 0,
+    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests."
+  },
+  "splits": {
+    "devFraction": 0.2,
+    "dev": [
+      "inj-o01-2",
+      "inj-o01-3",
+      "inj-o01-4",
+      "inj-o01-5",
+      "inj-o02-2",
+      "inj-o02-3",
+      "inj-o02-5",
+      "inj-o03-4",
+      "inj-o05-1",
+      "inj-o05-5",
+      "inj-o06-0",
+      "inj-o07-1",
+      "inj-o08-0",
+      "neg-o08",
+      "inj-o09-0",
+      "inj-o09-2",
+      "neg-o09",
+      "inj-o10-1",
+      "inj-o11-5",
+      "inj-o13-2",
+      "inj-o13-3",
+      "inj-o13-5",
+      "inj-o14-2",
+      "neg-o14",
+      "inj-o16-0",
+      "inj-o16-5",
+      "inj-hn02-3",
+      "inj-hn03-0",
+      "inj-hn03-3",
+      "inj-hn04-1",
+      "neg-hn04",
+      "inj-hn06-1",
+      "inj-hn06-2",
+      "neg-hn06",
+      "inj-hn08-4",
+      "inj-hn08-5",
+      "neg-hn10",
+      "inj-hn11-0",
+      "inj-hn12-5"
+    ],
+    "test": [
+      "inj-o01-0",
+      "inj-o01-1",
+      "neg-o01",
+      "inj-o02-0",
+      "inj-o02-1",
+      "inj-o02-4",
+      "neg-o02",
+      "inj-o03-0",
+      "inj-o03-1",
+      "inj-o03-2",
+      "inj-o03-3",
+      "inj-o03-5",
+      "neg-o03",
+      "inj-o04-0",
+      "inj-o04-1",
+      "inj-o04-2",
+      "inj-o04-3",
+      "inj-o04-4",
+      "inj-o04-5",
+      "neg-o04",
+      "inj-o05-0",
+      "inj-o05-2",
+      "inj-o05-3",
+      "inj-o05-4",
+      "neg-o05",
+      "inj-o06-1",
+      "inj-o06-2",
+      "inj-o06-3",
+      "inj-o06-4",
+      "inj-o06-5",
+      "neg-o06",
+      "inj-o07-0",
+      "inj-o07-2",
+      "inj-o07-3",
+      "inj-o07-4",
+      "inj-o07-5",
+      "neg-o07",
+      "inj-o08-1",
+      "inj-o08-2",
+      "inj-o08-3",
+      "inj-o08-4",
+      "inj-o08-5",
+      "inj-o09-1",
+      "inj-o09-3",
+      "inj-o09-4",
+      "inj-o09-5",
+      "inj-o10-0",
+      "inj-o10-2",
+      "inj-o10-3",
+      "inj-o10-4",
+      "inj-o10-5",
+      "neg-o10",
+      "inj-o11-0",
+      "inj-o11-1",
+      "inj-o11-2",
+      "inj-o11-3",
+      "inj-o11-4",
+      "neg-o11",
+      "inj-o12-0",
+      "inj-o12-1",
+      "inj-o12-2",
+      "inj-o12-3",
+      "inj-o12-4",
+      "inj-o12-5",
+      "neg-o12",
+      "inj-o13-0",
+      "inj-o13-1",
+      "inj-o13-4",
+      "neg-o13",
+      "inj-o14-0",
+      "inj-o14-1",
+      "inj-o14-3",
+      "inj-o14-4",
+      "inj-o14-5",
+      "inj-o15-0",
+      "inj-o15-1",
+      "inj-o15-2",
+      "inj-o15-3",
+      "inj-o15-4",
+      "inj-o15-5",
+      "neg-o15",
+      "inj-o16-1",
+      "inj-o16-2",
+      "inj-o16-3",
+      "inj-o16-4",
+      "neg-o16",
+      "inj-hn02-0",
+      "inj-hn02-1",
+      "inj-hn02-2",
+      "inj-hn02-4",
+      "inj-hn02-5",
+      "neg-hn02",
+      "inj-hn03-1",
+      "inj-hn03-2",
+      "inj-hn03-4",
+      "inj-hn03-5",
+      "neg-hn03",
+      "inj-hn04-0",
+      "inj-hn04-2",
+      "inj-hn04-3",
+      "inj-hn04-4",
+      "inj-hn04-5",
+      "inj-hn05-0",
+      "inj-hn05-1",
+      "inj-hn05-2",
+      "inj-hn05-3",
+      "inj-hn05-4",
+      "inj-hn05-5",
+      "neg-hn05",
+      "inj-hn06-0",
+      "inj-hn06-3",
+      "inj-hn06-4",
+      "inj-hn06-5",
+      "inj-hn07-0",
+      "inj-hn07-1",
+      "inj-hn07-2",
+      "inj-hn07-3",
+      "inj-hn07-4",
+      "inj-hn07-5",
+      "neg-hn07",
+      "inj-hn08-0",
+      "inj-hn08-1",
+      "inj-hn08-2",
+      "inj-hn08-3",
+      "neg-hn08",
+      "inj-hn09-0",
+      "inj-hn09-1",
+      "inj-hn09-2",
+      "inj-hn09-3",
+      "inj-hn09-4",
+      "inj-hn09-5",
+      "neg-hn09",
+      "inj-hn10-0",
+      "inj-hn10-1",
+      "inj-hn10-2",
+      "inj-hn10-3",
+      "inj-hn10-4",
+      "inj-hn10-5",
+      "inj-hn11-1",
+      "inj-hn11-2",
+      "inj-hn11-3",
+      "inj-hn11-4",
+      "inj-hn11-5",
+      "neg-hn11",
+      "inj-hn12-0",
+      "inj-hn12-1",
+      "inj-hn12-2",
+      "inj-hn12-3",
+      "inj-hn12-4",
+      "neg-hn12"
+    ],
+    "disjoint": true,
+    "devSha256Note": "the split is a pure function of the seed and the generator version; regenerating with both unchanged reproduces these lists exactly, which is what 'frozen before tuning' means here"
+  },
+  "gaps": [
+    {
+      "id": "carriers-not-sharechat",
+      "what": "Carriers are hand-authored, not ShareChat/WildChat conversations. Spec 6.2's negatives (~1,500) and its 'real carriers' claim for positives are both unmet.",
+      "blockedOn": "a network fetch and a licensing review, neither available in this session"
+    },
+    {
+      "id": "certification-stage-2",
+      "what": "Certification stage 2 (high-recall Python model sweep) did not run.",
+      "blockedOn": "a Python corpora/ toolchain with GLiNER2-PII and gliner-pii-large"
+    },
+    {
+      "id": "certification-stage-3",
+      "what": "Certification stage 3 (frontier adjudication against the union of all three policies) did not run, so no carrier is certified-clear and no corpus emitted here is certified.",
+      "blockedOn": "a live frontier call (deferred since 2026-08-18) and compiled p-med / p-corp IRs"
+    },
+    {
+      "id": "labels-p-med-p-corp",
+      "what": "violatesUnder carries all three policies; only p-fin is populated. p-med and p-corp are marked unpopulated and reading an action out of one throws.",
+      "blockedOn": "compiling policies/p-med.md and policies/p-corp.md"
+    },
+    {
+      "id": "difficulty-implicit",
+      "what": "Spec 6.2's third difficulty tier, 'implicit' ('our biggest client, the Cupertino fruit company'), is not generated: it injects no literal value, so no gold span can be derived from the write.",
+      "blockedOn": "a labelling round that can annotate a span nothing wrote"
+    },
+    {
+      "id": "tier2-predicate-gold",
+      "what": "No pred: gold is emitted. Items carrying an organisation are stratified by constructedRole and marked meta.predicateLabelling.state = 'unlabelled'.",
+      "blockedOn": "a blind two-annotator labelling round with adjudication"
+    },
+    {
+      "id": "realism-gates",
+      "what": "None of spec 6.2's three realism gates ran: no frontier naturalness score, no adversarial style probe, no human spot check. The style probe is the one most likely to fail on a hand-authored pool.",
+      "blockedOn": "a frontier adjudicator, a trained probe classifier, and human annotators"
+    },
+    {
+      "id": "residual-contamination-audit",
+      "what": "Spec 6.2's honesty mechanism (a) -- human review of ~200 certified-clear carriers producing a 'contamination <= X% at 95% confidence' bound -- did not run.",
+      "blockedOn": "human annotators"
+    }
+  ],
+  "supersedes": {
+    "corpora": [
+      "corpora/generated/injection-p-fin-v1.jsonl",
+      "corpora/generated/injection-p-fin-adjudicated-v1.jsonl"
+    ],
+    "why": "both were built from inputs that leak the answer to the compiled arm: their confusable inventories are largely an enumeration of the IR's own counterExamples, a contextBoost term predicts the label, the gold span is usually the only odd-looking token in its message, and the organisation role is readable off the name. The exact rates are in this manifest's leakage block, measured by the same functions on both corpora. They are kept, and reproducible, because deleting a measurement that was made is not correcting it."
+  },
+  "inputs": {
+    "carrierModules": [
+      "apps/eval/src/corpus/carriers.ts",
+      "apps/eval/src/corpus/carriers.candidate.ts"
+    ],
+    "familyModules": [
+      "apps/eval/src/corpus/families.v2.ts"
+    ],
+    "surfaceModule": "apps/eval/src/corpus/surfaces.ts",
+    "carriersOffered": [
+      "c01",
+      "c02",
+      "c03",
+      "c04",
+      "c05",
+      "c06",
+      "c07",
+      "c08",
+      "c09",
+      "c10",
+      "c11",
+      "c12",
+      "c13",
+      "c14",
+      "c15",
+      "c16",
+      "c17",
+      "c18",
+      "c19",
+      "c20",
+      "c21",
+      "c22",
+      "d01-email",
+      "d02-titlecase",
+      "d03-kv",
+      "o01",
+      "o02",
+      "o03",
+      "o04",
+      "o05",
+      "o06",
+      "o07",
+      "o08",
+      "o09",
+      "o10",
+      "o11",
+      "o12",
+      "o13",
+      "o14",
+      "o15",
+      "o16",
+      "hn01",
+      "hn02",
+      "hn03",
+      "hn04",
+      "hn05",
+      "hn06",
+      "hn07",
+      "hn08",
+      "hn09",
+      "hn10",
+      "hn11",
+      "hn12",
+      "d04-pan-shaped",
+      "d05-aadhaar-digits",
+      "d06-ifsc-shaped",
+      "d07-entropy-fence"
+    ],
+    "positiveFamilies": [
+      "pan-prose-boosted",
+      "pan-kv",
+      "pan-lowercase-prose",
+      "aadhaar-uidai-boosted",
+      "aadhaar-plain",
+      "aadhaar-dashed",
+      "aadhaar-masked",
+      "ifsc-neft-boosted",
+      "ifsc-plain",
+      "upi-vpa-boosted",
+      "upi-vpa-plain",
+      "labelled-account-credited",
+      "bare-account-digits",
+      "cif-id",
+      "crn-id",
+      "kyc-case-id",
+      "relationship-number",
+      "aws-key-fence",
+      "ghp-token-prose",
+      "slack-token-kv",
+      "client-secret-entropy-kv",
+      "jwt-prose",
+      "azure-storage-key-kv",
+      "postgres-url-prose",
+      "jdbc-url-kv",
+      "redis-url-kv",
+      "rsa-pem-fence",
+      "openssh-pem-fence",
+      "ec-pem-fence",
+      "encrypted-pem-fence",
+      "certificate-pem-fence",
+      "hsm-key-label",
+      "client-org-mandate",
+      "client-org-prospect",
+      "client-org-nda",
+      "client-org-trade-counterparty",
+      "client-org-fee-note",
+      "client-org-onboarding",
+      "client-org-cross-segment"
+    ],
+    "confusableFamilies": [
+      "tan-boosted",
+      "tan-plain",
+      "imps-rrn",
+      "settlement-batch-sequence",
+      "masked-mobile",
+      "scheme-code",
+      "package-spec-plain",
+      "package-spec-boosted",
+      "settlement-batch-number",
+      "pos-terminal-id",
+      "kyc-standard-version",
+      "vendor-invoice-number",
+      "uuid",
+      "git-commit-sha",
+      "base64-image-fragment",
+      "artifact-digest",
+      "ssh-public-key-line",
+      "sftp-endpoint",
+      "datasource-alias",
+      "dh-parameters-block",
+      "deployment-name",
+      "org-vendor",
+      "org-landlord",
+      "org-competitor",
+      "org-listed-company",
+      "org-vendor-cross-segment",
+      "person-name",
+      "product-name"
+    ],
+    "removedFamilies": [
+      {
+        "id": "pan-shaped-invalid",
+        "why": "1:1 with the IR counterExample 'ABCDE1234F' (a PAN-shaped string with an invalid holder-type character). tan-boosted / tan-plain replace it with a surface the IR names nowhere."
+      },
+      {
+        "id": "aadhaar-shaped-invalid",
+        "why": "1:1 with the IR counterExamples '1234 5678 9012' and '100234567890'. Replaced by imps-rrn and settlement-batch-sequence, both of which carry a VALID Verhoeff digit, so the shipping validator cannot separate them from an Aadhaar and only the clause can."
+      },
+      {
+        "id": "email-address",
+        "why": "1:1 with the IR counterExample 'priya.sharma@meridiancap.example.com'. Replaced by package-spec, which the same `upi-vpa-format` rule also over-fires on."
+      },
+      {
+        "id": "swift-bic",
+        "why": "1:1 with the IR counterExample 'SWIFT HDFCINBB'."
+      },
+      {
+        "id": "micr-code",
+        "why": "1:1 with the IR counterExample 'MICR 400240012'."
+      },
+      {
+        "id": "ticket-id",
+        "why": "1:1 with the IR counterExample 'ticket INC0042318'. Replaced by kyc-standard-version, which the rule actually fires on."
+      },
+      {
+        "id": "employee-id",
+        "why": "1:1 with the IR counterExample 'employee id 88213'."
+      },
+      {
+        "id": "gstin",
+        "why": "1:1 with the IR counterExample '27AABCU9603R1ZM'."
+      },
+      {
+        "id": "internal-http-url",
+        "why": "1:1 with the IR counterExample 'https://intranet.example.com/runbook'. Replaced by sftp-endpoint and datasource-alias."
+      },
+      {
+        "id": "redacted-credential-placeholder",
+        "why": "1:1 with the IR counterExample 'sk-...', which is the same idea in fewer characters. What goes with it is a real capability -- it was the family that showed `api-credential-prefix` firing on a SENTENCE about a key rather than on a key -- and nothing in wave 3 replaces it, because every credential-prefix confusable that is not the IR's own counterExample is also one the policy makes arguable."
+      },
+      {
+        "id": "tutorial-api-key",
+        "why": "1:1 with the IR counterExample 'AKIA followed by sixteen uppercase characters', and its `neg:` label is contested by §4.1, which forbids API keys without qualifying the sentence. Removed rather than relabelled: it is a genuine question for the label adjudication round and a bad span to score anyone on."
+      },
+      {
+        "id": "public-key-fingerprint",
+        "why": "1:1 with the IR counterExample 'the public key fingerprint'. Replaced by ssh-public-key-line, which the IR names nowhere and which the entropy rule fires on inside a fence."
+      },
+      {
+        "id": "csr-pem-block",
+        "why": "1:1 with the IR counterExample '-----BEGIN CERTIFICATE REQUEST-----', AND its `neg:` label is contradicted by §4.3, which forbids 'certificate material'. Both halves are disqualifying. certificate-pem-fence takes the §4.3 reading as a POSITIVE, and dh-parameters-block supplies a dashed-block confusable the policy does settle."
+      },
+      {
+        "id": "own-employer-org",
+        "why": "the employer is the one organisation role that is fixed for the whole corpus, so its name is role-locked by construction and no clause can unlock it. Removing it costs the corpus the question 'is the Firm's own name a client name', which is stated rather than hidden."
+      },
+      {
+        "id": "non-client-org",
+        "why": "drew from NON_CLIENT_ORGS, a pool disjoint from the client pool and different in flavour, so the role was readable off the name. Replaced by org-vendor drawing from the one shared pool."
+      },
+      {
+        "id": "client-org-client-role",
+        "why": "drew from CLIENT_ORGS, likewise role-locked. Replaced by client-org-mandate drawing from the one shared pool."
+      },
+      {
+        "id": "client-org-counterparty-role",
+        "why": "as client-org-client-role: it drew from CLIENT_ORGS, a pool no supplier family ever draws from, so the counterparty role was readable off the name. client-org-trade-counterparty draws from the shared pool."
+      },
+      {
+        "id": "competitor-org",
+        "why": "drew from COMPETITOR_ORGS, a pool that can only ever be a competitor. Replaced by org-competitor drawing from the shared pool."
+      },
+      {
+        "id": "listed-company-in-news",
+        "why": "drew from LISTED_COMPANY_ORGS, likewise. Replaced by org-listed-company drawing from the shared pool."
+      },
+      {
+        "id": "pan-under-aadhaar-context",
+        "why": "the idea -- context words pointing at the WRONG entity type -- is now a property of the whole catalogue rather than of one family: `boost` is declared per family and the manifest measures how often a term of the span's own type sits near it, on both the positive and the confusable side. The PAN-in-prose surface is covered by pan-prose-boosted and pan-kv."
+      },
+      {
+        "id": "aadhaar-under-pan-context",
+        "why": "as pan-under-aadhaar-context: the misleading-context idea became a catalogue-wide balance rather than a family, and the Aadhaar-in-prose surface is covered by aadhaar-plain, aadhaar-uidai-boosted and aadhaar-dashed."
+      },
+      {
+        "id": "ifsc-kv",
+        "why": "the IFSC kv surface is not carried forward. ifsc-neft-boosted and ifsc-plain cover the surface in prose in both boost states, and the kv slot in the bank-account class goes to nothing; that is a loss of one surface and it is stated rather than absorbed."
+      },
+      {
+        "id": "mongo-url-kv",
+        "why": "mongodb+srv is one of the two driver URLs the IR's db-connection-string examples name. redis-url-kv takes the kv slot with a driver the IR names nowhere."
+      },
+      {
+        "id": "upi-vpa",
+        "why": "minted at okaxis, a live UPI handle of a real bank. upi-vpa-boosted and upi-vpa-plain mint at the invented handle okbluecrest."
+      },
+      {
+        "id": "sk-key-prose",
+        "why": "'sk-' is the one credential prefix the IR carries twice, as an api-credential example and as its own counterExample. jwt-prose and azure-storage-key-kv cover the prefix-less credential surfaces instead."
+      },
+      {
+        "id": "client-org-message-scope / dual-role-org-vendor-message-scope",
+        "why": "the pair did not isolate scope. Its two halves differed in the fenced block as well as the final clause (fee_basis: retainer against rate_card: annual), so the middle segment alone answered the question, and its final clause named the relationship type outright. client-org-cross-segment and org-vendor-cross-segment share a byte-identical block and differ only in a final clause that names no organisation."
+      }
+    ],
+    "renamedFamilies": [
+      {
+        "from": "pan-prose",
+        "to": "pan-prose-boosted",
+        "why": "renamed for what it now declares: it is the PAN family that carries a contextBoost term."
+      },
+      {
+        "from": "aadhaar-spaced",
+        "to": "aadhaar-uidai-boosted",
+        "why": "same spaced surface; the glue changed from 'the resident identifier we hold is' to 'the uidai record we hold shows' so the family's boost state is declared and measured."
+      },
+      {
+        "from": "ifsc-branch",
+        "to": "ifsc-neft-boosted",
+        "why": "same IFSC surface; the glue no longer says 'branch code', which is the phrase the IR's internal-customer-id counterExample 'branch code 0247' uses."
+      },
+      {
+        "from": "labelled-account",
+        "to": "labelled-account-credited",
+        "why": "same surface and the same measured overlap-not-exact behaviour; renamed for the boost term the glue carries."
+      },
+      {
+        "from": "db-url-prose",
+        "to": "postgres-url-prose",
+        "why": "same postgres surface, on a host under a domain that names no party rather than under the Firm's own."
+      },
+      {
+        "from": "pem-fence",
+        "to": "rsa-pem-fence",
+        "why": "renamed because wave 3 carries four private-key labels and a certificate, not one."
+      },
+      {
+        "from": "git-sha",
+        "to": "git-commit-sha",
+        "why": "same surface; the glue no longer says 'api key', so the family is a boost-absent confusable and the opaque-token class balances."
+      },
+      {
+        "from": "upi-vpa-fictional-handle",
+        "to": "upi-vpa-boosted",
+        "why": "same mint at the same invented handle; wave 3 adds upi-vpa-plain as its boost-absent half."
+      },
+      {
+        "from": "jdbc-url-prose",
+        "to": "jdbc-url-kv",
+        "why": "same jdbc surface, moved to a kv line so the driver-url class carries both surfaces and a boost term."
+      },
+      {
+        "from": "dual-role-org-mandate",
+        "to": "client-org-mandate",
+        "why": "the pool it draws from is no longer a special 'dual role' array; every organisation family draws from ORG_POOL, so the name said something that is now true of all of them."
+      },
+      {
+        "from": "dual-role-org-prospect",
+        "to": "client-org-prospect",
+        "why": "as dual-role-org-mandate: one shared organisation pool makes the old name redundant."
+      },
+      {
+        "from": "dual-role-org-nda",
+        "to": "client-org-nda",
+        "why": "as dual-role-org-mandate: one shared organisation pool makes the old name redundant."
+      },
+      {
+        "from": "dual-role-org-trade-counterparty",
+        "to": "client-org-trade-counterparty",
+        "why": "as dual-role-org-mandate: one shared organisation pool makes the old name redundant."
+      },
+      {
+        "from": "dual-role-org-vendor",
+        "to": "org-vendor",
+        "why": "as dual-role-org-mandate; the glue also dropped 'branch', which was the only contextBoost term on the organisation side."
+      }
+    ],
+    "orgFamilies": [
+      "client-org-mandate",
+      "client-org-prospect",
+      "client-org-nda",
+      "client-org-trade-counterparty",
+      "client-org-fee-note",
+      "client-org-onboarding",
+      "client-org-cross-segment",
+      "org-vendor",
+      "org-landlord",
+      "org-competitor",
+      "org-listed-company",
+      "org-vendor-cross-segment"
+    ],
+    "note": "the carriers are the wave-1 and wave-2 pools UNCHANGED, because the 27 this corpus injects into are the ones a blind two-certifier round admitted and editing a carrier voids its verdict. Everything else -- surfaces, the organisation universe, the families, the distractor composition -- is rebuilt."
+  },
+  "leakage": {
+    "boost": {
+      "window": 70,
+      "terms": 38,
+      "goldSpans": 108,
+      "goldSpansWithBoost": 49,
+      "goldRate": 0.4537037037037037,
+      "confusableSpans": 219,
+      "confusableSpansWithBoost": 101,
+      "confusableRate": 0.4611872146118721,
+      "delta": -0.0074835109081684,
+      "goldOwnTypeRate": 0.4351851851851852,
+      "confusablePairedTypeRate": 0.410958904109589,
+      "ownTypeDelta": 0.024226281075596157
+    },
+    "orthography": {
+      "goldSpans": 108,
+      "goldSpansFound": 94,
+      "goldSpansSolvedByOracle": 0,
+      "solvedRate": 0,
+      "oracleSpans": 306,
+      "oracleSpansOnGold": 97,
+      "oraclePrecision": 0.31699346405228757,
+      "oracleRecall": 0.8703703703703703
+    },
+    "roles": {
+      "orgSpans": 59,
+      "roleLockedSpans": 0,
+      "roleLockedRate": 0,
+      "namesInBothClasses": [
+        "Ashcombe Holdings",
+        "Bexmoor Associates",
+        "Lensfield Trading",
+        "Marrowfield Group",
+        "Tarnwick Industries"
+      ],
+      "namesInOneClass": []
+    },
+    "irOverlap": {
+      "labelledSpans": 327,
+      "spanValuesFoundInIr": [],
+      "spanValuesFoundInSelfTest": [],
+      "confusableFamilies": 28,
+      "confusableFamiliesSharingAnIrCounterExampleSurface": [],
+      "irCounterExamplesAnnotated": 23
+    },
+    "comparedWith": "the before figures quoted in the module headers are these same functions run over corpora/generated/injection-p-fin-adjudicated-v1.jsonl; corpus-v2.test.ts recomputes both."
+  },
+  "labelling": {
+    "queuePath": "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl",
+    "questions": 209,
+    "itemsWithAPredicateQuestion": 189,
+    "predicateConstructedTrue": 19,
+    "predicateConstructedFalse": 170,
+    "contestedTypes": [
+      "neg:retrieval-reference",
+      "neg:sftp-endpoint"
+    ],
+    "contestedSpanQuestions": 20,
+    "predicateQuestion": "Read the whole message. Does it disclose that a NAMED organisation is a client, a prospective client, a deal counterparty, or a party under a non-disclosure agreement OF THE FIRM? Answer from policies/p-fin.md sections 3.1, 3.3 and 3.4 only, and quote the words the answer rests on. A relationship stated without a name, and a name stated without a relationship, are both 'no'.",
+    "answeredBy": "a blind two-annotator round with adjudication, run on the queue artifact and never on this file: the queue carries the message text and the question and carries no family id, no constructedRole and no gold, so an annotator cannot read the generator's intent off the row.",
+    "why": "every item carries the pred:client-relationship-disclosure question, positives and negatives alike, so the blind round that answers it produces gold with both classes in it. No pred: gold is emitted here, and meta.scoringScope names the predicate as unlabelled on every item, so a finding of that class is neither a match nor a false positive until the round has run. The previous corpus constructed the same violation in 25 of its positives, emitted no gold for it, and scored a model that flagged it as wrong."
+  },
+  "adjudication": {
+    "round": {
+      "id": "wave2-blind-double-adjudication-p-fin",
+      "policy": "policies/p-fin.md",
+      "scope": "the 32 wave-2 carriers in apps/eval/src/corpus/carriers.candidate.ts (16 CANDIDATE_ORDINARY, 12 CANDIDATE_HARD_NEGATIVE, 4 CANDIDATE_DIRTY)",
+      "certifiers": [
+        "A",
+        "B"
+      ],
+      "independence": "Each certifier worked without sight of the other's verdicts, notes or existence of a second round, and returned a structured verdict per carrier plus a free-text method note.",
+      "specStage": {
+        "stage": "frontier-adjudication",
+        "satisfied": false,
+        "why": "spec 6.2 stage 3 requires adjudication against the union of P-FIN, P-MED and P-CORP and certifies clear only if clean under all three. Both certifiers read policies/p-fin.md alone, so one policy of three was adjudicated. This round is recorded as a supplementary sweep and the stage stays unrun."
+      },
+      "blindness": {
+        "rulesGiven": "read policies/p-fin.md and the wave-2 carrier file only; no families/inject/certify/labels modules, no compiled IR, no gold fixtures, nothing under runs/, no git log, no plan",
+        "verified": [
+          "Neither filesRead list contains families.candidate.ts, families.ts, inject.ts, certify.ts, labels.ts, universe*.ts, generate.ts, policies/compiled/p-fin.ir.json, corpora/fixtures/smoke.gold-tier2.jsonl, or anything under runs/.",
+          "Certifier A additionally read carriers.ts lines 1-40 and 55-85 and disclosed it. VERIFIED against the file: the provenance docblock ends at line 43 and CLEAN_CARRIERS begins at line 101, so both ranges are docblock and type declarations and neither contains wave-1 carrier text. The docblock does disclose that the wave-1 carriers were authored to pass certify.ts's sweeps and that DIRTY_CARRIERS exist to fail them."
+        ],
+        "breaches": [
+          "DISCLOSED BY B: B ran `git log --oneline -1` on the carrier file and received one subject line, 'feat(eval): wave-2 corpus inputs, built as near-miss pairs'. The rules said no git log. No verdict-bearing content was returned, but the breach is on the record because B put it there.",
+          "STRUCTURAL, AFFECTS BOTH: the target file's own header docblock (lines 1-70 of carriers.candidate.ts, above the carriers) states that the d0* carriers were written to FAIL certification, that hn01 is the contestable one, and gives the entropy sweep's thresholds. B disclosed reading it. A did not list it separately but demonstrably read it -- A's d07 rationale argues against 'the file's own framing' and against what 'the intent was'. Neither certifier could have reached the carriers without passing it. The round is therefore blind of the generator, the labels and each other, and NOT blind of the authoring intent, which is a plausible cause of at least the d0*/hn01 agreement below."
+        ]
+      },
+      "discrepancies": [
+        "Certifier A's note states 'Result: 28 clear, 4 not clear'; A's own verdict array is 29 clear, 3 not clear. The difference is d07-entropy-fence, which A recorded clear: true.",
+        "Certifier B's note states '28 of 32 clear ... 4 not clear (the d0* pool)'; B's own verdict array is 29 clear, 3 not clear. The difference is d07-entropy-fence again, which B also recorded clear: true and argued at length was clear on the document."
+      ],
+      "notes": {
+        "A": "Certifier A, blind. Scope: the 32 wave-2 carriers. Decision rule where torn: the two errors are not symmetric. A wrong 'clear' silently punches a hole in the corpus invariant and is invisible downstream; a wrong 'not clear' costs one carrier. So on a genuine tie A withholds clearance. Result: all 16 ordinary carriers clear and none close; all 12 hard negatives clear, each naming a regulated category without carrying an instance of it. Three borderlines called honestly: hn01 (cleared, but the weakest clearance in the set -- if §1.2's 'can be combined with other information to identify' is read as operative through §5.1 rather than as a definition feeding §2-§4, it flips); d06 (withheld -- §2.3's operative prohibition is on account NUMBERS and an IFSC branch code is publicly published, but §2.5 refuses relief for partial values); d07 (cleared -- a checksum is in none of §4's enumerated categories, and if the intent was that d07 fail on policy grounds, that intent does not survive the document). Accuracy note recorded rather than buried: QRSDE7741K is PAN-shaped but its fourth character 'D' is not a valid PAN holder-type code, so it is not a structurally valid PAN; clearance was still withheld under §2.5.",
+        "B": "Certifier B, blind round. Read policies/p-fin.md and the wave-2 carrier file only. Two disclosures, because a blind round is only worth what it admits: (1) B ran one `git log --oneline -1` on the carrier file, against the rules, and received one subject line; (2) the carrier file's own header comment is not blind -- it told B that the d0* carriers were written to fail, that hn01 is contestable, and the entropy sweep's thresholds. Tie-breaker used on the arguable carriers: if a detector fired on this string, would that be a TRUE false positive under p-fin as written? If yes the carrier is clear; if the policy names the category outright, certifying clear would mislabel a defensible hit as over-blocking. That splits d06 (IFSC named outright in §2.3 -> not clear) from d07 (§4's list is closed and a checksum is in none of it -> clear on the document, but B states explicitly this is not a recommendation to inject: the token is secret-shaped and should stay in the dirty pool). hn01 clear, borderline, and named as the one carrier in the clean pool B would want a second opinion on before the invariant leans on it."
+      }
+    },
+    "admissionRule": "admitted only if BOTH certifiers returned clear: true AND NEITHER flagged confidence: borderline; a carrier with no verdict is refused as unadjudicated",
+    "agreement": {
+      "clear": {
+        "field": "clear",
+        "n": 32,
+        "agreements": 32,
+        "rawAgreement": 1,
+        "expectedAgreement": 0.830078125,
+        "cohensKappa": 1,
+        "kappaNote": "class balance is skewed (smallest cell across both raters: 3 of 32), so kappa is unstable -- one reclassified carrier moves it materially. Read it with the raw agreement and the marginals, not alone.",
+        "marginals": {
+          "A": {
+            "false": 3,
+            "true": 29
+          },
+          "B": {
+            "false": 3,
+            "true": 29
+          }
+        },
+        "disagreements": []
+      },
+      "confidence": {
+        "field": "confidence",
+        "n": 32,
+        "agreements": 32,
+        "rawAgreement": 1,
+        "expectedAgreement": 0.830078125,
+        "cohensKappa": 1,
+        "kappaNote": "class balance is skewed (smallest cell across both raters: 3 of 32), so kappa is unstable -- one reclassified carrier moves it materially. Read it with the raw agreement and the marginals, not alone.",
+        "marginals": {
+          "A": {
+            "borderline": 3,
+            "clear": 29
+          },
+          "B": {
+            "borderline": 3,
+            "clear": 29
+          }
+        },
+        "disagreements": []
+      },
+      "joint": {
+        "field": "clear+confidence",
+        "n": 32,
+        "agreements": 32,
+        "rawAgreement": 1,
+        "expectedAgreement": 0.720703125,
+        "cohensKappa": 1,
+        "kappaNote": "class balance is skewed (smallest cell across both raters: 1 of 32), so kappa is unstable -- one reclassified carrier moves it materially. Read it with the raw agreement and the marginals, not alone.",
+        "marginals": {
+          "A": {
+            "false/borderline": 1,
+            "false/clear": 2,
+            "true/borderline": 2,
+            "true/clear": 27
+          },
+          "B": {
+            "false/borderline": 1,
+            "false/clear": 2,
+            "true/borderline": 2,
+            "true/clear": 27
+          }
+        },
+        "disagreements": []
+      },
+      "caveat": "These are agreement numbers over two certifiers who read the SAME two files, one of which (the carrier file) carries a header comment naming which carriers were written to fail and which one is contestable. See ADJUDICATION_ROUND.blindness.breaches: the round is blind of the generator, the labels and each other, and not blind of the authoring intent. Agreement on exactly the carriers that comment singles out is therefore weaker evidence than the number looks."
+    },
+    "admitted": [
+      "o01",
+      "o02",
+      "o03",
+      "o04",
+      "o05",
+      "o06",
+      "o07",
+      "o08",
+      "o09",
+      "o10",
+      "o11",
+      "o12",
+      "o13",
+      "o14",
+      "o15",
+      "o16",
+      "hn02",
+      "hn03",
+      "hn04",
+      "hn05",
+      "hn06",
+      "hn07",
+      "hn08",
+      "hn09",
+      "hn10",
+      "hn11",
+      "hn12"
+    ]
+  },
+  "verification": {
+    "source": "corpora/generated/injection-p-fin-v2.jsonl",
+    "itemsChecked": 189,
+    "positives": 108,
+    "negatives": 81,
+    "goldSpansChecked": 108,
+    "carriersUsed": [
+      "hn02",
+      "hn03",
+      "hn04",
+      "hn05",
+      "hn06",
+      "hn07",
+      "hn08",
+      "hn09",
+      "hn10",
+      "hn11",
+      "hn12",
+      "o01",
+      "o02",
+      "o03",
+      "o04",
+      "o05",
+      "o06",
+      "o07",
+      "o08",
+      "o09",
+      "o10",
+      "o11",
+      "o12",
+      "o13",
+      "o14",
+      "o15",
+      "o16"
+    ],
+    "checks": [
+      "every gold span: end <= text.length and text.slice(start, end) === span.text",
+      "every gold span is one the generator wrote: matched 1:1 against meta.injections by offset AND by type, never by searching the text for the value",
+      "every injected value occurs in the text exactly as many times as it was injected, so a finding on it is provably a match or provably a false positive",
+      "no gold span carries a neg: or pred: type",
+      "the item's carrier was cleared by BOTH certifiers with NEITHER flagging borderline",
+      "the item's carrier came through every sweep that ran with zero hits"
+    ]
+  },
+  "unvalidated": [
+    "CARRIER REALISM IS UNVALIDATED. The carriers are hand-authored, not the ShareChat/WildChat conversations spec 6.2 specifies, and none of its three realism gates ran: no frontier naturalness score, no adversarial style probe, no human spot check. The style probe is the one this pool would most likely fail -- the carriers and the injections share an author.",
+    "CERTIFICATION STAGES 2 AND 3 ARE STILL UNRUN, so no carrier is certified-clear and this corpus is NOT certified. What is new is that stage 1's own circularity is now measured rather than unmentioned: certification.circularity counts the carriers the tier-0 arm quarantined that the IR-free format-spec sweep would have kept.",
+    "p-med AND p-corp LABELS ARE UNPOPULATED. Any per-policy or policy-adaptivity number computed from this corpus is a p-fin number.",
+    "NO pred: GOLD, AND THE PREDICATE IS CONSTRUCTED ON BOTH SIDES. meta.predicateConstruction records what the generator wrote as a PREDICTION with its provenance; meta.labelQuestions carries the question a blind round answers; meta.scoringScope excludes the class from the false-positive claim until it does.",
+    "THE CONTESTED CONFUSABLES ARE EXCLUDED FROM THE FALSE-POSITIVE CLAIM TOO. Their p-fin reading can be reached either way from the document, each family says which clause would overturn it, and each span carries its own question in the queue.",
+    "THE ADJUDICATION ROUND THAT ADMITTED THE CARRIERS WAS NOT BLIND OF THE AUTHORING INTENT. See adjudication.round.blindness.breaches. Nothing about that changed this round."
+  ],
+  "artifact": {
+    "corpusSha256": "25e3a3e0c439fe0f8c6a1df787d64bfbd9dc0745f85687f455d4581eade6cf12",
+    "corpusBytes": 878475,
+    "corpusPath": "corpora/generated/injection-p-fin-v2.jsonl",
+    "queueSha256": "2f9dd0c245848e43fdb7ddc27f1a1293d2f71715dc23ff9d1b54271997f42dad",
+    "queueBytes": 208149,
+    "queuePath": "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl"
+  }
+}

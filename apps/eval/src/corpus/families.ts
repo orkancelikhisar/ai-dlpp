@@ -98,7 +98,53 @@ export type Surface = "prose" | "labelled" | "kv-line" | "code-fence";
  * listed as a named gap in the manifest rather than approximated.
  */
 export type Difficulty = "verbatim" | "paraphrased";
-export type ConstructedRole = "client" | "counterparty" | "vendor" | "none";
+/**
+ * The role the generator's clause puts an organisation in.
+ *
+ * Widened for wave 3, which draws every organisation from one pool and lets
+ * only the clause assign the role (see `orgs.ts`). The wave-1 and wave-2
+ * values are unchanged and still mean what they meant, so the two committed
+ * corpora reproduce byte for byte; the additions are the roles p-fin §3 does
+ * NOT reach beyond a supplier -- a landlord, a competitor, a listed company
+ * read about in the trade press -- plus the two §3.3 roles wave 1 folded into
+ * "client" and "counterparty".
+ */
+export type ConstructedRole =
+  | "client"
+  | "counterparty"
+  | "vendor"
+  | "none"
+  | "prospect"
+  | "nda-party"
+  | "landlord"
+  | "competitor"
+  | "listed-company";
+
+/**
+ * A SECOND labelled span written into the same injection, immediately after the
+ * family's own value and derived from it.
+ *
+ * It exists for one construction and is `undefined` everywhere else: the
+ * cross-segment pair, which names two organisations in one clause and assigns
+ * their roles by ordinal in a later segment ("the first of those two is the one
+ * we act for"). Both names have to be labelled -- an organisation sitting in
+ * the glue with no label is precisely the defect that made 25 of the previous
+ * corpus's positives carry an unlabelled relationship disclosure -- and both
+ * have to land in the same clause, which two independently slotted injections
+ * cannot do.
+ *
+ * `value` is derived from the family's own value rather than drawn from the
+ * rng because the two names must differ: a redraw can repeat, and "those two"
+ * naming one organisation twice is nonsense no invariant here would catch.
+ */
+export interface Companion {
+  readonly prefix: string;
+  readonly value: string;
+  readonly suffix: string;
+  readonly type: string;
+  readonly family: string;
+  readonly constructedRole: ConstructedRole;
+}
 
 export interface Family {
   readonly id: string;
@@ -113,6 +159,12 @@ export interface Family {
   readonly mint: (rng: () => number) => string;
   /** Glue around the value. The span covers the value only. */
   readonly glue: (value: string) => { prefix: string; suffix: string };
+  /**
+   * A second labelled span in the same clause. See `Companion`. Absent on every
+   * wave-1 and wave-2 family, which is why adding it left both committed
+   * corpora byte-identical.
+   */
+  readonly companion?: (value: string) => Companion;
 }
 
 const p = (prefix: string, suffix: string) => () => ({ prefix, suffix });

@@ -27,6 +27,21 @@ import { loadPolicyIr, runTier0, segmentText, type PolicyIr } from "@sih/core";
  * `runTier0` the extension ships. See `maxRecallIr` for what "max recall" was
  * made to mean and what it was MEASURED to change.
  *
+ * Stage 1 is also the CIRCULARITY this module named for stage 2 and not for
+ * itself. `runTier0` is the tier-0 arm under test, and `maxRecallIr` is a
+ * widened copy of the very IR the corpus is scored under, so the carriers that
+ * survive certification are the carriers that arm is silent on, chosen by that
+ * arm. Spec 6.2 prescribes stage 1 in those words ("tier-0 sweep, thresholds at
+ * max recall"), so replacing it would be running a different stage than the one
+ * the spec names; what wave 3 adds instead is `formatSpecSweep` in
+ * `format-sweep.ts`, an IR-free, detector-free supplementary sweep that runs
+ * beside stage 1 and can also quarantine, plus `CertificationSummary.circularity`,
+ * which counts the carriers stage 1 quarantined that the independent sweep did
+ * not. That count is the size of the circularity, reported rather than argued
+ * about. It does not remove the bias -- a pool cleaned by any detector is easy
+ * for that detector, which spec 6.2 says outright -- and it does remove "the arm
+ * alone decided".
+ *
  * Stage 2 (high-recall model sweep) does not run. Spec 6.2 specifies it as
  * Python, using GLiNER2-PII and gliner-pii-large through their Python runtimes.
  * This repository has no Python package, no Python dependency manifest, and no
@@ -68,7 +83,13 @@ export type StageId = (typeof CERTIFICATION_STAGES)[number];
  * above. Kept in a separate list so a reader counting "stages run" against the
  * spec gets the same number the spec would.
  */
-export const SUPPLEMENTARY_SWEEPS = ["orthographic-org-sweep", "blind-double-adjudication-p-fin"] as const;
+export const SUPPLEMENTARY_SWEEPS = [
+  "orthographic-org-sweep",
+  "blind-double-adjudication-p-fin",
+  // Wave 3. See `format-sweep.ts`, and the stage-1 paragraph above for why a
+  // supplementary sweep rather than a replacement for stage 1.
+  "format-spec-sweep",
+] as const;
 export type SupplementarySweepId = (typeof SUPPLEMENTARY_SWEEPS)[number];
 
 export interface StageHit {
@@ -338,6 +359,23 @@ export interface CertificationSummary {
    * human has to read.
    */
   readonly invariantScope: string;
+  /**
+   * Present only when an IR-free sweep ran beside stage 1, so that adding this
+   * field left both already-committed manifests byte-identical -- which
+   * `corpus-artifact.test.ts` and `corpus-adjudicated.test.ts` check.
+   *
+   * The numbers say how much of the quarantine decision stage 1 made ALONE.
+   * `stage1Only` is the set of carriers the tier-0 arm removed and the
+   * independent sweep would have kept; it is the exact size of the circularity
+   * this pipeline was carrying unstated.
+   */
+  readonly circularity?: {
+    readonly independentSweep: string;
+    readonly note: string;
+    readonly stage1Only: readonly string[];
+    readonly independentOnly: readonly string[];
+    readonly both: readonly string[];
+  };
 }
 
 export function certificationSummary(certs: readonly CarrierCertification[]): CertificationSummary {
@@ -358,6 +396,26 @@ export function certificationSummary(certs: readonly CarrierCertification[]): Ce
     else counts.quarantined += 1;
   }
   const allStagesRan = stagesUnrun.size === 0;
+  const independentId = "format-spec-sweep";
+  const independentRan = supplementarySweepsRun.has(independentId);
+  const hitBy = (cert: CarrierCertification, sweep: string) => cert.hits.some((h) => h.sweep === sweep);
+  const circularity = independentRan
+    ? {
+        independentSweep: independentId,
+        note:
+          "stage 1 is runTier0 over maxRecallIr(ir) -- the tier-0 arm under test, widened. " +
+          "stage1Only names the carriers it quarantined that the IR-free format-spec sweep did not, " +
+          "which is the part of the quarantine decision the arm made on its own. A pool cleaned by " +
+          "any detector is easy for that detector; this counts how much of the cleaning was the arm's.",
+        stage1Only: certs
+          .filter((c) => hitBy(c, "tier0-sweep") && !hitBy(c, independentId))
+          .map((c) => c.carrierId),
+        independentOnly: certs
+          .filter((c) => !hitBy(c, "tier0-sweep") && hitBy(c, independentId))
+          .map((c) => c.carrierId),
+        both: certs.filter((c) => hitBy(c, "tier0-sweep") && hitBy(c, independentId)).map((c) => c.carrierId),
+      }
+    : undefined;
   return {
     claim: allStagesRan && counts.certifiedClear === counts.total ? "CERTIFIED" : "NOT CERTIFIED",
     stagesRun: CERTIFICATION_STAGES.filter((s) => stagesRun.has(s)),
@@ -373,5 +431,6 @@ export function certificationSummary(certs: readonly CarrierCertification[]): Ce
         "A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no " +
         "stage that ran can see, so a finding of those classes outside a gold span is not " +
         "provably a false positive.",
+    ...(circularity === undefined ? {} : { circularity }),
   };
 }

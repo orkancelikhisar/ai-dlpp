@@ -128,6 +128,43 @@ export interface GenerateOptions {
   readonly selfTestExamples: readonly SelfTestExample[];
   readonly certifyOptions?: Omit<CertifyOptions, "ir">;
   readonly devFraction?: number;
+  /**
+   * A same-shape confusable to inject alongside `family`, or `undefined` to
+   * inject none.
+   *
+   * The defect this closes, MEASURED on
+   * `corpora/generated/injection-p-fin-adjudicated-v1.jsonl` by `measureOrthography`:
+   * on 58 of its 108 gold spans the crude "return the odd-looking string" oracle
+   * returns that span and nothing else, so a reader that understands nothing is a
+   * perfect detector on 54% of the gold, and that score would not transfer to
+   * real text.
+   *
+   * The distractor is INJECTED rather than written into the carrier, and the
+   * reason is not stylistic. The carriers are the pool certification cleaned:
+   * `certify.ts`'s sweeps quarantine any carrier holding a second organisation
+   * name (the orthographic sweep), a high-entropy token in a code or kv segment,
+   * or anything the widened tier-0 rules match. A carrier that carried a
+   * shape-matched distractor would therefore not be a certified carrier, and the
+   * injection invariant rests on it being one. An injected distractor is a
+   * LABELLED span, which is the other half of the reason: an unlabelled
+   * odd-looking token in the text is a false positive the corpus manufactured.
+   *
+   * Absent on both committed corpora, which is why adding it left them
+   * byte-identical.
+   */
+  readonly distractorFor?: (family: Family, rng: () => number) => Family | undefined;
+  /**
+   * Extra `meta` keys, merged after the generator's own. Lets a build attach
+   * provenance the generator has no opinion about -- the label questions the
+   * next adjudication round answers, the scoring scope those questions imply --
+   * without this module learning what any of it means.
+   */
+  readonly itemMetaExtra?: (context: {
+    readonly carrier: Carrier;
+    readonly recipeIndex: number | undefined;
+    readonly written: readonly WrittenInjection[];
+    readonly labels: readonly LabelledSpan[];
+  }) => Record<string, unknown>;
 }
 
 export interface NamedGap {
@@ -196,6 +233,30 @@ function buildItem(
   const slots = carrierSlots(carrier);
 
   const injections: Injection[] = [];
+  const dimensionsFor = (family: Family, slotIndex: number, role?: string) => ({
+    surface: family.surface,
+    difficulty: family.difficulty,
+    position: slotPosition(slotIndex, slots.length),
+    glueRegister: family.register,
+    carrierRegister: carrier.register,
+    registerMatch: family.register === carrier.register ? "true" : "false",
+    constructedRole: role ?? family.constructedRole,
+  });
+  // A value already written in this item under a DIFFERENT type. The fourth
+  // injection invariant refuses that contradiction, and re-minting is the only
+  // way forward, since the generator gets one pass. Bounded rather than
+  // `while`: a family whose mint returns a CONSTANT can never escape, and
+  // spinning forever on that would be worse than failing with the fourth
+  // check's message, which names both types.
+  const mintDistinct = (family: Family): string => {
+    let value = family.mint(rng);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (!injections.some((i) => i.value === value && i.type !== family.type)) break;
+      value = family.mint(rng);
+    }
+    return value;
+  };
+  const placed: { family: Family; slotIndex: number }[] = [];
   for (let k = 0; k < families.length; k += 1) {
     const family = families[k]!;
     const slotIndex = (recipeIndex + k) % slots.length;
@@ -221,11 +282,7 @@ function buildItem(
     // key, the redaction placeholder) can never escape a collision, and
     // spinning forever on that would be worse than failing with the fourth
     // check's message, which names both types.
-    let value = family.mint(rng);
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      if (!injections.some((i) => i.value === value && i.type !== family.type)) break;
-      value = family.mint(rng);
-    }
+    const value = mintDistinct(family);
     const { prefix, suffix } = family.glue(value);
     injections.push({
       at: slots[slotIndex]!,
@@ -234,16 +291,48 @@ function buildItem(
       suffix,
       type: family.type,
       family: family.id,
-      dimensions: {
-        surface: family.surface,
-        difficulty: family.difficulty,
-        position: slotPosition(slotIndex, slots.length),
-        glueRegister: family.register,
-        carrierRegister: carrier.register,
-        registerMatch: family.register === carrier.register ? "true" : "false",
-        constructedRole: family.constructedRole,
-      },
+      dimensions: dimensionsFor(family, slotIndex),
     });
+    placed.push({ family, slotIndex });
+    // The companion, if any, goes in at the SAME slot and immediately after, so
+    // the two spans land in one clause. `applyInjections` sorts by `at` and
+    // breaks ties by input order, so "immediately after" is a property of this
+    // push order and not of the offsets.
+    const companion = family.companion?.(value);
+    if (companion !== undefined) {
+      injections.push({
+        at: slots[slotIndex]!,
+        prefix: companion.prefix,
+        value: companion.value,
+        suffix: companion.suffix,
+        type: companion.type,
+        family: companion.family,
+        dimensions: dimensionsFor(family, slotIndex, companion.constructedRole),
+      });
+    }
+  }
+
+  // Distractors last, so a distractor can never displace a family's own value
+  // out of the slot the recipe chose for it. One slot along from the span it
+  // shadows: far enough to be a separate clause, near enough to be in the same
+  // message, which is the only place an orthographic reader would look.
+  if (options.distractorFor !== undefined) {
+    for (const { family, slotIndex } of placed) {
+      const distractor = options.distractorFor(family, rng);
+      if (distractor === undefined) continue;
+      const at = (slotIndex + 1) % slots.length;
+      const value = mintDistinct(distractor);
+      const { prefix, suffix } = distractor.glue(value);
+      injections.push({
+        at: slots[at]!,
+        prefix,
+        value,
+        suffix,
+        type: distractor.type,
+        family: distractor.id,
+        dimensions: { ...dimensionsFor(distractor, at), distractorFor: family.id },
+      });
+    }
   }
 
   const { text, injections: written } = applyInjections(base, injections);
@@ -259,7 +348,10 @@ function buildItem(
     text,
     policy: "p-fin",
     gold,
-    meta: itemMeta(carrier, seed, options, written, labels),
+    meta: {
+      ...itemMeta(carrier, seed, options, written, labels),
+      ...(options.itemMetaExtra?.({ carrier, recipeIndex, written, labels }) ?? {}),
+    },
   });
   return { item, labels, written, stratum: gold.length > 0 ? "positive" : "negative" };
 }
@@ -342,6 +434,7 @@ function buildPristineNegative(carrier: Carrier, options: GenerateOptions, seed:
       density: 0,
       injections: [],
       labels: [],
+      ...(options.itemMetaExtra?.({ carrier, recipeIndex: undefined, written: [], labels: [] }) ?? {}),
     },
   });
   return { item, labels: [], written: [], stratum: "negative" };
