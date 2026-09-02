@@ -155,6 +155,20 @@ function foldQuote(quote: string): string {
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
 
+/**
+ * A letter or a digit, in any script -- the characters a MENTION boundary may
+ * not fall between, and the class a mention must contain at least one of.
+ *
+ * `\p{L}` and `\p{N}` rather than `\w`: `\w` is `[A-Za-z0-9_]`, which would
+ * treat every non-Latin name as punctuation and admit exactly the mid-word
+ * boundary this refuses. Underscore is deliberately OUTSIDE the class, so
+ * `AKIAZZ7EXAMPLE4XQ2LN` out of `AWS_ACCESS_KEY_ID=AKIAZZ7EXAMPLE4XQ2LN` is a
+ * boundary at `=` and not a cut through a word. Used only by `resolveMention`;
+ * the evidence ladder has no such rule, and does not want one -- see
+ * `MINIMUM_CANDIDATE_WORDS`.
+ */
+const ALPHANUMERIC = /[\p{L}\p{N}]/u;
+
 /** End offsets, within `folded`, of each whitespace-delimited word. */
 function wordEndOffsets(folded: string): number[] {
   const ends: number[] = [];
@@ -341,6 +355,8 @@ export function resolveQuote(message: string, quote: string): ResolvedQuote | un
  * rungs.
  */
 function foldedSearch(haystack: string): {
+  /** The folded haystack itself, for a caller that must inspect what sits BESIDE a hit. */
+  folded: string;
   occurrences: (candidate: string) => number[];
   at: (foldedIndex: number, foldedLength: number) => LocatedSpan | undefined;
 } {
@@ -392,7 +408,7 @@ function foldedSearch(haystack: string): {
     return hits;
   };
 
-  return { occurrences, at };
+  return { folded, occurrences, at };
 }
 
 /**
@@ -409,13 +425,26 @@ function foldedSearch(haystack: string): {
  * floor here would refuse essentially every mention there is.
  *
  * The brief that proposed this split argued the floor's premise does not carry
- * over, because the haystack is a clause rather than a message. CHECKED HERE
- * against the 13 messages of `corpora/fixtures/smoke.jsonl`, over every
- * whitespace-delimited candidate in them: at one word, 24 of 196 candidates
- * (12.2%) are non-unique in their whole message and 11 of 196 (5.6%) are still
- * non-unique inside a 50-character window centred on them; at two and three
- * words, 0 of 183 and 0 of 170 are non-unique under either. So narrowing the
- * haystack does cut one-word ambiguity, and it does NOT eliminate it.
+ * over, because the haystack is a clause rather than a message. RE-MEASURED
+ * HERE under the rule this function actually runs -- the FOLDED one, casefolded
+ * and whitespace-collapsed and punctuation-folded, `buildFoldMap` on both sides
+ * -- against the 13 messages of `corpora/fixtures/smoke.jsonl`, over every
+ * whitespace-delimited candidate in them: at one word, 33 of 196 candidates
+ * (16.8%) are non-unique in their whole message and 17 of 196 (8.7%) are still
+ * non-unique inside a 50-character window centred on the candidate and widened
+ * where necessary to contain it; at two and three words, 0 of 183 and 0 of 170
+ * are non-unique under either. So narrowing the haystack does cut one-word
+ * ambiguity, and it does NOT eliminate it.
+ *
+ * The figures this docblock carried before -- 24 of 196 and 11 of 196 -- were
+ * taken CASE-SENSITIVELY on the raw message text. Re-running the same script
+ * with a raw haystack reproduces the first exactly (24 of 196) and gives 10 of
+ * 196 for the window, so the pair was a measurement of a different rule than
+ * the one the code runs, and it understated one-word ambiguity by about 40%
+ * relative. The nine flips are all case: "the", "is"/"Is", "I", "am", "aws",
+ * "to". The direction is safe -- every extra collision lands in the refusal
+ * below rather than in a guess -- but the number a reader would re-derive this
+ * decision from has to be the number the matching rule produces.
  *
  * That measurement is also weaker than it sounds and must not be read as a
  * reproduction of Plan 5's: those messages are 48-153 characters long (mean
@@ -453,19 +482,72 @@ function foldedSearch(haystack: string): {
  * its mention loses that finding, and the arms count it
  * (`unresolvedMentions`).
  *
+ * **No boundary inside a word.** The "no peel" rule above stops THIS function
+ * from shortening the action span into the value. It does nothing about the
+ * model shortening it first, and uniqueness does not either: a truncated secret
+ * is still a substring occurring exactly once. MEASURED through `locateFinding`
+ * on the passage "Please rotate the staging key AKIAIOSFODNN7EXAMPLE today."
+ * quoted as "rotate the staging key AKIAIOSFODNN7EXAMPLE today" -- offsets into
+ * the passage -- every one of these resolved at rung 1 with
+ * `actionIsWholeEvidence: false`, indistinguishable in every counter from a
+ * good narrowing:
+ *
+ *   mention "AKIAIOSFODNN7EXAMPLE"  -> [30,50)  the credential, covered
+ *   mention "AKIAIOSFODNN7EXAMPL"   -> [30,49)  its last character SHIPS
+ *   mention "AKIA"                  -> [30,34)  16 of 20 characters SHIP
+ *
+ * So a mention may not START or END between two alphanumeric characters. That
+ * refuses the last two and keeps the first. It is deliberately the `\b` rule
+ * and not "must cover whole whitespace-delimited tokens": the tighter rule
+ * refuses `AKIAZZ7EXAMPLE4XQ2LN` out of `AWS_ACCESS_KEY_ID=AKIAZZ7EXAMPLE4XQ2LN`
+ * -- a correct narrowing, and one this corpus contains
+ * (`pos-aws-key-code-fence`) -- because `=` does not break a whitespace token.
+ *
+ * What it does NOT catch, stated rather than left to be discovered:
+ *
+ * - A mention that stops at punctuation INSIDE a compound value: "sk-live" out
+ *   of "sk-live-9Kd2mXqR7wZbY4tLpN0cVhJa", or "priya.sharma" out of
+ *   "priya.sharma@okhdfcbank". Both boundaries fall on a non-alphanumeric
+ *   character, so both are admitted and the rest of the value ships. Closing
+ *   these is what the whole-token rule would do, at the cost above.
+ * - A mention that is well-formed and simply WRONG -- "staging key" for the
+ *   clause above resolves to [18,29) and leaves the credential untouched.
+ *   Nothing local can tell that from a correct answer; it is a model error, and
+ *   `judge.ts`'s `wholeClauseMentions` docblock records that no counter sees it.
+ *
+ * **A mention must name something.** At least one letter or digit, so a
+ * one-character punctuation answer cannot become a span. `SPAN_TEXT_FIELD` in
+ * `schema.ts` only requires a non-whitespace character, so `"-"` parses `ok`
+ * and reaches here; without this it resolves wherever a lone "-" happens to sit
+ * in the clause, and on an Approach-B `pseudonymize` entityType `applyActions`
+ * mints "-" into the vault as a REAL value -- the vault-poisoning class
+ * `apply.ts` documents. Refused rather than parsed away, because the two arms
+ * must classify the same body identically and this is the layer both share.
+ *
+ * Both new refusals are counted like the others (`unresolvedMentions`), so
+ * their cost is on the row rather than absorbed into a lower recall number.
+ *
  * What is unchanged, because it is what stops a MIS-location: the fold, the
  * trailing-space guard and the surrogate-pair guard, all of them the same code
  * `resolveQuote` runs (`foldedSearch`).
  *
  * @param clause the text of the already-placed evidence span, NOT the passage.
  * @returns offsets relative to `clause`, or `undefined` when the mention is
- *   absent from it, occurs more than once in it, or would land on a boundary
- *   splitting a surrogate pair.
+ *   absent from it, occurs more than once in it, carries no letter or digit,
+ *   starts or ends inside a word, or would land on a boundary splitting a
+ *   surrogate pair.
  */
 export function resolveMention(clause: string, mention: string): LocatedSpan | undefined {
   const search = foldedSearch(clause);
   const needle = foldQuote(mention);
   if (needle.length === 0) return undefined;
+  // Tested on the FOLDED needle, which is what gets matched. MEASURED on this
+  // machine (Node 26) that folding cannot change the answer: of the 65,536 BMP
+  // code units, 0 are a letter or a digit whose single-unit `toLowerCase()` is
+  // not, and all six `PUNCTUATION_FOLD` targets are non-alphanumeric on both
+  // sides. So testing the raw mention would agree, and would be a second rule
+  // to keep in step with the first.
+  if (!ALPHANUMERIC.test(needle)) return undefined;
   const hits = search.occurrences(needle);
   // Ambiguity is refused, never resolved by picking -- the doctrine
   // `resolveQuote` already applies, and it is not weaker here for being over a
@@ -473,7 +555,20 @@ export function resolveMention(clause: string, mention: string): LocatedSpan | u
   // which occurrence the model meant, and neither choice protects the message:
   // rewriting one leaves the other standing, in full, verbatim.
   if (hits.length !== 1) return undefined;
-  return search.at(hits[0]!, needle.length);
+  const hit = hits[0]!;
+  // In FOLDED offsets, because that is the string the hit indexes. Indexing a
+  // string yields one code UNIT, so an astral character is seen here as two
+  // lone surrogates -- MEASURED: `/[\p{L}\p{N}]/u` is false for both halves,
+  // though true for the code point they form (U+10400 is a letter). A boundary
+  // beside one is therefore admitted by this rule and refused by the
+  // surrogate-pair guard in `at`, which is the check that owns it.
+  const cutsAWord = (index: number): boolean =>
+    index > 0 &&
+    index < search.folded.length &&
+    ALPHANUMERIC.test(search.folded[index - 1]!) &&
+    ALPHANUMERIC.test(search.folded[index]!);
+  if (cutsAWord(hit) || cutsAWord(hit + needle.length)) return undefined;
+  return search.at(hit, needle.length);
 }
 
 /** Both spans of one model finding, plus how strongly each was placed. */

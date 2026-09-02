@@ -31,9 +31,45 @@ import { RunRecordSchema, type RunRecord } from "./record.js";
  * wrong for the shipping path and unscoreable on two of three rules at once.
  * Both arms now return TWO spans (`packages/tier2/src/spans.ts`): an evidence
  * clause that locates the finding and a mention inside it, and `Finding`
- * carries the mention. So `exact` and `iou50` are reachable where they were
- * structurally unreachable, and the reason those columns read 0.000 on every
- * arm of `slate-p-fin-02` is not a fact about the models.
+ * carries the mention. So `exact` and `iou50` are REACHABLE where they were
+ * structurally unreachable.
+ *
+ * ## Reachable is not the same as reached: what the next run actually did
+ *
+ * The paragraph above stops at "reachable" on purpose, because the run taken
+ * after the split is WORSE on every accuracy column and nothing else in this
+ * repository records it. MEASURED apples-to-apples, both slates through ONE
+ * scorer -- this one, with `RunRecordSchema`'s two new counters relaxed to
+ * optional in a scratch copy so it can read the older records at all -- summed
+ * over all 16 arms and 208 records of each slate:
+ *
+ *   slate-p-fin-02 (one-span ask)  exact tp 0 fp 13 | overlap tp 3 fp 10 | iou50 tp 0 fp 13
+ *   slate-p-fin-03 (two-span ask)  exact tp 0 fp 11 | overlap tp 0 fp 11 | iou50 tp 0 fp 11
+ *
+ * `tier2Config`, `irHash` (b00e5ce67a7e...), `policyHash` (ebb3cd68d973...) and
+ * `temperature: 0` are identical between the two slates, so the intervention is
+ * the span convention. Overlap true positives fell 3 to 0; `exact` and `iou50`
+ * stayed at 0. Every accuracy column on all 16 arms of the later slate reads
+ * 0.000, and it reads 0.000 under all three rules rather than under two.
+ *
+ * End-to-end coverage of the corpus gold spans moved the same way and barely:
+ * over `corpora/fixtures/smoke.jsonl`'s own gold, spans fully covered by the
+ * union of a record's shipped findings went 53 of 112 to 51 of 112, and every
+ * uncovered case in BOTH slates is a total miss rather than a partial cover. n
+ * is 13 items times 16 arms at one draw each, so this is a fact about two
+ * recorded slates and not an effect estimate.
+ *
+ * What the split IS supported by, on the same runs, is message preservation:
+ * whole-message `pred:` spans fell from 5 of 13 to 1 of 11. That is the defect
+ * it was made for. It should not be written up as improving detection coverage,
+ * because on this evidence it did not.
+ *
+ * The refusal path the split added has no production evidence either way. The
+ * counter does not exist on `slate-p-fin-02` at all -- that is why the current
+ * `RunRecordSchema` cannot read those records -- and on `slate-p-fin-03`,
+ * summed over all 208 records of all 16 arms, `unresolvedMentions` is 0. So its
+ * cost is currently unobserved rather than bounded, and every check on it is a
+ * unit test.
  *
  * NOTHING HERE CHANGED, and that is deliberate. The three rules still earn
  * their places: a mention off by an article or a possessive is an `overlap`
@@ -43,10 +79,13 @@ import { RunRecordSchema, type RunRecord } from "./record.js";
  * re-reading it to suit a new span contract is the one move that would make
  * every number below meaningless.
  *
- * What a reader MUST NOT do is compare a rule's number across the two
- * conventions. `runs/slate-p-fin-02` was taken under the one-span ask; any
- * later run is taken under the two-span one, and on `exact` and `iou50` those
- * are different questions.
+ * What a reader MUST NOT do is treat the cross-slate comparison above as an
+ * accuracy comparison. `runs/slate-p-fin-02` was taken under the one-span ask;
+ * any later run is taken under the two-span one, and on `exact` and `iou50`
+ * those are different questions asked of the model. The numbers are recorded
+ * because "the columns are all still zero, and the one non-zero signal that
+ * ever existed is gone" is a true and unflattering fact about the change, not
+ * because 3 and 0 are two measurements of the same quantity.
  *
  * ## What this module deliberately does NOT do
  *

@@ -192,7 +192,7 @@ export interface JudgeStats {
    * Findings whose clause placed but whose MENTION did not, so no action span
    * exists and the finding was dropped.
    *
-   * Three refusals share this counter, and they share it for the reason
+   * Five refusals share this counter, and they share it for the reason
    * `unresolvedQuotes`' four do -- `resolveMention` returns a bare `undefined`:
    *
    * - the mention is absent from the clause the model itself quoted, which is
@@ -200,6 +200,10 @@ export interface JudgeStats {
    *   (`locateFinding` rule 3 says why searching elsewhere is worse);
    * - it occurs more than once inside that clause, and ambiguity is refused
    *   rather than picked;
+   * - it starts or ends between two alphanumeric characters, which is a
+   *   mention truncated inside the value it names -- the shape that shipped the
+   *   last character of a credential in the clear;
+   * - it carries no letter or digit at all, so it names nothing;
    * - its boundary would split a surrogate pair.
    *
    * A NON-ZERO value here is a real loss of detections and should be read as
@@ -222,6 +226,18 @@ export interface JudgeStats {
    * So it is counted. Read it against `rung1 + rung2`: an arm at
    * `wholeClauseMentions === rung1 + rung2` narrowed nothing at all, and every
    * span it emitted is a clause for `applyActions` to rewrite.
+   *
+   * The OTHER direction has no counter, and that is a limit of this row rather
+   * than an omission that can be closed here. This one sees a model that never
+   * narrows; `unresolvedMentions` sees a model whose mention will not place.
+   * Neither sees a model that narrows to the WRONG words inside its own quote
+   * -- "staging key" for a clause whose credential sits three words along
+   * resolves cleanly at rung 1, and is identical in `findings`, in the rungs
+   * and in every gate to a correct narrowing. Distinguishing the two needs
+   * ground truth, which is what the gold set and `apps/eval/src/driver/score.ts`
+   * are for; a counter cannot do it, and one that claimed to would be worse
+   * than none. `spans.ts`'s `resolveMention` records the same limit beside the
+   * boundary rule, which is the most a local rule can catch.
    */
   readonly wholeClauseMentions: number;
   /** Findings naming a predicate the IR does not declare. Models invent ids. */

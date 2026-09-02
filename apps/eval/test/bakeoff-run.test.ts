@@ -129,6 +129,16 @@ interface PageScript {
   /** What `loadBaseline` reports as its per-call budget. */
   baselineCallBudgetMs?: number;
   /**
+   * Counter values merged into BOTH arms' `lastDetect`, so a projection can be
+   * driven at something other than its default.
+   *
+   * A test that only ever sees 0 cannot tell "reads the field" from "writes a
+   * literal 0" -- the defect the standing conventions name, and the one that
+   * left `run.ts`'s Approach-B projection of `unresolvedMentions` and
+   * `wholeClauseMentions` unpinned at any value.
+   */
+  counters?: Readonly<Record<string, number>>;
+  /**
    * Files to create when the FIRST arm's engine loads.
    *
    * The only seam that lands between `runBakeoff`'s pre-flight `existsSync`
@@ -271,6 +281,10 @@ function scriptedPage(script: PageScript = {}): {
         calls: [
           { finishReason: "stop", promptTokens: 2_100, completionTokens: 55, ttftMs: 900, decodeTokPerSec: 30 },
         ],
+        // LAST, so a test can drive any one counter off its default. Spread
+        // first it would be overwritten by the literals above and the knob
+        // would silently do nothing.
+        ...script.counters,
       },
     }),
     // COUNTED rather than a bare no-op: `runBakeoff` releases each arm's engine
@@ -315,6 +329,8 @@ function scriptedPage(script: PageScript = {}): {
         calls: [
           { finishReason: "stop", promptTokens: 400, completionTokens: 40, ttftMs: 480, decodeTokPerSec: 45 },
         ],
+        // LAST, for the reason `baselineStatus` states.
+        ...script.counters,
       },
     }),
   };
@@ -684,6 +700,54 @@ describe("runBakeoff, against a scripted page", () => {
         itemTimeoutMs: B_ITEM_TIMEOUT_MS,
         ...over,
       });
+
+    it("projects the two SPAN counters off the page, on both arms, at values that are not 0", async () => {
+      // FOUND BY MUTATION -- replacing `run.ts`'s Approach-B projection of
+      // `unresolvedMentions` and `wholeClauseMentions` with literal `0`s left
+      // the whole apps/eval suite green. Every existing driver test sees both
+      // counters at 0 on both arms, and a test that only exercises the DEFAULT
+      // value cannot tell "reads the field" from "writes the default".
+      //
+      // Distinct primes per counter and per arm, so a projection that read the
+      // wrong field, or read the judge's counters on the B row, fails here
+      // rather than agreeing with itself. Both arms in ONE test because the
+      // symmetry is the property: `resolvable-rate` puts `unresolvedMentions`
+      // in its denominator and `wholeClauseMentions` in the whole-clause
+      // column, and an arm whose counters silently read 0 while it is really
+      // losing mentions moves a gate that can kill an arm.
+      const dir = outDir();
+      const { page } = scriptedPage({
+        irHash: B_IR_HASH,
+        counters: { unresolvedMentions: 13, wholeClauseMentions: 17 },
+      });
+      const result = await runBakeoff(page, bOptions(dir, { families: ["compiled", "baseline-b"] }));
+      const [compiled, baseline] = result.written.map((path) =>
+        readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as RunRecord),
+      );
+      for (const row of compiled!) {
+        expect(row.tier2Stats?.unresolvedMentions).toBe(13);
+        expect(row.tier2Stats?.wholeClauseMentions).toBe(17);
+      }
+      for (const row of baseline!) {
+        expect(row.baselineStats?.unresolvedMentions).toBe(13);
+        expect(row.baselineStats?.wholeClauseMentions).toBe(17);
+      }
+      // The stub really does default these to 0, so the assertions above are
+      // reading the knob and not a coincidence.
+      const { page: plain } = scriptedPage({ irHash: B_IR_HASH });
+      const plainResult = await runBakeoff(
+        plain,
+        bOptions(outDir(), { families: ["baseline-b"] }),
+      );
+      const plainRows = readFileSync(plainResult.written[0]!, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as RunRecord);
+      for (const row of plainRows) {
+        expect(row.baselineStats?.unresolvedMentions).toBe(0);
+        expect(row.baselineStats?.wholeClauseMentions).toBe(0);
+      }
+    });
 
     it("runs a B arm end to end and files its counters under baselineStats", async () => {
       // The whole B branch of `runArm` -- the detector routing, the `isBaseline`

@@ -329,15 +329,26 @@ export interface BaselineStats {
   readonly unresolvedQuotes: number;
   /**
    * Findings whose clause placed but whose MENTION did not: absent from the
-   * clause the model itself quoted, occurring more than once inside it, or on a
-   * boundary that would split a surrogate pair. The judge's counter of the same
-   * name counts the same event; `spans.ts` owns all three refusals, so the two
-   * arms cannot diverge on them.
+   * clause the model itself quoted, occurring more than once inside it,
+   * starting or ending between two alphanumeric characters (a mention
+   * truncated inside the value it names), carrying no letter or digit at all,
+   * or on a boundary that would split a surrogate pair. The judge's counter of
+   * the same name counts the same event; `spans.ts` owns all five refusals, so
+   * the two arms cannot diverge on them.
    *
-   * This one is NOT structurally worse for B. The mention is searched inside
-   * the already-placed clause, which is the same size whichever arm placed it,
-   * so the bigger haystack that makes `unresolvedQuotes` harder for B does not
-   * reach here.
+   * B's bigger haystack does not reach here DIRECTLY -- the mention is searched
+   * inside the already-placed clause rather than in the message. It does reach
+   * here INDIRECTLY, and the claim this comment used to make, that the clause
+   * "is the same size whichever arm placed it", is false: the placed clause is
+   * the model's quote only at RUNG 1, and at rung 2 `resolveQuote` has peeled
+   * the tail, so the mention's haystack is a strict PREFIX of what the model
+   * wrote. MEASURED on the passage "Please rotate the staging key for Tamarind
+   * Grocers today": perturbing the quote's last token gives a rung-2 clause of
+   * 48 characters and REFUSES the mention "today"; leaving it alone gives a
+   * rung-1 clause of 49 and places the same mention. Rung-2 frequency depends
+   * on haystack size, the one dimension the arms differ on, so this counter is
+   * comparable between arms only as far as their rung distributions match --
+   * read it beside `rung1` and `rung2`.
    */
   readonly unresolvedMentions: number;
   /**
@@ -346,6 +357,10 @@ export interface BaselineStats {
    * extractable entity, and the one path by which a model can restore the
    * whole-clause action spans this contract exists to end, so it is counted
    * rather than trusted. Read against `rung1 + rung2`.
+   *
+   * It watches only that direction. A model narrowing to the WRONG words inside
+   * its own quote is invisible in every counter on this row; the judge's twin
+   * docblock says why a counter cannot close that and what can.
    */
   readonly wholeClauseMentions: number;
   /**
@@ -995,9 +1010,11 @@ function collect(
     // The same two-span placement the judge performs, from the same module, so
     // the arms cannot drift on either the rules or the refusals. B's haystack
     // for the CLAUSE is the whole message rather than one passage -- that
-    // asymmetry is intrinsic and is kept (see the module docblock) -- but the
-    // mention is then searched inside the placed clause, which is the same size
-    // for both arms.
+    // asymmetry is intrinsic and is kept (see the module docblock) -- and the
+    // mention is then searched inside the PLACED clause, which is not the same
+    // size for both arms whenever their rung distributions differ: at rung 2
+    // the placed clause is a peeled prefix of what the model wrote. See
+    // `unresolvedMentions` for the measurement.
     const located = locateFinding(text, finding.quote, finding.mention);
     if (!located.ok) {
       if (located.refused === "evidence") counters.unresolvedQuotes += 1;

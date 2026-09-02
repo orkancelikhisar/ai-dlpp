@@ -476,6 +476,43 @@ describe("BASELINE_B_SCHEMA", () => {
     expect(items.properties.confidence).toEqual({ type: "number", minimum: 0, maximum: 1 });
   });
 
+  it("asks for the mention AFTER the quote, exactly as the judge does", () => {
+    // The judge's twin of this test says nothing can notice a swap. Nothing
+    // could notice one HERE either: `toEqual` against the renamed judge schema
+    // is blind to key order, the `required` assertion above is a different
+    // array, and the `requires every field it declares` test sorts both sides.
+    // FOUND BY MUTATION -- reordering these two properties in BASELINE_B_SCHEMA
+    // alone left tier2, apps/eval and core green, while the identical swap in
+    // JUDGE_SCHEMA was killed.
+    //
+    // It is `properties` order and not `required` order that decides this.
+    // MEASURED on the shipped compiler when `mention` was added, by dumping the
+    // EBNF: xgrammar folds the DECLARATION order into the grammar as a fixed
+    // key sequence, so a swap here masks B's model into committing to the
+    // mention before it has written the clause the mention must be inside --
+    // and `locateFinding` rule 3 refuses a mention that is not inside its own
+    // quote. That lands in `unresolvedMentions` and in `resolvable-rate`, a
+    // gate that can kill an arm, for one arm only and for a reason that is a
+    // schema key order rather than a method.
+    const items = BASELINE_B_SCHEMA.properties.findings.items;
+    expect(Object.keys(items.properties)).toEqual([
+      "entityType",
+      "quote",
+      "mention",
+      "confidence",
+    ]);
+    expect(items.properties.mention).toEqual({ type: "string" });
+  });
+
+  it("declares its properties in the SAME order as the judge, once renamed", () => {
+    // The cross-arm half, and the one `toEqual` cannot state: two schemas can
+    // be deeply equal and still be different grammars. Written as a key-order
+    // comparison so that reordering EITHER object alone fails here.
+    const judge = Object.keys(JUDGE_SCHEMA.properties.findings.items.properties);
+    const baseline = Object.keys(BASELINE_B_SCHEMA.properties.findings.items.properties);
+    expect(baseline).toEqual(judge.map((k) => (k === "predicateId" ? "entityType" : k)));
+  });
+
   it("is deeply frozen, for the same reason the judge's is", () => {
     const thawed: string[] = [];
     const walk = (node: unknown, path: string): void => {
@@ -556,6 +593,53 @@ describe("the two arms are parsed under identical rules", () => {
       );
       expect(judge.ok, `${quote} / ${confidence}`).toBe(false);
       expect(baseline.ok, `${quote} / ${confidence}`).toBe(false);
+    }
+  });
+
+  it("REQUIRES a mention on BOTH arms, not just the judge's", () => {
+    // The two rules `mention` gained -- required, and held to the quote's
+    // non-whitespace rule -- were pinned on `parseJudgeResponse` only. The
+    // parity table above cannot see the difference: it sets `mention := quote`,
+    // so when the quote is whitespace-only the QUOTE already fails and a
+    // loosened `mention` rule is unobservable. FOUND BY MUTATION -- making
+    // `BaselineResponseSchema.mention` optional, or `z.string()`, left every
+    // suite green while the identical change to the judge's was killed.
+    //
+    // schema.ts states why the arms must agree here in as many words: the thing
+    // that must not differ between them is the failure CLASSIFICATION. A B body
+    // that parses `ok` where the judge's classifies as `schema` never triggers
+    // the one repair retry, so B's `repairAttempts` and `failedClosed`
+    // under-report while its `unresolvedMentions` over-reports, and
+    // `resolvable-rate` moves for one arm only.
+    const withoutMention = (label: string, id: string): string =>
+      `{"findings":[{"${label}":"${id}","quote":"a b c","confidence":0.9}]}`;
+    for (const [name, parse, raw] of [
+      ["judge", parseJudgeResponse, withoutMention("predicateId", "p1")],
+      ["baseline", parseBaselineResponse, withoutMention("entityType", "in-pan")],
+    ] as const) {
+      const r = parse(raw);
+      expect(r.ok, `${name} must reject a body with no mention`).toBe(false);
+      if (!r.ok) expect(r.reason, `${name} classification`).toBe("schema");
+    }
+  });
+
+  it("rejects a blank mention on BOTH arms, with a VALID quote beside it", () => {
+    // The quote is deliberately well-formed here, which is exactly what the
+    // parity table cannot do while it keeps `mention === quote`: it is the only
+    // shape in which a looser `mention` rule for one arm is visible at all.
+    for (const m of ["", " ", "\t", "\n  "]) {
+      const judge = parseJudgeResponse(
+        `{"findings":[{"predicateId":"p1","quote":"three whole words","mention":"${m}","confidence":0.9}]}`,
+      );
+      const baseline = parseBaselineResponse(
+        `{"findings":[{"entityType":"in-pan","quote":"three whole words","mention":"${m}","confidence":0.9}]}`,
+      );
+      expect(judge.ok, `judge mention ${JSON.stringify(m)}`).toBe(false);
+      expect(baseline.ok, `baseline mention ${JSON.stringify(m)}`).toBe(false);
+      if (judge.ok || baseline.ok) continue;
+      // Same classification, not merely both rejected: the reason is what
+      // routes a body to the repair retry.
+      expect(baseline.reason, `mention ${JSON.stringify(m)} classification`).toBe(judge.reason);
     }
   });
 

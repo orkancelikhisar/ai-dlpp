@@ -456,9 +456,15 @@ const Tier2StatsSchema = z.object({
   unresolvedQuotes: JUDGE_COUNTER,
   /**
    * Findings whose clause placed but whose MENTION did not: absent from the
-   * clause the model itself quoted, repeated inside it, or on a boundary that
-   * splits a surrogate pair. A real loss of detections, recorded so it is not
-   * absorbed into a lower recall number with no cause attached.
+   * clause the model itself quoted, repeated inside it, truncated inside the
+   * value it names (a boundary between two alphanumeric characters), carrying
+   * no letter or digit, or on a boundary that splits a surrogate pair. A real
+   * loss of detections, recorded so it is not absorbed into a lower recall
+   * number with no cause attached.
+   *
+   * Comparable to the B row's counter of the same name only as far as the two
+   * arms' rung distributions match -- see `BaselineStatsSchema` for the
+   * measurement, which applies to this side identically.
    */
   unresolvedMentions: JUDGE_COUNTER,
   /**
@@ -567,10 +573,27 @@ const BaselineStatsSchema = z.object({
   unresolvedQuotes: JUDGE_COUNTER,
   /**
    * Findings whose clause placed but whose MENTION did not. The judge's counter
-   * of the same name counts the same event, and this one is NOT structurally
-   * worse for B: the mention is searched inside the already-placed clause,
-   * which is the same size whichever arm placed it, so B's bigger haystack does
-   * not reach here.
+   * of the same name counts the same event, over the same code in `spans.ts`.
+   *
+   * B's bigger haystack does not reach here DIRECTLY -- the mention is searched
+   * inside the already-placed clause, not in the message -- but the claim this
+   * comment used to make, that the clause "is the same size whichever arm
+   * placed it", is false and the difference is exactly the arms' one structural
+   * asymmetry. The placed clause is the model's quote only at RUNG 1. At rung 2
+   * `resolveQuote` has peeled the tail, so the mention's haystack is a strict
+   * PREFIX of what the model wrote, and a mention lying past the peel point is
+   * refused. MEASURED against the shipped module on the passage "Please rotate
+   * the staging key for Tamarind Grocers today": with the quote's last token
+   * perturbed the evidence resolves at rung 2 to a 48-character clause and the
+   * mention "today" is REFUSED; with the quote unperturbed it resolves at rung
+   * 1 to 49 characters and the same mention places at [51,56). One character of
+   * haystack, one counter apart, for the same model answer.
+   *
+   * Rung-2 frequency is a function of haystack size, which is the one dimension
+   * the two arms are stated to differ on -- so this counter is comparable
+   * BETWEEN arms only to the extent their rung distributions match. Read it
+   * beside `rung1` and `rung2` rather than on its own, and treat a gap as
+   * evidence about quoting before it is evidence about mentions.
    */
   unresolvedMentions: JUDGE_COUNTER,
   /** Findings whose mention resolved to the whole clause; see Tier2StatsSchema. */

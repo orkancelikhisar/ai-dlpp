@@ -163,9 +163,24 @@ function assertSpanSane(text: string, f: ResolvedFinding, lastEnd: number): void
  * entropy run against a regex matching just the secret, where the remainder is
  * the key NAME and rewriting it costs utility for nothing. Widening to cluster
  * unions (for critical clusters, say) is the obvious alternative and is a
- * deliberate non-feature for now; revisit if Plan 8's eval shows leaks through
- * residuals. `clusterOverlapping` already exposes the losers such a policy would
- * need, so nothing here forecloses it.
+ * deliberate non-feature for now. `clusterOverlapping` already exposes the
+ * losers such a policy would need, so nothing here forecloses it.
+ *
+ * **The revisit trigger above has now fired, and the trade is unchanged
+ * pending a decision.** The paragraph said "revisit if Plan 8's eval shows
+ * leaks through residuals"; the leak has since been produced by direct
+ * measurement rather than by an eval run, and on a residual that is NOT a key
+ * name. Since `packages/tier2/src/spans.ts` split the evidence clause from the
+ * span an action rewrites, a tier-2 finding's span is a MENTION inside its
+ * clause, so it can be strictly narrower than a tier-1 finding over the same
+ * entity while still beating it on confidence. MEASURED on the shipped
+ * `policies/compiled/p-fin.ir.json` through `resolveFindings` and this
+ * function: a `pred:client-relationship-disclosure` finding at [50,66) evicts a
+ * `client-name` finding at [50,74) and ships " Pvt Ltd" in the clear, with
+ * `blocked` false. merge.ts carries the full transcript and the reasoning for
+ * leaving the behaviour alone in a tier-2 fix round; what must not happen is
+ * the next reader finding only the key-NAME pricing here and concluding the
+ * residual is always harmless.
  */
 export async function applyActions(
   text: string,

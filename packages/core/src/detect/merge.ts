@@ -139,9 +139,52 @@ export function clusterOverlapping(findings: Finding[]): Finding[][] {
  * The winner keeps its OWN span; spans are never widened to the loser's bounds.
  * For the containing-entropy case ("SECRET_TOKEN=<secret>" scored as one run
  * versus a regex matching just the secret) the excluded remainder is the key
- * NAME, which is not sensitive and does not want redacting. If some other rule
- * does consider that remainder sensitive, it emits its own finding for it and
- * that finding is resolved on its own merits.
+ * NAME, which is not sensitive and does not want redacting.
+ *
+ * That sentence used to continue "if some other rule does consider that
+ * remainder sensitive, it emits its own finding for it and that finding is
+ * resolved on its own merits", and it is WRONG as a guarantee. It holds only
+ * for a finding DISJOINT from the winner. A rule that covers the remainder AND
+ * the winner produces a finding that overlaps the winner, and this loop
+ * discards it -- so the remainder is left uncovered by the very finding that
+ * was supposed to rescue it.
+ *
+ * MEASURED, on the shipped `policies/compiled/p-fin.ir.json` with no IR edit,
+ * through the real `resolveFindings` and `applyActions`. Message: "Please
+ * summarise the renewal terms we agreed with Tamarind Grocers Pvt Ltd
+ * yesterday." A tier-1 `client-name` finding at [50,74) "Tamarind Grocers Pvt
+ * Ltd" at confidence 0.78 meets a tier-2 `pred:client-relationship-disclosure`
+ * finding at 0.9. Both are severity `high`, so confidence decides, and a model
+ * confidence routinely beats a GLiNER score. The tier-1 finding is discarded in
+ * every row; what survives is the tier-2 span alone:
+ *
+ *   [35,84)  "Please summarise the renewal terms [REDACTED:pred:...]."
+ *   [50,66)  "...we agreed with [REDACTED:pred:...] Pvt Ltd yesterday."
+ *   [50,58)  "...we agreed with [REDACTED:pred:...] Grocers Pvt Ltd yesterday."
+ *
+ * `blocked` is false in all three. The first is the whole evidence clause,
+ * which is what tier 2 emitted before `packages/tier2/src/spans.ts` split the
+ * clause that LOCATES a finding from the span an action REWRITES: it destroys
+ * the message and covers the name. The other two are what tier 2 emits now,
+ * and each ships part of the client name the discarded tier-1 finding covered
+ * in full. So the split reversed this trade's failure direction, from
+ * over-covering to under-covering, and moved the residual from "a key name" to
+ * "the rest of the entity the loser was about". The pricing above no longer
+ * covers the reachable case.
+ *
+ * NOT changed here, deliberately. Every fix re-prices tier-0 and tier-1
+ * behaviour that the two-span change is not about, and two of the three are
+ * worse than the leak: clipping the loser to its uncovered remainder, or
+ * widening the winner to the union, both produce a finding whose entityType is
+ * a claim about a span its detector never asserted -- and on a `pseudonymize`
+ * entityType `applyActions` then mints that partial value into the vault, the
+ * defect its own span-fidelity guard exists to prevent. Preferring the
+ * containing span over the contained one is the third, and it is the deliberate
+ * decision `keeps the narrow higher-confidence finding when a wider span
+ * strictly contains it` pins. `applyActions` records the same residual as a
+ * parked non-feature and names its own revisit trigger; this measurement is
+ * that trigger, and the choice belongs to whoever takes it, not to a fix round
+ * on tier 2.
  */
 export function mergeFindings(findings: Finding[]): Finding[] {
   const kept: Finding[] = [];

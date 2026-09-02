@@ -527,6 +527,83 @@ describe("resolveMention", () => {
     expect(resolveMention("email for Tamarind Grocers", "   ")).toBeUndefined();
     expect(resolveMention("email for Tamarind Grocers", "")).toBeUndefined();
   });
+
+  it("refuses a mention TRUNCATED inside the credential it names", () => {
+    // The hole the "no peel" rule does not cover: no peel stops THIS module
+    // shortening the span into the value, and says nothing about the model
+    // shortening it first. Uniqueness cannot see the difference -- a truncated
+    // secret is still a substring occurring exactly once -- so before the
+    // boundary rule each of these resolved at rung 1 and shipped the rest of
+    // the key in the clear, with `actionIsWholeEvidence: false` and no counter
+    // able to separate it from a good narrowing.
+    const clause = "rotate the staging key AKIAIOSFODNN7EXAMPLE today";
+    // The correct answer still resolves. This is the half that must not regress.
+    expect(resolveMention(clause, "AKIAIOSFODNN7EXAMPLE")).toEqual({
+      start: 23,
+      end: 43,
+      text: "AKIAIOSFODNN7EXAMPLE",
+    });
+    // One character short, and sixteen characters short: the END of the mention
+    // falls inside the key.
+    expect(resolveMention(clause, "AKIAIOSFODNN7EXAMPL")).toBeUndefined();
+    expect(resolveMention(clause, "AKIA")).toBeUndefined();
+    // And the mirror, where the START falls inside it -- a model returning the
+    // key's tail rather than its head. FOUND BY MUTATION: without this,
+    // dropping the start half of the boundary check left the whole suite green,
+    // because every other fixture here is a PREFIX of the value.
+    expect(resolveMention(clause, "EXAMPLE")).toBeUndefined();
+    expect(resolveMention(clause, "IOSFODNN7EXAMPLE")).toBeUndefined();
+    // All four are genuinely unique substrings, so uniqueness is NOT what
+    // refuses them -- asserted so this test cannot pass for the wrong reason.
+    for (const m of ["AKIAIOSFODNN7EXAMPL", "AKIA", "EXAMPLE", "IOSFODNN7EXAMPLE"]) {
+      expect(clause.split(m), `${m} must occur exactly once`).toHaveLength(2);
+    }
+  });
+
+  it("still narrows to the value in KEY=VALUE, which a whole-token rule would refuse", () => {
+    // Why the rule is the `\b` one and not "cover whole whitespace-delimited
+    // tokens". This clause is `pos-aws-key-code-fence` from
+    // corpora/fixtures/smoke.jsonl, and the gold span is the key alone -- one
+    // whitespace token with the label welded to it by an `=`. A token rule
+    // refuses the right answer here; the boundary rule accepts it, because `=`
+    // is not a letter or a digit.
+    const clause = "export AWS_ACCESS_KEY_ID=AKIAZZ7EXAMPLE4XQ2LN";
+    expect(resolveMention(clause, "AKIAZZ7EXAMPLE4XQ2LN")).toEqual({
+      start: 25,
+      end: 45,
+      text: "AKIAZZ7EXAMPLE4XQ2LN",
+    });
+    // And the truncation of that same value is still refused.
+    expect(resolveMention(clause, "AKIAZZ7EXAMPLE4XQ2L")).toBeUndefined();
+  });
+
+  it("refuses a mention carrying no letter or digit", () => {
+    // `SPAN_TEXT_FIELD` only requires a non-whitespace character, so `"-"`
+    // parses `ok` and arrives here. Placed, it becomes a one-character action
+    // span; on an Approach-B `pseudonymize` entityType `applyActions` then
+    // mints "-" into the vault as a REAL value.
+    expect(resolveMention("the sk-live key is stale", "-")).toBeUndefined();
+    expect(resolveMention("the (Tamarind) renewal", "(")).toBeUndefined();
+    // A mention that is punctuation PLUS a name is still a name.
+    expect(resolveMention("the (Tamarind) renewal", "(Tamarind)")).toEqual({
+      start: 4,
+      end: 14,
+      text: "(Tamarind)",
+    });
+  });
+
+  it("applies the boundary rule in FOLDED space, so case never decides it", () => {
+    // The rule is tested against the same folded string the match ran in. If it
+    // were applied to the raw clause the two could disagree wherever folding
+    // moves a character, and the disagreement would be a silent mis-location
+    // rather than a refusal.
+    expect(resolveMention("with TAMARIND GROCERS today", "tamarind")).toEqual({
+      start: 5,
+      end: 13,
+      text: "TAMARIND",
+    });
+    expect(resolveMention("with TAMARIND GROCERS today", "tamarin")).toBeUndefined();
+  });
 });
 
 describe("locateFinding", () => {
@@ -597,6 +674,30 @@ describe("locateFinding", () => {
     if (!r.ok) return;
     expect(r.at.actionIsWholeEvidence).toBe(true);
     expect(r.at.action).toEqual(r.at.evidence);
+  });
+
+  it("does not call a PREFIX of the clause a whole-clause answer", () => {
+    // The `end` half of `actionIsWholeEvidence`, which no other fixture
+    // reaches: every narrowing pinned elsewhere either ends where its clause
+    // ends or sits strictly inside it, so `start === evidence.start` is false
+    // in all of them and the second comparison is never load-bearing. FOUND BY
+    // MUTATION -- dropping `&& end === evidence.end` survived the whole suite
+    // while dropping `start === evidence.start` was caught, which located the
+    // hole exactly.
+    //
+    // It over-counts in the direction that HIDES the improvement the split was
+    // made for: a 16-of-51-character action span reported as a whole-clause
+    // answer inflates `wholeClauseMentions`, and the documented read
+    // "wholeClauseMentions === rung1 + rung2 means the arm narrowed nothing"
+    // then reads an arm that did narrow as one that did not.
+    const clause = "draft a contract renewal email for Tamarind Grocers";
+    const r = locateFinding(GOLD, clause, "draft a contract");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.at.action.start).toBe(r.at.evidence.start);
+    expect(r.at.action.end).toBeLessThan(r.at.evidence.end);
+    expect(r.at.action.text).toBe("draft a contract");
+    expect(r.at.actionIsWholeEvidence).toBe(false);
   });
 
   it("REFUSES a mention that sits outside its own quote, and does not go looking", () => {

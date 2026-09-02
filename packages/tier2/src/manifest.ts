@@ -77,6 +77,38 @@ export interface Tier2Config {
   readonly maxTokens: number;
 }
 
+/**
+ * `maxTokens` is UNCHANGED at 512 through the two-span schema change, and that
+ * is a decision rather than a carry-over.
+ *
+ * The change made every finding carry a second required string on the wire --
+ * the literal `,"mention":"..."`, 12 characters plus the value, on top of
+ * `entityType`/`predicateId` + `quote` + `confidence` -- and this number did
+ * not move with it. `max_tokens` is spent PER CALL (`engine.ts` feeds it to
+ * `buildCallParams`), so where the judge makes several calls for one message it
+ * has several times B's output allowance: `schema.ts` names B "the arm most
+ * exposed to it" and `baselineB.ts`'s module docblock states the shape in full.
+ * `fitsContext` charges only the PROMPT against `contextWindowSize -
+ * maxTokens`; nothing charges the larger answer.
+ *
+ * How big that is on the runs this repository actually holds: ZERO. `p-fin` is
+ * the only compiled policy here and its one predicate is message-scoped, so the
+ * judge makes exactly one whole-message call and both arms spend one budget --
+ * MEASURED, and already recorded on `baselineB.ts`: `test/baseline.spec.ts`
+ * reports 3 answered calls and `truncatedResponses: 0` on each of the four
+ * arms. So the extra field has not yet been shown to cost anything, and the
+ * reason to leave 512 alone is not that the risk is imaginary.
+ *
+ * It is that raising it would be tuning an input so a result looks better, and
+ * it would move ONE arm's headroom more than the other's on any policy with
+ * segment-scoped clauses -- the harness difference the bake-off exists not to
+ * measure. `truncatedResponses` is on both rows precisely so an arm killed by
+ * its token budget is distinguishable from one with nothing to say. If that
+ * counter rises for B under the two-span ask, the answer is a recorded,
+ * symmetric budget change with a measurement behind it, not a nudge here. NO
+ * GPU measurement of the new field's token cost was taken; this is an argument
+ * from the shipped config and from what the run records already say.
+ */
 export const DEFAULT_TIER2_CONFIG: Tier2Config = Object.freeze({
   modelId: "Qwen3.5-2B-q4f16_1-MLC",
   contextWindowSize: 8192,

@@ -399,6 +399,61 @@ const BASELINE_CONTRACT: readonly PromptClause[] = [
   },
 ];
 
+describe("the JSON shape line both prompts hand the model", () => {
+  it("shows the mention as a PART of the clause in the JSON shape line, on both arms", async () => {
+    // The template line is what a model copies; the four `mention` rule lines
+    // are advisory beside it. FOUND BY MUTATION -- rewriting the placeholder
+    // from "<part of that clause>" to "<that whole clause>" in BOTH prompts at
+    // once left tier2, apps/eval and core green, because the only thing pinning
+    // this line is `expect(shape).toContain('"mention"')`. That mutant turns
+    // the instruction carrying the entire point of the two-span split back into
+    // "repeat the clause", restoring the whole-message `redact` spans the split
+    // exists to end -- and it would surface only as another all-zero accuracy
+    // slate.
+    //
+    // Asserted as a PROPERTY of the placeholder rather than against the literal
+    // string, so a reworded template that still says "part of" passes and one
+    // that says "whole" fails, whichever words it uses.
+    const placeholders = (shape: string): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const [, field, value] of shape.matchAll(/"(\w+)":"<([^>]*)>"/g)) {
+        out[field!] = value!;
+      }
+      return out;
+    };
+    for (const [arm, turn] of [
+      ["judge", await judgeSystemTurn()],
+      ["baseline B", await baselineSystemTurn()],
+    ] as const) {
+      const shape = turn.split("\n").find((line) => line.startsWith("{"));
+      expect(shape, `${arm} shape line`).toBeDefined();
+      const fields = placeholders(shape!);
+      expect(Object.keys(fields), `${arm} placeholders`).toContain("mention");
+      expect(fields.mention, `${arm} mention placeholder`).toMatch(/\bpart of\b/i);
+      expect(fields.mention, `${arm} mention placeholder`).not.toMatch(/\bwhole\b/i);
+      // And it is not the quote's placeholder restated, which is the same
+      // instruction arrived at by a different wording.
+      expect(fields.mention, `${arm} mention vs quote placeholder`).not.toBe(fields.quote);
+    }
+  });
+
+  it("shows the SAME shape line on both arms, once the two arm-specific words are renamed", async () => {
+    // The cross-arm half. A one-sided rewording of this template is one arm
+    // being asked for a different answer shape, which the head-to-head would
+    // read as a difference in the models. The only two words allowed to differ
+    // are the wire field name and the noun for the haystack -- the judge sees a
+    // passage, B sees the whole message, and that asymmetry is intrinsic.
+    const shapeOf = (turn: string): string =>
+      turn.split("\n").find((line) => line.startsWith("{")) ?? "";
+    const judge = shapeOf(await judgeSystemTurn());
+    const baseline = shapeOf(await baselineSystemTurn());
+    expect(judge).not.toBe("");
+    expect(judge.replaceAll("predicateId", "entityType").replaceAll("passage", "message")).toBe(
+      baseline,
+    );
+  });
+});
+
 describe("the compiled judge's system prompt", () => {
   it("states every clause its method requires, and states nothing else", async () => {
     assertPinned("the judge's system turn", await judgeSystemTurn(), JUDGE_CONTRACT);

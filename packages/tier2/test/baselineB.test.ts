@@ -1279,6 +1279,48 @@ describe("createBaselineB: narrows the action span", () => {
     expect(detector.stats.unresolvedMentions).toBe(0);
   });
 
+  it("de-duplicates on the ACTION span, so two clauses over one mention are one finding", async () => {
+    // The judge's twin, and a gap this block did not have: its only duplicate
+    // fixture restates an IDENTICAL quote, where the evidence span and the
+    // action span coincide and the two keying rules cannot disagree. FOUND BY
+    // MUTATION -- re-keying B's duplicate check on `located.at.evidence` left
+    // tier2, apps/eval and core green, while the identical swap in judge.ts was
+    // killed by its own version of this test.
+    //
+    // Two DIFFERENT clauses, both containing the name. One piece of evidence
+    // about one range of the message, so one finding; keyed on the clause it
+    // would be two, `duplicatesDropped` would read 0, and B's `duplicate-rate`
+    // and `resolvable-rate` -- both numeric gates that can kill an arm -- would
+    // shift for one arm only.
+    const detector = armFor(
+      answer(
+        {
+          entityType: "client-name",
+          quote: "review the Northwind Traders renewal",
+          mention: "Northwind Traders",
+          confidence: 0.8,
+        },
+        {
+          entityType: "client-name",
+          quote: "the Northwind Traders renewal before Friday",
+          mention: "Northwind Traders",
+          confidence: 0.5,
+        },
+      ),
+    );
+    const r = await detector(input());
+    // The two clauses really are different, and both really do place -- so this
+    // cannot pass because the second one was refused.
+    expect(MSG).toContain("review the Northwind Traders renewal");
+    expect(MSG).toContain("the Northwind Traders renewal before Friday");
+    expect(r.findings).toHaveLength(1);
+    expect(detector.stats.duplicatesDropped).toBe(1);
+    expect(detector.stats.rung1).toBe(1);
+    expect(detector.stats.unresolvedQuotes).toBe(0);
+    expect(detector.stats.unresolvedMentions).toBe(0);
+    expect(detector.stats.wholeClauseMentions).toBe(0);
+  });
+
   it("counts a whole-clause answer ONCE when the model restates it", async () => {
     // The judge's twin, and the same mutation-found gap: the counter is over
     // findings EMITTED, so a model that restates one finding contributes one.
