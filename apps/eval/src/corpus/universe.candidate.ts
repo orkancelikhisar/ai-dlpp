@@ -10,9 +10,10 @@ import { mintAadhaar } from "./universe.js";
  * `CLIENT_ORGS` and `NON_CLIENT_ORGS` are indexed by `Math.floor(rng() * n)`,
  * so appending one name to either array changes which organisation every
  * existing item draws and the committed corpus stops reproducing. The wave-2
- * pools therefore live here, disjoint from the wave-1 ones, and the committed
- * artifact keeps reproducing byte for byte while this file is unwired. See the
- * header of `carriers.candidate.ts` for what wiring costs.
+ * pools therefore live here, disjoint from the wave-1 ones, and
+ * `injection-p-fin-v1` keeps reproducing byte for byte because nothing appends
+ * to the wave-1 arrays. `injection-p-fin-adjudicated-v1` draws on both pools by
+ * passing them to the generator explicitly; see `build-adjudicated.ts`.
  *
  * ## The confound this file exists to remove
  *

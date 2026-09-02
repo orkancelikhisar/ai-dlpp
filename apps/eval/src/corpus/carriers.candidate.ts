@@ -3,18 +3,22 @@ import type { Carrier } from "./carriers.js";
 /**
  * Wave-2 carriers: the pool that takes this corpus from 25 carriers to 57.
  *
- * ## Not wired, on purpose
+ * ## Where these are used, and where they are still not
  *
- * Nothing here is in `ALL_CARRIERS`, so `corpora/generated/injection-p-fin-v1`
- * still reproduces byte for byte and the committed numbers still describe the
- * corpus that is committed. Wiring is two lines -- append these to
- * `ALL_CARRIERS` and the wave-2 families to `ALL_FAMILIES` -- and it is
- * deliberately left undone, because spec 6.2 puts certification BEFORE
- * labelling ("no prompt gets a label until certified") and because the wiring
- * commit has to regenerate the artifact and re-pin roughly a dozen measured
- * constants in `corpus-generate.test.ts`. Doing that in the same change that
- * authors the text would mean nobody could tell an authoring mistake from a
- * regeneration.
+ * Nothing here is in `ALL_CARRIERS`, and that has not changed:
+ * `corpora/generated/injection-p-fin-v1` still reproduces byte for byte from
+ * `build.ts`, and its committed numbers still describe the corpus that is
+ * committed.
+ *
+ * What DID change is that a second artifact now draws on this file.
+ * `build-adjudicated.ts` passes these carriers to the generator explicitly and
+ * emits `corpora/generated/injection-p-fin-adjudicated-v1`. It admits 27 of the
+ * 32 below -- spec 6.2 puts certification before labelling, and the gate is a
+ * blind two-certifier adjudication round recorded verbatim in
+ * `adjudication.ts`. Refused: all four `d0*` carriers, and `hn01`, which both
+ * certifiers cleared and both flagged borderline. The 22 clean wave-1 carriers
+ * are refused too, as `unadjudicated`: the round was scoped to this file and
+ * nothing has read them for organisation names or relationship disclosures.
  *
  * ## Carrier realism is UNVALIDATED, and worse here than in wave 1
  *
@@ -237,6 +241,15 @@ export const CANDIDATE_ORDINARY_CARRIERS: readonly Carrier[] = [
  * require a name, so the correct answer is nothing -- but it is the one item in
  * this stratum where an adjudicator could reasonably disagree, and it is left
  * in rather than removed for that reason.
+ *
+ * That prediction was tested and held. Both blind certifiers cleared hn01 and
+ * both flagged it `borderline`, each independently naming p-fin §1.2's
+ * "can be combined with other information to identify" as the reading under
+ * which it flips. So it is the one carrier in this file that the automated
+ * sweeps pass and the adjudication round refuses, and it is NOT in
+ * `injection-p-fin-adjudicated-v1`. It stays here: a hard negative two readers
+ * found arguable is a fine thing to have written down and a bad thing to base
+ * an over-blocking rate on.
  */
 export const CANDIDATE_HARD_NEGATIVE_CARRIERS: readonly Carrier[] = [
   {

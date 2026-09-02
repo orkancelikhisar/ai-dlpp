@@ -173,9 +173,13 @@ export const CANDIDATE_POSITIVE_FAMILIES: readonly Family[] = [
   {
     // A fictional UPI handle. Wave 1's `upi-vpa` family mints against "okaxis",
     // which is the live UPI handle of a real bank, so every VPA it produces is
-    // a well-formed address at a real payment provider. Not edited here:
-    // changing it would change the committed corpus, which this wave
-    // deliberately leaves reproducing. It is worth fixing in the wiring commit.
+    // a well-formed address at a real payment provider. `families.ts` is still
+    // not edited -- changing it would change the committed v1 corpus -- so the
+    // fix is an exclusion instead: `build-adjudicated.ts` drops `upi-vpa` from
+    // the catalogue it passes and this family covers the same entityType and
+    // surface at an invented handle. `injection-p-fin-adjudicated-v1` contains
+    // no address in a real payment namespace; the test asserts the file has no
+    // "@okaxis" in it.
     id: "upi-vpa-fictional-handle",
     type: "bank-account-identifier",
     surface: "prose",

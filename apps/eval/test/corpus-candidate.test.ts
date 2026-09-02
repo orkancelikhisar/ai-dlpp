@@ -41,9 +41,16 @@ import {
  * certified" -- so this suite runs the whole generator over wave 1 plus wave 2
  * IN MEMORY and asserts what the corpus would be, while
  * `corpora/generated/injection-p-fin-v1` stays exactly what it was and
- * `corpus-artifact.test.ts` keeps reproducing it. Wiring wave 2 into
- * `ALL_CARRIERS` and `ALL_FAMILIES` is a separate change that has to regenerate
- * the artifact and re-pin the measured constants in `corpus-generate.test.ts`.
+ * `corpus-artifact.test.ts` keeps reproducing it.
+ *
+ * The dry run below is deliberately kept as the UNADJUDICATED baseline: it uses
+ * the default sweeps only, so its 350 items over 50 usable carriers are what
+ * the pipeline would emit if the only gate were the automated ones. The corpus
+ * actually emitted is `injection-p-fin-adjudicated-v1` (189 items over 27
+ * carriers), which adds the blind double-adjudication sweep; the difference
+ * between the two numbers is what that round cost, and
+ * `corpus-adjudicated.test.ts` holds the other end. Neither wave is in
+ * `ALL_CARRIERS` or `ALL_FAMILIES`, which is why v1 still reproduces.
  */
 
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));

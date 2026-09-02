@@ -17,6 +17,13 @@ import {
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const IR: PolicyIr = loadPolicyIr(readFileSync(`${REPO}policies/compiled/p-fin.ir.json`, "utf8"));
 
+/**
+ * A `Sweep` takes the carrier id as well as the text, for the one sweep whose
+ * input is a recorded per-carrier judgement rather than the text. Every sweep
+ * in this file ignores it; `PROBE` is the id these direct calls run under.
+ */
+const PROBE = "probe-carrier";
+
 const CLEAR: Sweep = () => [];
 const hit = (label: string): Sweep => (text) => [{ sweep: "stub", start: 0, end: 1, text: text.slice(0, 1), label }];
 
@@ -28,7 +35,7 @@ describe("maxRecallIr", () => {
     const text = "The reference on the form reads ABCDE1234F next to the signature.";
     // Stock: runTier0 straight off the compiled IR, not through this module.
     expect(runTier0(IR, text, segmentText(text))).toEqual([]);
-    expect(tier0Sweep(IR)(text).map((h) => `${h.label}:${h.text}`)).toEqual(["in-pan:ABCDE1234F"]);
+    expect(tier0Sweep(IR)(text, PROBE).map((h) => `${h.label}:${h.text}`)).toEqual(["in-pan:ABCDE1234F"]);
     expect(IR.rules.some((r) => r.validator !== undefined)).toBe(true);
     expect(maxRecallIr(IR).rules.every((r) => r.validator === undefined)).toBe(true);
   });
@@ -52,7 +59,7 @@ describe("maxRecallIr", () => {
 
   it("lowering the entropy floor really does find more in a kv block", () => {
     const kv = "settings:\nLOG_LEVEL=debug\nMODE=production_readonly\nTIMEOUT_SECONDS=30\n";
-    const wide = tier0Sweep(IR)(kv);
+    const wide = tier0Sweep(IR)(kv, PROBE);
     expect(wide.map((h) => h.text)).toEqual([
       "LOG_LEVEL=debug",
       "MODE=production_readonly",
@@ -63,7 +70,7 @@ describe("maxRecallIr", () => {
 
 describe("orthographicOrgSweep", () => {
   it("finds a Title-Case bigram", () => {
-    expect(orthographicOrgSweep("we met at Ferndale Conference Centre on tuesday").map((h) => h.text)).toEqual([
+    expect(orthographicOrgSweep("we met at Ferndale Conference Centre on tuesday", PROBE).map((h) => h.text)).toEqual([
       "Ferndale Conference Centre",
     ]);
   });
@@ -73,17 +80,17 @@ describe("orthographicOrgSweep", () => {
     // would quarantine every sentence-initial capital, which is to say every
     // real carrier. MEASURED by mutation -- with `+` relaxed to `*` in the
     // pattern, nothing else in this suite noticed.
-    expect(orthographicOrgSweep("Tuesday was fine and the report from Ferndale went out")).toEqual([]);
+    expect(orthographicOrgSweep("Tuesday was fine and the report from Ferndale went out", PROBE)).toEqual([]);
     // And the blind spot, stated: a lowercase organisation name is invisible.
-    expect(orthographicOrgSweep("we bank with vetiver logistics")).toEqual([]);
+    expect(orthographicOrgSweep("we bank with vetiver logistics", PROBE)).toEqual([]);
   });
 
   it("is not stateful across calls", () => {
     // A module-level /g regex shares lastIndex; the second call would silently
     // start mid-string and return nothing.
     const text = "the venue was Ferndale Conference Centre again";
-    expect(orthographicOrgSweep(text)).toEqual(orthographicOrgSweep(text));
-    expect(orthographicOrgSweep(text)).toHaveLength(1);
+    expect(orthographicOrgSweep(text, PROBE)).toEqual(orthographicOrgSweep(text, PROBE));
+    expect(orthographicOrgSweep(text, PROBE)).toHaveLength(1);
   });
 });
 

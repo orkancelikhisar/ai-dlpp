@@ -103,8 +103,16 @@ export function writeArtifacts(): BuiltArtifacts {
   return built;
 }
 
-// `node --experimental-strip-types apps/eval/src/corpus/build.ts` (or the
-// package's own runner) regenerates both artifacts in place.
+// Regenerates both artifacts in place -- but NOT under plain node. MEASURED on
+// node v26.0.0: `node --experimental-strip-types apps/eval/src/corpus/build.ts`
+// fails with ERR_MODULE_NOT_FOUND, because `@sih/core`'s package `main` is
+// `src/index.ts` and its internal specifiers end in `.js`, which node's type
+// stripping does not remap to `.ts`; adding a resolver hook that does remap them
+// then fails with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. This comment previously
+// claimed that command works. See `build-adjudicated.ts` for what actually ran.
+// The guarantee that matters does not depend on any of it:
+// `corpus-artifact.test.ts` regenerates in memory and compares to the committed
+// bytes on every `pnpm -r test`.
 if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
   const built = writeArtifacts();
   process.stdout.write(

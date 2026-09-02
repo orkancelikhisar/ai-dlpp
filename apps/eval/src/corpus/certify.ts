@@ -68,7 +68,7 @@ export type StageId = (typeof CERTIFICATION_STAGES)[number];
  * above. Kept in a separate list so a reader counting "stages run" against the
  * spec gets the same number the spec would.
  */
-export const SUPPLEMENTARY_SWEEPS = ["orthographic-org-sweep"] as const;
+export const SUPPLEMENTARY_SWEEPS = ["orthographic-org-sweep", "blind-double-adjudication-p-fin"] as const;
 export type SupplementarySweepId = (typeof SUPPLEMENTARY_SWEEPS)[number];
 
 export interface StageHit {
@@ -78,14 +78,30 @@ export interface StageHit {
   readonly text: string;
   /** What the sweep called it: an entityType id, or a sweep-specific label. */
   readonly label: string;
+  /**
+   * Why, in prose, when the label alone does not carry it. Optional so that
+   * adding it left every hit already recorded in a committed manifest
+   * byte-identical -- `JSON.stringify` omits an absent key, and
+   * `corpus-artifact.test.ts` is the check that this was additive rather than a
+   * claim that it was.
+   */
+  readonly note?: string;
 }
 
 export type SweepResult =
   | { readonly sweep: string; readonly ran: true; readonly detector: string; readonly hits: readonly StageHit[] }
   | { readonly sweep: string; readonly ran: false; readonly blockedOn: string; readonly why: string };
 
-/** Given a carrier's text, everything the sweep considers sensitive-looking. */
-export type Sweep = (text: string) => readonly StageHit[];
+/**
+ * Given a carrier's text, everything the sweep considers sensitive-looking.
+ *
+ * `carrierId` is passed as a second argument for the sweep whose input is a
+ * RECORDED JUDGEMENT rather than the text -- an adjudication round returns a
+ * verdict per carrier, and re-deriving which carrier this is by matching text
+ * would be a second, fallible claim about identity. Every text-only sweep
+ * ignores it; a one-argument function is still a valid `Sweep`.
+ */
+export type Sweep = (text: string, carrierId: string) => readonly StageHit[];
 
 export const UNRUN_STAGES: Readonly<Record<StageId, { blockedOn: string; why: string }>> = {
   "tier0-sweep": {
@@ -270,7 +286,7 @@ export function certifyCarrier(
       unrun.push(stage);
       continue;
     }
-    const found = sweep(text).map((h) => ({ ...h, sweep: stage }));
+    const found = sweep(text, carrierId).map((h) => ({ ...h, sweep: stage }));
     stages.push({
       sweep: stage,
       ran: true,
@@ -283,7 +299,7 @@ export function certifyCarrier(
   const supplementary: SweepResult[] = [];
   const sweeps = options.supplementarySweeps ?? [{ id: "orthographic-org-sweep" as const, sweep: orthographicOrgSweep }];
   for (const { id, sweep } of sweeps) {
-    const found = sweep(text).map((h) => ({ ...h, sweep: id }));
+    const found = sweep(text, carrierId).map((h) => ({ ...h, sweep: id }));
     supplementary.push({ sweep: id, ran: true, detector: id, hits: found });
     hits.push(...found);
   }
