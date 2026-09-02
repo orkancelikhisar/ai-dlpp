@@ -66,7 +66,7 @@ function occurrences(haystack: string, needle: string): number {
 }
 
 /**
- * The invariant, as three checks. Exported and called separately by the
+ * The invariant, as four checks. Exported and called separately by the
  * generator over the finished corpus, so a corpus that was assembled by some
  * path other than `applyInjections` still cannot be emitted unchecked.
  *
@@ -83,6 +83,16 @@ function occurrences(haystack: string, needle: string): number {
  * 3. Spans are pairwise non-overlapping. Two overlapping gold spans make
  *    "exactly the injected ones" ambiguous -- a finding covering both is one
  *    match or two depending on which gold span a scorer walks first.
+ * 4. One value carries ONE type within a message. Check 2 deliberately permits
+ *    a repeated value (spec 6.2's multi-turn positives inject the same secret
+ *    twice), and this is what stops that permission from swallowing a
+ *    contradiction: two families that draw from a SHARED pool -- which is
+ *    exactly what `DUAL_ROLE_ORGS` is for -- can draw the same organisation and
+ *    write it once as a client and once as a supplier. Nothing else here
+ *    notices. Counts still match, spans still hold their text, and the item
+ *    quietly asserts both that an organisation is a client of the Firm and
+ *    that it is not, with one gold span and one confusable label to prove it.
+ *    Failing at generation time is the only place that is cheap to fix.
  */
 export function assertInjectionInvariant(text: string, injections: readonly WrittenInjection[]): void {
   for (const inj of injections) {
@@ -111,6 +121,17 @@ export function assertInjectionInvariant(text: string, injections: readonly Writ
           `or provably a false positive`,
       );
     }
+  }
+  const typeByValue = new Map<string, string>();
+  for (const inj of injections) {
+    const seen = typeByValue.get(inj.value);
+    if (seen !== undefined && seen !== inj.type) {
+      throw new Error(
+        `injection invariant violated: ${JSON.stringify(inj.value)} was injected as both ` +
+          `"${seen}" and "${inj.type}" in one message, so the two labels contradict each other`,
+      );
+    }
+    typeByValue.set(inj.value, inj.type);
   }
   const sorted = [...injections].sort((a, b) => a.span.start - b.span.start);
   for (let i = 1; i < sorted.length; i += 1) {

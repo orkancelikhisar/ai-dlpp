@@ -113,6 +113,18 @@ export interface GenerateOptions {
   /** sha256 of the IR file bytes. Pins the exact artifact the labels came from. */
   readonly irHash: string;
   readonly carriers?: readonly Carrier[];
+  /**
+   * Family catalogues, defaulting to the wired ones in `families.ts`.
+   *
+   * Injectable for the reason `certifyOptions` is: a test that only ever runs
+   * the default catalogue cannot tell "reads the catalogue" from "imports the
+   * constant", and -- more usefully here -- a candidate wave of families can be
+   * DRY-RUN through the whole generator, invariants and all, without emitting
+   * an artifact. Spec 6.2 puts certification before labelling, so a wave that
+   * has not been certified must be runnable without being committed.
+   */
+  readonly positiveFamilies?: readonly Family[];
+  readonly confusableFamilies?: readonly Family[];
   readonly selfTestExamples: readonly SelfTestExample[];
   readonly certifyOptions?: Omit<CertifyOptions, "ir">;
   readonly devFraction?: number;
@@ -187,7 +199,33 @@ function buildItem(
   for (let k = 0; k < families.length; k += 1) {
     const family = families[k]!;
     const slotIndex = (recipeIndex + k) % slots.length;
-    const value = family.mint(rng);
+    // A family pool shared between a client family and a vendor family (which
+    // is what `DUAL_ROLE_ORGS` is FOR -- it removes the confound where the
+    // organisation's name gives its role away) lets both draw the same name
+    // into one item. That item would label one string `client-name` and
+    // `neg:...-vendor` at once, and `assertInjectionInvariant`'s fourth check
+    // refuses it -- correctly, and with no way forward, since the generator
+    // gets one pass. Re-minting is the way forward: `mint` is a pure function
+    // of the rng, so a second call draws again and the corpus stays a pure
+    // function of the seed.
+    //
+    // MEASURED over every (positive family x confusable family x carrier)
+    // pairing available to wave 1 and wave 2 together: 70 of 40,730 collide,
+    // and every one is two organisation families drawing one name. Also
+    // MEASURED, by deleting this loop and re-running: at the DEFAULT seed the
+    // dealt corpus happens to contain no collision at all, so nothing on the
+    // default path exercises this and a test that only generates the default
+    // corpus cannot tell the loop from its absence. `corpus-candidate.test.ts`
+    // forces one with a two-name pool instead. Bounded
+    // rather than `while`: a family whose mint returns a CONSTANT (the tutorial
+    // key, the redaction placeholder) can never escape a collision, and
+    // spinning forever on that would be worse than failing with the fourth
+    // check's message, which names both types.
+    let value = family.mint(rng);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (!injections.some((i) => i.value === value && i.type !== family.type)) break;
+      value = family.mint(rng);
+    }
     const { prefix, suffix } = family.glue(value);
     injections.push({
       at: slots[slotIndex]!,
@@ -244,6 +282,11 @@ function itemMeta(
     carrierId: carrier.id,
     carrierSource: "hand-authored",
     carrierRegister: carrier.register,
+    // Emitted only when the carrier declares one, so that adding the field to
+    // `Carrier` left every existing item's bytes untouched -- the committed
+    // artifact still reproduces, which is the check that this was additive
+    // rather than a claim that it was.
+    ...(carrier.stratum === undefined ? {} : { carrierStratum: carrier.stratum }),
     // The gap `../driver/corpus.ts` names in its own comment -- "Nothing in this
     // file records which IR an item's labels were written against, so a policy
     // edited without relabelling its corpus fails silently". This closes it for
@@ -292,6 +335,9 @@ function buildPristineNegative(carrier: Carrier, options: GenerateOptions, seed:
       carrierId: carrier.id,
       carrierSource: "hand-authored",
       carrierRegister: carrier.register,
+      // See `itemMeta`. The pristine negatives are where this matters most: a
+      // hard-negative carrier's uninjected item is the over-blocking measurement.
+      ...(carrier.stratum === undefined ? {} : { carrierStratum: carrier.stratum }),
       irHash: options.irHash,
       density: 0,
       injections: [],
@@ -416,11 +462,13 @@ export function generateCorpus(options: GenerateOptions): GeneratedCorpus {
   // which is what makes the quarantine rate a reported number.
   const usable = carriers.filter((c) => byId.get(c.id)!.status !== "quarantined");
 
+  const positiveFamilies = options.positiveFamilies ?? POSITIVE_FAMILIES;
+  const confusableFamilies = options.confusableFamilies ?? CONFUSABLE_FAMILIES;
   const dealRng = seededRng(`${seed}|${GENERATOR_VERSION}|deal`);
-  const positiveDeck = deal(dealRng, POSITIVE_FAMILIES, usable.length * POSITIVES_PER_CARRIER);
+  const positiveDeck = deal(dealRng, positiveFamilies, usable.length * POSITIVES_PER_CARRIER);
   const confusableDeck = deal(
     dealRng,
-    CONFUSABLE_FAMILIES,
+    confusableFamilies,
     usable.length * (CONFUSABLE_ITEMS_PER_CARRIER + DUAL_INJECTION_RECIPES.size),
   );
   let positiveCursor = 0;

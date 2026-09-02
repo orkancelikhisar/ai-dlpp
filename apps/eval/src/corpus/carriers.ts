@@ -44,11 +44,27 @@
 
 export type Register = "casual" | "technical" | "formal";
 
+/**
+ * Spec 6.2's hard-negative stratum: a carrier that is sensitive-LOOKING and
+ * carries nothing sensitive. Absent means an ordinary carrier -- the field is
+ * optional so that adding it leaves every wave-1 carrier's emitted bytes
+ * unchanged, which `corpus-artifact.test.ts` checks on every run.
+ */
+export type CarrierStratum = "hard-negative";
+
 export interface Carrier {
   readonly id: string;
   readonly register: Register;
   /** Joined with "" to form the text; boundaries between them are the slots. */
   readonly segments: readonly string[];
+  /**
+   * Set only on carriers written to be hard negatives. It reaches
+   * `meta.carrierStratum` on every item generated from the carrier, so the
+   * over-blocking rate on the hard stratum can be reported on its own rather
+   * than averaged into the easy negatives -- which is what spec 6.2 means by
+   * "hard negatives are a deliberate, reported stratum".
+   */
+  readonly stratum?: CarrierStratum;
 }
 
 export function carrierText(c: Carrier): string {
