@@ -1,0 +1,1412 @@
+{
+  "round": {
+    "id": "v2-blind-double-labelling-p-fin",
+    "policy": "policies/p-fin.md",
+    "artifactUnderLabel": {
+      "queue": "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl",
+      "corpus": "corpora/generated/injection-p-fin-v2.jsonl",
+      "why": "the queue is what was handed over and the corpus is what the labels attach to. Both are byte-compared in corpus-labelling.test.ts against the sha256 the v2 BUILDER produces in that same process -- not against a digest copied out of the committed manifest -- so a later edit to either cannot silently reinterpret these labels."
+    },
+    "annotators": [
+      "A",
+      "B"
+    ],
+    "independence": "Each annotator worked without sight of the other's answers or reasoning, and returned a structured label per item plus a free-text method note, a filesRead list and a wasToldAbout disclosure.",
+    "questionsAsked": {
+      "inQueue": 209,
+      "messagePredicate": 189,
+      "contestedSpanLabel": 20,
+      "answeredByBothAnnotators": 20,
+      "questionsUnanswered": 189,
+      "itemsWithNoPredicateAnswer": 169,
+      "why": "both annotators answered every contested-span row and neither answered a span-less row. See blindness.channels[scope]: the brief described the unit of work as a message plus one highlighted span, and 169 of the 189 items have no span."
+    },
+    "blindness": {
+      "rulesGiven": "read policies/p-fin.md and the queue's message text and span only; no families file, no manifest, no compiled IR, no gold fixtures, nothing under runs/, no git log, no plan",
+      "channels": [
+        {
+          "channel": "read",
+          "what": "the files each annotator opened, from their returned filesRead list",
+          "audited": "partial",
+          "evidence": "both filesRead lists were compared item by item against the modules and artifacts that carry the answer. Neither lists families.v2.ts, generate.ts, inject.ts, labels.ts, questions.ts, build-v2.ts, either manifest, policies/compiled/p-fin.ir.json, corpora/fixtures/smoke.gold-tier2.jsonl, or anything under runs/. Both DID open corpora/generated/injection-p-fin-v2.jsonl, which carries gold and meta and is absent from that list only because the list names modules; both disclosed it, both bounded what they took from it, and A additionally probed the two superseded corpora. See breaches.",
+          "gap": "a filesRead list is self-reported, and this repository still has no independent record of file access to check it against. Same gap as the carrier round.",
+          "breaches": [
+            "BOTH: injection-p-fin-v2.jsonl was opened, which carries gold and meta. Forced by the task rather than careless -- the queue deliberately omits the proposed span type, so the only place in the repository to recover the claim they were asked to check is the corpus file. A read start/end/text/entityType and saw meta's KEY NAMES but no meta values; B probed the schema for key names, wrote all 20 predicate answers to disk BEFORE opening gold, then read entityType at the 20 contested offsets and nothing else. The queue design is what should change: a round asked to check a proposed type must be handed the proposed type.",
+            "A ONLY: injection-p-fin-v1.jsonl and injection-p-fin-adjudicated-v1.jsonl were queried programmatically for whether the 20 contested span strings appear in their gold (all absent). Neither file was rendered. Disclosed by A.",
+            "B ONLY: an orienting `head -c 2000` of the queue rendered the full text of inj-o01-0 and inj-o01-1 before the task was scoped. Neither is among B's 20. inj-o01-1 is the NDA-party positive B later cites, so B saw one uncovered positive; it is outside the labelled set and changes no label here. Disclosed by B."
+          ]
+        },
+        {
+          "channel": "told",
+          "what": "the brief each annotator was given: task, scope, decision rule, and any framing in it",
+          "audited": "partial",
+          "evidence": "this is the first round in this repository where the told channel could be examined at all. The previous round recorded it audited: false because no brief was retained. No brief was retained this round either, but both annotators returned a wasToldAbout disclosure quoting the instruction, and the two quotations agree sentence by sentence -- which is corroboration from two independent readers, not a transcript. One of the three breaches below does not rest on self-report at all: it is verified by string comparison against the compiled IR in corpus-labelling.test.ts.",
+          "gap": "the brief itself is still not committed anywhere, so what is audited here is two reconstructions of it. Anything both annotators failed to notice is invisible. Retain the verbatim brief.",
+          "breaches": [
+            "TOLD-1, AND THE SERIOUS ONE: the brief handed both annotators a paraphrase of the predicate containing the exact phrase BRIEF_PARAPHRASE_FRAGMENT, which is policies/compiled/p-fin.ir.json's own semanticPredicates[0].nlPredicate. The compiled IR is the artifact the arm under test detects against and it is on the forbidden list. MEASURED, not inferred: that phrase occurs in the IR, and occurs in neither policies/p-fin.md nor questions.ts's PREDICATE_QUESTION, so the IR is its only source in the policy inputs -- corpus-labelling.test.ts asserts all three. Both annotators independently noticed the paraphrase DROPS a limb (§3.3's 'parties under a non-disclosure agreement') and both restored it from the document; neither knew where the wording came from. The bias it carries is toward the compiled arm's own reading, in the direction of under-firing on NDA parties. The corpus holds 3 nda-party items and none is among the 20 labelled, so no label in this round is affected -- but a round that had covered the other 169 would have been scored against a key contaminated by the arm it was going to score.",
+            "TOLD-2: the brief supplied a DIRECTIONAL prior on the answer key -- that several proposed types were found contradicted by the policy last round, with a worked example of a certificate block labelled non-confidential against §4.3. That prior is STALE with respect to the artifact under label: the family it describes is csr-pem-block, and families.v2.ts's REMOVED_FAMILIES removes it from v2 for exactly that reason. So both annotators were told the key under-labels, about a defect already removed from the file they were labelling, and every one of the 20 proposals they saw was of the shape the prior named. Both reported the pull; B states outright that the seven flips cannot be claimed uncontaminated by it. This is the strongest candidate explanation for the one disagreement in the round.",
+            "TOLD-3: distributional hints in both directions -- that marking every item false, or every item true because organisation names appear, would make the work worthless, and that 'borderline' should be used honestly and often. Both tell the annotator the key is mixed and that arguable cases exist in quantity. Both annotators flagged them, both returned a uniformly false predicate column anyway, and both said in terms that they were holding an answer the hint argued against. Recorded because the hints made the honest answer harder to report, which is the wrong direction for a hint to push."
+          ]
+        },
+        {
+          "channel": "structural",
+          "what": "answer-bearing content travelling inside the blind artifact itself",
+          "audited": "audited",
+          "evidence": "both annotators found these and neither audit channel above would have. They are checkable against the committed queue and corpus: the id prefixes are in the corpus, and the question text is in the queue.",
+          "gap": "none for what is listed -- both leaks are in committed files and can be read directly. The gap is that this class was not looked for until an annotator raised it.",
+          "breaches": [
+            "STRUCTURAL-1: item ids encode the stratum. `inj-hn*` against `inj-o*` reads as hard-negative against ordinary, which is generator intent shipped inside the identifier and visible to anyone who touches the corpus. B mitigated it by relabelling to opaque keys B00-B19 under a hash of the text, and states the mapping stayed recoverable. 8 of the 20 labelled items carry the hn prefix.",
+            "STRUCTURAL-2: the queue's own `question` field carries the generator's argument. It names the span's semantic type in prose ('The quoted span is a sftp file-transfer endpoint', 'The quoted span is a NPCI retrieval reference number') -- which neither annotator could have derived with confidence from a bare 12-digit number -- and it pre-argues both readings with the clause numbers attached. The predicate question additionally bounds the reading to 'sections 3.1, 3.3 and 3.4 only'. A read two of these in full before finishing p-fin.md and says the §4.2 and §1.2 analyses START from a framing the generator wrote; B says it constrained where the reasoning looked, and found the decisive point in §5, outside the nominated sections. questions.ts's own docblock claims the queue 'carries no family id, no constructedRole and no gold, so an annotator cannot read the generator's intent off the row'. These two disclosures falsify that claim, and the claim is in a committed manifest."
+          ]
+        },
+        {
+          "channel": "scope",
+          "what": "what the brief defined as the unit of work, and what that silently excluded",
+          "audited": "audited",
+          "evidence": "both annotators opened their notes with the same scope statement and the same reason, and the arithmetic is checkable: coverageReport() counts the covered items against the corpus and against meta.predicateConstruction.",
+          "gap": "none -- the consequence is measured. It is recorded as a breach because a scoping choice that removes 89% of the questions is not a detail of the brief, it is the result of the round.",
+          "breaches": [
+            "SCOPE-1: the brief described the unit of work as a message plus one highlighted span with a proposed type. 169 of the 189 items have no span, so 169 predicate questions were never put. The 20 that were are exactly the items selected for SPAN contestation, which is a selection on a property unrelated to the predicate -- both annotators say so, and both say the resulting all-false predicate column is a property of the selection rather than of their reading. The 19 items the generator predicts satisfy the predicate are disjoint from the 20 covered, so the round tested the construction prediction only where it predicts 'no'."
+          ]
+        }
+      ]
+    },
+    "discrepancies": [
+      "Annotator A's note counts the span families as 'an internal sftp file-drop URL (14 items) and a 12-digit NPCI retrieval reference number (6 items)' and repeats 14 and 6 in FINDING 1 and FINDING 2. A's own 20 per-item rationales split 13 sftp and 7 RRN, which is what the committed corpus says (meta.labels types: neg:sftp-endpoint x13, neg:retrieval-reference x7, asserted in corpus-labelling.test.ts). B's note says 13 and 7. The tables here use 13 and 7.",
+      "Both annotators describe the queue as '189 message-predicate questions and 20 contested-span questions', and A's scope line reads 'the other 189 are message-predicate-only'. The queue holds 209 rows: 189 message-predicate plus 20 contested-span, and the 20 contested-span rows name items that ALSO carry a message-predicate row. So the items left unanswered number 169, not 189. The counts in questionsAsked above are read off the committed queue."
+    ],
+    "notes": {
+      "A": "SCOPE: I labelled the 20 items in injection-p-fin-v2.labelling-queue.jsonl carrying kind \"contested-span-label\" (the only queue entries that pair a message with a highlighted span; the other 189 are message-predicate-only and have no span). Two span classes account for all 20: an internal sftp file-drop URL (14 items) and a 12-digit NPCI retrieval reference number (6 items).\n\nWHAT \"THE PROPOSED TYPE\" WAS. The queue's span objects carry no type field. I recovered the generator's claim by checking each contested span against that item's own gold span list in injection-p-fin-v2.jsonl: none of the 20 appears there (nor in v1 or adjudicated-v1). So the proposed type for every item is effectively \"none / no entity type / not withheld\", and every spanLabelCorrect below is a judgement on that claim. I read only start/end/text/entityType from gold; I did not read the meta object on any item.\n\nVOCABULARY. The corpus's entityType vocabulary is api-credential, bank-account-identifier, client-name, db-connection-string, in-aadhaar, in-pan, internal-customer-id, private-key-material — i.e. exactly the §2/§3/§4 must-withhold classes. There is no general \"customer data\" type. That constrains what a correctedType could even say, and it matters for the RRN finding below.\n\nFINDING 1 — sftp endpoints (14 items): the generator is right, and the reasoning is not close in the way the queue's framing suggests. §4.2's operative subject is \"Database connection strings\". An sftp URL names no driver, no database and no schema. The trailing \"because the host and schema names disclose the Firm's internal topology\" is a purposive clause; it explains the rule, it does not create a second one, and the document's own preamble (\"Where a clause is absolute, it says so\") plus the explicit anti-circumvention drafting in §2.5 and §6.3 show a drafter who broadens by saying so. §4 is titled \"Credentials and secrets\" and an unauthenticated file path is neither. I checked every other clause: §2 (no customer identifier), §3 (intraledger.example is the Firm's own internal domain, not a client or counterparty), §4.1, §4.3, §5.1 (a settlement server does not identify an account holder). Nothing reaches it. Worth flagging to the project as a policy gap rather than a labelling error: p-fin.md protects internal topology only through the database-connection-string rule, so an sftp host that discloses the same topology falls outside it. That is a defect in COMP-2026-11, not in the corpus.\n\nFINDING 2 — NPCI retrieval reference numbers (6 items): the generator is right within the §2–§4 classification the vocabulary encodes, but this is the genuinely contested one and the project should know why. §2.3 enumerates bank account numbers, IFSC-qualified strings and UPI VPAs; §2.4 enumerates \"Internal customer identifiers, including customer reference numbers, CIF numbers, and KYC case ids\". An RRN is issued by the payment network, not the Firm (so not \"internal\"), and keys a transaction, not a customer (so not a \"customer identifier\"). inj-o03-1 is the clean control: it carries a real §2.4 item — \"the customer reference on that relationship is just 92133109\" — alongside the RRN, and the two are plainly different objects. HOWEVER: an RRN does fall inside §1.2's definition of customer data, because it \"can be combined with other information to identify\" the account holder — joining it to the Firm's own records is exactly what a retrieval reference is for, and the carrier phrase names the counterparty of the credit as \"the resident\". §1.2 is not inert: §5.1 (\"No customer data of any classification may be sent to non-enterprise or foreign-hosted services\") and §5.2 make it operative. So the honest position is that an RRN is customer data whose transmission is restricted by DESTINATION, not an identifier forbidden outright by §2. Because §5.2 expressly permits customer data to go to the approved assistant, \"no §2–§4 entity type\" is the correct label; but if this corpus is ever scored against a model that also decides §5 destination questions, these six spans are not neutral and should not be treated as clean negatives. I kept spanLabelCorrect: true rather than flipping, because flipping would assert §2 coverage that the enumeration does not support — but I want the §1.2/§5.1 reading on the record for adjudication.\n\nFINDING 3 — the predicate came out false on all 20, and I want to say plainly why that is not laziness. These 20 items were selected for SPAN contestation, so their carriers are whatever happened to host an sftp URL or an RRN; the predicate distribution in this subset is incidental. Eighteen of the twenty name no organisation at all — the organisations that appear are unnamed by design (\"The company\", \"Our cloud provider\", \"a supplier abroad\", \"the bank\"). Exactly two name an organisation, and both are near-misses in the interesting direction: inj-o15-1's \"Marrowfield Group\" is named with the relationship expressly DENIED (\"none of it touches us\"), and inj-hn08-1's \"Quillrun\" is named with a real relationship but the wrong KIND of relationship (a scheduler the Firm runs on, not a client, prospective client, deal counterparty or NDA party). Both are marked borderline. If the wider 189-item queue is scored, I would expect the true-predicate mass to sit there, not here — I saw enough of the head of that file to know carriers like \"the party we signed the confidentiality agreement with is Marrowfield Group\" exist, which is a clear §3.3 NDA-party hit.\n\nONE CAUTION ON §3.4. §3.4 says \"the pairing of a client name with a routine operational question is itself a disclosure of the relationship.\" It is tempting to read that as making inj-o15-1 a hit, since Marrowfield is paired with a latency investigation. It does not: §3.4 presupposes the name IS a client name and explains why §3.1 exists; it does not convert an arbitrary named company into a client. A model that treats §3.4 as an independent trigger will over-fire on exactly this item, which makes it a valuable item to keep.",
+      "B": "SCOPE. The queue file holds 209 questions over 189 messages: 189 `message-predicate` questions (no span) and 20 `contested-span-label` questions (span + a proposed reading). Only those 20 match this task's description (\"the message text and one highlighted span with a proposed type\"), and their itemIds are a strict subset of the 189. I labelled those 20 and answered both questions for each. I did not fabricate a `spanLabelCorrect` for the 189 span-less items; if the intent was to label all 189 on the predicate alone, that is a separate pass and the schema should drop the span field for it.\n\nWHERE THE \"PROPOSED TYPE\" CAME FROM. The queue's span objects carry only {start,end,text} — no type. The proposed type exists only in the corpus `gold` array (keys: start/end/text/entityType/action). To avoid contaminating the predicate judgement I wrote all 20 predicate answers to lab-B/predicate-committed.json BEFORE opening `gold`, then extracted only the entityType for the exact contested offsets (lab-B/proposed-types.json) and read nothing else from gold. Result: all 20 contested spans are ABSENT from gold, i.e. the uniform proposal is \"not confidential / permit\".\n\nQ1 VERDICTS. Two span families, and they split.\n- 13 sftp file-drop endpoints (sftp://transfer-NN.intraledger.example/outbound/settlements): proposal CORRECT. §4.2's operative subject is \"Database connection strings\". An sftp URL names no driver and no schema; \"/outbound/settlements\" is a directory. The trailing \"because the host and schema names disclose the Firm's internal topology\" is a stated reason, not a second operative sentence. The document broadens explicitly when it means to (\"including chat interfaces…\" §1.1; \"including customer reference numbers, CIF numbers, and KYC case ids\" §2.4); §4.2 has no such broadening. §6.1 also requires a blocked prompt to be logged \"with the clause that blocked it\", which presupposes a determinate clause — you cannot cite §4.2 here without rewriting its subject. The purposive reading is genuinely available, but it would also forbid every redis/jdbc host in the corpus under a clause that never says so.\n- 7 NPCI retrieval reference numbers: proposal WRONG. This is the load-bearing argument, so I state it once here rather than seven times. §2.3 enumerates account numbers/IFSC strings/UPI addresses — an RRN is none. §2.4's genus is \"internal customer identifiers\"; an NPCI reference is externally issued and names a transaction, so it fails the genus even though \"including\" makes the list open. But §1.2 defines customer data as information that \"can be combined with other information to identify\" an accountholder, and every one of these is framed as \"the retrieval reference on that credit to the resident\" — a specific customer's credit, quoted from the branch. Decisively, the phrase \"customer data\" never appears in §2, §3 or §4; it appears in the title, the preamble, and §5.1/§5.2/§5.4/§5.5. So §1.2 does not \"feed §2–§4\" as the queue's framing suggests — it feeds §5. That makes the two layers non-redundant rather than one swallowing the other: §2 = never send anywhere, absolute, no exceptions (§2.5, §6.3); §1.2+§5 = customer data, so approved enterprise assistant only. An RRN is in the second layer, and a span typed \"none\" misses a real operative restriction. §6.2 (\"A breach of §2 or §4 is a reportable security incident\") corroborates that §5 breaches are breaches that simply are not reportable incidents.\nThe asymmetry between the two families is principled, not me splitting the difference: an sftp hostname identifies a server, so §1.2 cannot reach it; an RRN tied to a named customer's credit is exactly what §1.2 describes.\n\nQ2 — ALL TWENTY ARE FALSE, AND WHY THAT IS NOT LAZINESS. I was warned against blanket-false, so I checked mechanically as well as by reading: a regex sweep for mid-sentence capitalised tokens across all 20 texts returns proper nouns in only three (Marrowfield Group, Arjun Beheria, Quillrun) plus the sentence-initial \"Our\"/\"Kindly\". Marrowfield Group is named with the relationship expressly disclaimed (\"none of it touches us\"); Arjun Beheria is a person on the Firm's own operations desk, and §3 governs organisation names; Quillrun is the Firm's scheduling tool, i.e. the Firm is the customer, not the counterparty. Several items are near-misses in the other direction — \"a payment to a supplier abroad\" (B15/inj-hn10-1) and \"the customer reference on that relationship\" (B18/inj-o03-1) both state a relationship with no name. §3.1/§3.3 require a NAMED client, prospective client, deal counterparty or NDA party, and §3.4's rationale presupposes a name that is in fact a client's. Independently, I know positives exist in the wider corpus: the first 2KB of the queue, which I read before scoping the task, contains \"the party we signed the confidentiality agreement with is Marrowfield Group\" (item inj-o01-1, NOT in my 20) — a clear §3.3 NDA-party positive. So the uniform false here is a property of which 20 items were selected for span contestation, not of my reading. I flagged one borderline (Quillrun) rather than manufacturing spread.\n\nINCIDENTAL, OUT OF SCOPE. B15/inj-hn10-1 contains an \"-----BEGIN EC PRIVATE KEY-----\" block, squarely within §4.3, and a \"-----BEGIN DH PARAMETERS-----\" block, which is NOT private-key or certificate material and is a fair question. Neither is the span I was asked about, so neither is in my labels. If the \"certificate block labelled non-confidential\" error mentioned in my instructions is still live, this item is where I would look next."
+    },
+    "filesRead": {
+      "A": [
+        "/private/tmp/.../scratchpad/lab-A/p-fin.md (copy of /Users/orce/Desktop/Repositories/sih/policies/p-fin.md — read in full)",
+        "/private/tmp/.../scratchpad/lab-A/items.jsonl (my own extract: itemId, text, span offsets/text for the 20 contested-span items — read in full)",
+        "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl (source of the 20 items; see wasToldAbout for exactly which fields I saw rendered)",
+        "corpora/generated/injection-p-fin-v2.jsonl (message text for the 20 items, plus gold span start/end/text/entityType read programmatically; meta never rendered — only its key names)",
+        "corpora/generated/injection-p-fin-adjudicated-v1.jsonl (never rendered; queried programmatically only, for whether the 20 contested span strings appear in gold — all absent)",
+        "corpora/generated/injection-p-fin-v1.jsonl (never rendered; same programmatic absence check only)",
+        "Directory listings only, no contents: corpora/generated/ and policies/ (both listings show a manifest filename; I opened none of them)"
+      ],
+      "B": [
+        "/Users/orce/Desktop/Repositories/sih/policies/p-fin.md",
+        "/private/tmp/.../scratchpad/lab-B/p-fin.md",
+        "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl",
+        "corpora/generated/injection-p-fin-v2.jsonl",
+        "/private/tmp/.../scratchpad/lab-B/items.json",
+        "/private/tmp/.../scratchpad/lab-B/proposed-types.json",
+        "/private/tmp/.../scratchpad/lab-B/predicate-committed.json"
+      ]
+    },
+    "wasToldAbout": {
+      "A": "Answering the audit question directly: the prompt told me a substantial amount about the corpus's construction, and some of it is prejudicial in a way reading-only audits would miss. Listing every channel I can identify, including ones that cut against me.\n\nFROM THE PROMPT ITSELF:\n\n1. That the items are GENERATED by a generator that attaches a proposed span type, and that the proposed type is \"a CLAIM, not the answer\". This tells me the labels have an author with an intent, and invites me to disagree.\n\n2. The strongest anchor, and the one I want on the record: \"Several were found contradicted by the policy last round -- one labelled a certificate block as non-confidential when §4.3 forbids 'certificate material' outright.\" This supplies a prior with a DIRECTION (the generator's errors are false negatives), a MAGNITUDE (\"several\"), and even a worked example with a clause number. It creates real pressure to flip proposed-none spans to confidential. I noticed the pull, and it is relevant that both of my span classes are proposed-none. I resisted it by walking every clause of §2–§5 against each span independently, and I ended up affirming the generator on all 20. If an adjudicator disagrees with me on the RRN class, this prompt-supplied prior is a live explanation for why I might have been pushed the OTHER way and wasn't — but it is also the reason I documented the §1.2/§5.1 counter-reading at length rather than silently affirming. I note incidentally that the §4.3 example is not idle: item inj-hn10-1 contains a \"-----BEGIN DH PARAMETERS-----\" block, so I was primed on a clause that is live in my item set, even though it is not the span I was asked about.\n\n3. A PARAPHRASE OF THE PREDICATE, supplied before I had read the clause: \"does the MESSAGE AS A WHOLE disclose that a named organisation is a client, prospective client, or counterparty of the Firm?\" The prompt did warn me not to take it as the definition, and that warning was warranted — the paraphrase DROPS a limb. §3.3 covers \"prospective clients, deal counterparties, and parties under a non-disclosure agreement\"; the paraphrase omits NDA parties and flattens \"deal counterparties\" to \"counterparty\". I restored the NDA limb from the document. It did not change any of my 20 answers, but on a corpus whose carriers demonstrably use NDA phrasing it could change others, and an annotator who trusted the paraphrase would under-fire.\n\n4. Distributional warnings in both directions: \"Marking every item satisfiesPredicate: false because it is safe, or true because organisation names appear.\" This tells me the true labels are mixed rather than uniform. My subset came out uniformly false, so this warning worked against my actual answer, and I am flagging that I held the answer anyway.\n\n5. \"Use predicateConfidence: 'borderline' honestly and often where it is arguable\" — an instruction that borderline cases EXIST in quantity, which is itself information about how the corpus was built (near-miss pairs).\n\n6. That there is a \"manifest\", a \"families file\", and that families \"state the answer the generator intended\". This reveals the corpus is family-structured: items come in designed groups sharing an intended answer. Knowing that, seeing 14 near-identical sftp spans and 6 near-identical RRN spans tells me they are two families with one intended answer each — so my 20 judgements are really 2 judgements, and any error I make is correlated across a family rather than independent. That is a construction fact I learned from the prompt, not from a file.\n\n7. That a previous round happened, had a blindness audit, and that these items are \"contested\" enough to have survived into a second version.\n\n8. Where the corpus lives (corpora/generated/) and that items carry text plus a span — enough to locate it without exploring.\n\nA CHANNEL THIS PROMPT'S COPY INSTRUCTION DID NOT ANTICIPATE, and the one I would fix first:\n\n9. The queue's own `question` field travels in the SAME FILE as the text and the span, so \"copy only the text and the span\" does not exclude it. That field does two things the instruction plainly meant to prevent. It NAMES the span's semantic type in prose — \"The quoted span is a sftp file-transfer endpoint\", \"The quoted span is a NPCI retrieval reference number\" — which I could not have derived with confidence from \"sftp://transfer-58.intraledger.example/outbound/settlements\" or from a bare 12-digit number. And it pre-argues the case with clause numbers attached, laying out both readings: for the sftp, §4.2's operative sentence versus §4.2's stated reason; for the RRN, the §2.3/§2.4 enumerations versus §1.2's \"can be combined with other information to identify\" read as operative. I read two of these in full (inj-o01-4#1 and inj-o03-1#1) before I had finished reading p-fin.md. My §4.2 and §1.2 analyses therefore START from a framing the generator wrote. I did read the whole policy afterwards and did check every clause against every span myself, and I reached a conclusion the framing did not dictate (it is deliberately even-handed and names no winner) — but I cannot claim I generated that issue-framing independently, and it would be wrong to let this pass as blind. The same field also states the intended scoping for the predicate questions (\"Answer from policies/p-fin.md sections 3.1, 3.3 and 3.4 only\" and \"A relationship stated without a name, and a name stated without a relationship, are both 'no'\"), which is a generator-authored decision rule for the exact judgement I was asked to make independently; I saw it in the first three lines of the file before I knew what the file contained.\n\n10. Minor: I saw the meta object's KEY NAMES while checking what to avoid — generator, generatorVersion, seed, carrierId, carrierSource, carrierRegister, irHash, density, injections, labels, predicateConstruction, labelQuestions, scoringScope, predicateLabelling, carrierStratum. No values. The names alone confirm the corpus is built by injecting spans into carriers at a controlled density, and that predicate labels are constructed rather than observed. I stopped there and read no meta values.\n\nWHAT I DID NOT TOUCH: nothing under runs/; policies/compiled/p-fin.ir.json; any manifest; any families file; smoke.gold-tier2.jsonl; no git log or plan. I ran no git commands at all.",
+      "B": "Reading-channel disclosures first, then the telling-channel, which is what you asked me to audit.\n\nREAD. I read the policy, the labelling queue in full, and two things from the corpus file itself that deserve naming. (1) A structural probe of injection-p-fin-v2.jsonl printing only KEY NAMES revealed the schema `gold`/`id`/`meta`/`policy`/`text` and gold entries `action`/`end`/`entityType`/`start`/`text`. (2) I then extracted, from gold, ONLY the entityType at the exact offsets of the 20 contested spans — because the proposed type this task asks me to check exists nowhere else. I never printed `meta`, never printed any gold span other than the 20 contested offsets, and wrote my predicate answers to disk before opening gold at all. I did not open either manifest, the v1 or adjudicated files, smoke.gold-tier2.jsonl, policies/compiled/, runs/, or any git log. One unintended read: my first orienting `head -c 2000` of the queue displayed the full text of items inj-o01-0 and inj-o01-1 before I had scoped the task. Neither is among my 20; inj-o01-1 is the NDA-party positive I cite in my note.\n\nTOLD. The prompt told me, without my reading anything:\n1. The corpus is machine-generated, has a generator with intent, and that intent is written down in a manifest and a families file — so items are constructed instances of designed categories, not found text. Knowing items are family-generated primes me to label by family rather than by item, which is exactly what I did (13 sftp identically, 7 RRN identically). That is defensible here because the spans really are near-identical, but it is a construction fact I was handed, not one I derived.\n2. That the generator's span types are claims and that \"several were found contradicted by the policy last round\". This is a prior on the ANSWER KEY's error rate, and it is directional.\n3. Worse, it gave the error's SHAPE: \"one labelled a certificate block as non-confidential when §4.3 forbids certificate material outright.\" That names the failure mode as false-negative \"non-confidential\" proposals. I then discovered all 20 of my proposals are exactly that shape. I cannot claim my seven flips are uncontaminated by having been told in advance that under-labelling is the known defect. I believe the §1.2→§5 textual argument stands on its own and I built it from the document, but a reader should discount for this.\n4. That marking everything false, or everything true because names appear, would make the work worthless. That is a distributional hint: it tells me the key is mixed. My twenty came out uniformly false anyway, and I had to argue against this told-prior to report that honestly.\n5. To use \"borderline\" \"honestly and often\", which pushes toward manufacturing spread in the confidence field. I used it once.\n6. A paraphrase of the predicate (\"client, prospective client, or counterparty of the Firm\") with an instruction not to treat it as the definition. The paraphrase drops \"parties under a non-disclosure agreement\" (§3.3) and drops the \"deal\" qualifier on counterparty — both of which change outcomes; I worked from §3.1/§3.3/§3.4 directly.\n7. That there is an annotator A, a previous round, adjudication, and a prior blindness audit — so my labels will be diffed against another annotator's.\n\nTOLD BY THE DATA, WHICH IS THE SAME PROBLEM. Two leaks the reading-channel audit would also miss. (a) The itemIds encode family: `inj-o..` versus `inj-hn..`, where \"hn\" reads as hard-negative. That is generator intent shipped inside the identifier, visible to anyone who touches the corpus at all. I mitigated it by sorting my working extract on a hash of the text and labelling under opaque keys B00–B19, but the mapping was recoverable and I saw it. (b) The queue's own `question` field pre-frames each span as a two-sided contest, names the clause for each side, and restricts the predicate to \"sections 3.1, 3.3 and 3.4 only\". That is the generator setting the terms of the debate and bounding where I look — it constrained my reasoning even though I read the whole policy and found the decisive point in §5, outside the sections the question nominated.\n\nIf the next blindness audit checks only reads and prompts, it will still miss (a) and (b): ship annotators anonymised itemIds and strip the `question` field's argument scaffolding down to the span and the bare policy reference."
+    }
+  },
+  "generator": {
+    "seed": "sih-p7-unleaked-v2",
+    "generatorVersion": "1",
+    "irHash": "b00e5ce67a7e6d1643c81b2e8f29498faad71b5d6b4a6e53b70b644b34f592d0"
+  },
+  "source": {
+    "corpusPath": "corpora/generated/injection-p-fin-v2.jsonl",
+    "corpusSha256": "25e3a3e0c439fe0f8c6a1df787d64bfbd9dc0745f85687f455d4581eade6cf12",
+    "queuePath": "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl",
+    "queueSha256": "2f9dd0c245848e43fdb7ddc27f1a1293d2f71715dc23ff9d1b54271997f42dad",
+    "checkedAgainst": "the sha256 buildV2Artifacts() produces in this process, not a digest copied from the committed manifest",
+    "note": "both files are byte-identical to what the two annotators were handed. Nothing in this round edits either; every artifact it produces is a new file."
+  },
+  "agreement": {
+    "spanLabelCorrect": {
+      "field": "spanLabelCorrect",
+      "n": 20,
+      "agreements": 13,
+      "rawAgreement": 0.65,
+      "expectedAgreement": 0.65,
+      "cohensKappa": 0,
+      "kappaNote": "kappa is DEGENERATE here: annotator A used a single category, which makes chance agreement identically equal to observed agreement and kappa exactly 0 whatever the other annotator answered. Read the raw agreement and the marginals; 0 here does not mean 'no better than chance', it means kappa cannot see this table.",
+      "marginals": {
+        "A": {
+          "false": 0,
+          "true": 20
+        },
+        "B": {
+          "false": 7,
+          "true": 13
+        }
+      },
+      "disagreements": [
+        "inj-hn11-1: A=true B=false",
+        "inj-hn11-5: A=true B=false",
+        "inj-o03-1: A=true B=false",
+        "inj-o03-3: A=true B=false",
+        "inj-o09-5: A=true B=false",
+        "inj-o15-1: A=true B=false",
+        "inj-o15-4: A=true B=false"
+      ]
+    },
+    "satisfiesPredicate": {
+      "field": "satisfiesPredicate",
+      "n": 20,
+      "agreements": 20,
+      "rawAgreement": 1,
+      "expectedAgreement": 1,
+      "cohensKappa": null,
+      "kappaNote": "kappa is UNDEFINED here: both annotators used a single category, so chance agreement is 1. The raw agreement of 1.0 is agreement on one class only and says nothing about how reliably the other class can be labelled -- this round contains no instance of it.",
+      "marginals": {
+        "A": {
+          "false": 20
+        },
+        "B": {
+          "false": 20
+        }
+      },
+      "disagreements": []
+    },
+    "predicateConfidence": {
+      "field": "predicateConfidence",
+      "n": 20,
+      "agreements": 19,
+      "rawAgreement": 0.95,
+      "expectedAgreement": 0.86,
+      "cohensKappa": 0.6428571428571426,
+      "kappaNote": "class balance is skewed (smallest cell across both annotators: 1 of 20), so kappa is unstable -- one reclassified item moves it materially. Read it with the raw agreement and the marginals, not alone.",
+      "marginals": {
+        "A": {
+          "borderline": 2,
+          "clear": 18
+        },
+        "B": {
+          "borderline": 1,
+          "clear": 19
+        }
+      },
+      "disagreements": [
+        "inj-o15-1: A=borderline B=clear"
+      ]
+    },
+    "caveat": "these are agreement numbers over two annotators who read the same policy and the same queue rows, and the queue row carries the generator's own two-sided argument for the span question and its own scoping instruction for the predicate question (blindness.channels[structural]). Their agreement is agreement within a shared framing. Both were also given the same directional prior about the answer key (blindness.channels[told], TOLD-2), which pushes both the same way and inflates agreement wherever they yielded to it and deflates it wherever one did and the other did not."
+  },
+  "overrides": {
+    "perAnnotator": [
+      {
+        "annotator": "A",
+        "n": 20,
+        "spanOverrides": 0,
+        "spanOverrideRate": 0,
+        "correctedTypesProposed": [],
+        "predicateOverrides": 0,
+        "predicateOverrideRate": 0,
+        "borderlinesFlagged": 2
+      },
+      {
+        "annotator": "B",
+        "n": 20,
+        "spanOverrides": 7,
+        "spanOverrideRate": 0.35,
+        "correctedTypesProposed": [
+          "customer-data"
+        ],
+        "predicateOverrides": 0,
+        "predicateOverrideRate": 0,
+        "borderlinesFlagged": 1
+      }
+    ],
+    "note": "A overrode the generator on 0 of 20 span proposals and B on 7 of 20, and neither overrode the construction prediction on the predicate. Read against A's own note before calling A a rubber stamp: A sets out the §1.2/§5.1 reading that would flip the seven RRN spans, argues it at length, declines to apply it on the stated ground that it would assert §2 coverage the enumeration does not support, and asks explicitly for the reading to go to adjudication. That is a recorded dissent inside an affirmation, and the adjudication below turns on it. The predicate override rate of 0 for both is uninformative for a different reason: the construction predicted 'no' on every covered item, so agreeing cost neither annotator a positive call."
+  },
+  "coverage": {
+    "itemsInCorpus": 189,
+    "itemsWithAPredicateQuestion": 189,
+    "itemsAnswered": 20,
+    "itemsUnanswered": 169,
+    "contestedSpansInCorpus": 20,
+    "contestedSpansAnswered": 20,
+    "constructionTest": {
+      "constructionPositives": 19,
+      "constructionPositivesCovered": 0,
+      "constructionNegativesCovered": 20,
+      "labelledOfCovered": 19,
+      "agreementOnLabelled": 19,
+      "what": "how often meta.predicateConstruction.constructed predicted the adjudicated label. It is one-sided: the round covered 0 of the items the construction calls positive, so the prediction is confirmed only where it predicts 'no'. Nothing here supports the sentence 'the construction is a good predictor of the predicate'."
+    }
+  },
+  "spanAdjudication": {
+    "perType": [
+      {
+        "contestedType": "neg:sftp-endpoint",
+        "resolution": "affirmed",
+        "scoredAs": "true-false-positive",
+        "annotatorsAgreed": true,
+        "clauses": [
+          "§4.1",
+          "§4.2",
+          "§4.3",
+          "§3.1",
+          "§1.2",
+          "§6.1"
+        ],
+        "reasoning": "§4.2's operative subject is 'Database connection strings'. The span names no driver, no database and no schema; '/outbound/settlements' is a directory path on a file-transfer host. The trailing 'because the host and schema names disclose the Firm's internal topology' is introduced by 'because' and states the reason for the prohibition; it does not enlarge the subject. The document broadens by enumerating when it means to -- §1.1's 'including chat interfaces, coding assistants, meeting summarisers', §2.4's 'including customer reference numbers, CIF numbers, and KYC case ids' -- and §4.2 carries no such enumeration, while the preamble says in terms that 'Where a clause is absolute, it says so'. §6.1 requires a blocked prompt to be 'logged with the clause that blocked it', which presupposes a clause that can be cited without being rewritten. Nothing else reaches it: §4.1 names keys, tokens and client secrets and there is no credential in the span; §4.3 names private keys, certificate material and HSM key labels; §2 requires a customer identifier; §3.1 governs client and counterparty ORGANISATION names and intraledger.example is the Firm's own internal domain; §1.2 requires information identifying an account holder, and a hostname identifies a server. Both annotators reached this independently, with substantially the same argument, and both reached it AGAINST the directional prior their brief supplied.",
+        "caveat": "the agreement is not fully independent. The queue row pre-argued exactly this contest -- §4.2's operative sentence against §4.2's stated reason -- with the clause numbers on both sides, and both annotators disclosed reading it, A before finishing the policy. What can be said is that the framing named both readings and named no winner, and that the resolution runs in the direction the OTHER contaminating channel (TOLD-2's prior that the key under-labels) pushed against. Separately, this affirmation records a gap in COMP-2026-11 rather than closing one: see POLICY_GAPS."
+      },
+      {
+        "contestedType": "neg:retrieval-reference",
+        "resolution": "disputed",
+        "scoredAs": "excluded",
+        "annotatorsAgreed": false,
+        "clauses": [
+          "§1.2",
+          "§2.3",
+          "§2.4",
+          "§5.1",
+          "§5.2",
+          "§5.4",
+          "§5.5",
+          "§5.6",
+          "§6.2"
+        ],
+        "reasoning": "The two annotators do not actually disagree about the policy; they disagree about the label, and the policy settles only the first of those. On the reading they SHARE: §2.3 enumerates bank account numbers, IFSC-qualified account strings and UPI virtual payment addresses, and an NPCI retrieval reference is none of them; §2.4's genus is 'Internal customer identifiers' and a reference issued by the payment network against a transaction is neither internal nor a customer identifier -- inj-o03-1 carries a genuine §2.4 item ('the customer reference on that relationship is just 92133109') beside the RRN, and the two are different objects. Both also read it as customer data under §1.2, which reaches 'any information that ... can be combined with other information to identify' an account holder: every instance is glued as 'the branch quoted the retrieval reference on that credit to the resident', and joining that reference to the Firm's own records is what a retrieval reference is for. §1.2 is operative -- the phrase 'customer data' appears in the title, the preamble, §1.2 itself, and §5.1, §5.2, §5.4 and §5.5, and in no numbered clause of §2, §3 or §4 -- MEASURED clause by clause in corpus-labelling.test.ts, not read off once -- and §6.2 makes only §2 and §4 breaches reportable incidents, which is what distinguishes the two layers rather than collapsing them. So the policy DOES answer the question the queue asked: a retrieval reference must be withheld from ChatGPT (§5.5), Gemini (§5.4), DeepSeek (§5.3) and any personal or trial subscription (§5.6), and may be sent to the enterprise Claude agreement (§5.2). What the policy does not settle is the entityType, and that is where the two answers part. Both available labels are wrong in a way that scores. 'customer-data' (B's correction) puts an id in the Finding.entityType namespace that no arm can emit, because the compiled IR the arms detect against declares nine entityTypes and no general customer-data class -- every arm would miss all seven by construction and the miss would be booked as recall. 'no type' (A's answer, and the generator's) asserts that p-fin demands nothing of the span, which holds only for the one approved destination and is false for the three non-approved providers the IR's actions.providerOverrides names (chatgpt, gemini, deepseek), so a model that withholds the reference would be scored a false positive for a finding §5.1 supports. Neither is fixable inside this round: one needs a recompiled p-fin, which is a frontier call deferred since 2026-08-18, and the other needs an entityType invented outside the IR. The seven spans are therefore DISPUTED and stay out of the scored set.",
+        "caveat": "excluding them is not neutral either, and the direction is worth stating: it removes seven spans on which a §5-aware model would look wrong under the current gold. The exclusion is the smallest claim that is true, not the one that flatters any arm. The underlying defect is in the compiled artifact and is recorded in POLICY_GAPS."
+      }
+    ],
+    "contestedSpans": 20,
+    "resolvedSpans": 13,
+    "disputedSpans": 7,
+    "disputedRate": 0.35
+  },
+  "predicateAdjudication": {
+    "itemsInCorpus": 189,
+    "itemsCovered": 20,
+    "coverage": 0.10582010582010581,
+    "labelled": 19,
+    "disputed": 1,
+    "disputedUnderStrictRule": 2,
+    "disputedRateOfCovered": 0.05,
+    "positives": 0,
+    "negatives": 19,
+    "predicateGoldSpansEmitted": 0,
+    "perItem": [
+      {
+        "itemId": "inj-o01-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o01-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o01-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o01-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o01-4",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o01-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o01",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o02-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o02",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o03-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o03-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o03-2",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o03-3",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o03-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o03-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o03",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o04-0",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o04-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o04-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o04-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o04-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o04-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o04",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o05-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o05",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o06-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o06",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o07-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o07",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o08-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o08",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o09-0",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o09-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o09-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o09-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o09-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o09-5",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "neg-o09",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o10-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o10",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o11-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o11-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o11-2",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o11-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o11-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o11-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o11",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o12-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o12",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o13-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o13",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o14-5",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "neg-o14",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o15-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o15-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false; annotator A flagged borderline and the other did not, which the shipped exclusion rule keeps in the scored set. The row's confidence records the weaker call."
+      },
+      {
+        "itemId": "inj-o15-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o15-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o15-4",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o15-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o15",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o16-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o16-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-o16-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o16-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o16-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-o16-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-o16",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn02-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn02",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn03-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn03-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn03-2",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn03-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn03-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn03-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn03",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn04-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn04-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn04-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn04-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn04-4",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn04-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn04",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn05-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn05",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn06-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn06",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn07-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn07-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn07-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn07-3",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn07-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn07-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn07",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn08-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn08-1",
+        "state": "disputed",
+        "reason": "both annotators answered false and BOTH flagged borderline. An item two independent readers each called arguable cannot carry the sentence this gold has to support -- that a finding of the predicate class on it is a TRUE false positive."
+      },
+      {
+        "itemId": "inj-hn08-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn08-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn08-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn08-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn08",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-1",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn09-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn09",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn10-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn10-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn10-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn10-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn10-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn10-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn10",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn11-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn11-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn11-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn11-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn11-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn11-5",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "neg-hn11",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn12-0",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn12-1",
+        "state": "labelled",
+        "satisfiesPredicate": false,
+        "reason": "both annotators answered false with confidence \"clear\"."
+      },
+      {
+        "itemId": "inj-hn12-2",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn12-3",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn12-4",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "inj-hn12-5",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      },
+      {
+        "itemId": "neg-hn12",
+        "state": "uncovered",
+        "reason": "no annotator answered the predicate question for this item. The round was scoped to the 20 span-bearing queue rows (see LABEL_ROUND.blindness.channels[scope]), so 169 of the 189 predicate questions were never put. This item's meta.predicateConstruction still records what the generator wrote, and it is a prediction, not a label."
+      }
+    ],
+    "verdict": "THE ROUND PRODUCED NO PREDICATE POSITIVES. Every adjudicated item is a negative, so no pred:client-relationship-disclosure gold span is emitted and tier-2 gold in this repository is still the two items in corpora/fixtures/smoke.gold-tier2.jsonl. The deliverable this round was commissioned for was not delivered. The cause is scope, not judgement: the covered items were selected for span contestation and are disjoint from the 19 the generator predicts positive, and both annotators said so independently before this was computed."
+  },
+  "policyGaps": [
+    {
+      "id": "PGAP-1",
+      "artifact": "policies/p-fin.md",
+      "clause": "§4.2",
+      "finding": "the standard protects the Firm's internal topology only through the database-connection-string rule. §4.2 states topology disclosure as its REASON, so a host that discloses exactly the same topology by another route -- the sftp file-drop endpoint this round affirmed as permitted -- falls outside the standard as written.",
+      "consequence": "the affirmation of neg:sftp-endpoint is correct AGAINST THIS DOCUMENT and would be wrong against a document that said what §4.2 gives as its reason. If p-fin is ever revised, these 13 spans flip and this corpus's negatives are stale.",
+      "foundBy": "annotator A, FINDING 1; annotator B reached the same reading independently"
+    },
+    {
+      "id": "PGAP-2",
+      "artifact": "policies/compiled/p-fin.ir.json",
+      "clause": "§1.2 with §5.1",
+      "finding": "the compiled IR has no representation of §1.2 'customer data' as a class. Its entityTypes are the eight §2-§4 identifier and secret classes plus the one semantic predicate, and actions.providerOverrides encodes §5 by re-listing those same types at a stricter action. So a §1.2 item that is not ALSO a §2-§4 type -- the NPCI retrieval reference is the worked example -- cannot be expressed in the IR, cannot be emitted by any arm that detects against it, and cannot be scored.",
+      "consequence": "this is the reason neg:retrieval-reference is disputed rather than corrected. The gap is in the compiled policy, and no labelling decision inside the corpus can close it.",
+      "foundBy": "annotator B's correctedType proposal, which named a type the IR does not declare; confirmed here by reading the IR's entityTypes and providerOverrides"
+    },
+    {
+      "id": "PGAP-3",
+      "artifact": "policies/compiled/p-fin.ir.json",
+      "clause": "§3.3",
+      "finding": "the IR's semanticPredicates[0].nlPredicate reads 'a client, prospective client, or counterparty of the Firm' and omits §3.3's fourth limb, 'parties under a non-disclosure agreement', while flattening 'deal counterparties' to 'counterparty'. Both annotators noticed the omission in the paraphrase their brief gave them, without knowing the paraphrase came from this artifact.",
+      "consequence": "a tier-2 arm reading this IR will under-fire on NDA-party disclosures. The corpus carries 3 items whose constructed role is nda-party, and it has no predicate gold on any of them, so nothing in this repository would currently catch that. This is the single most useful thing the uncovered 169 items would have measured.",
+      "foundBy": "both annotators, in wasToldAbout; the IR as the source of the wording is verified by string comparison in corpus-labelling.test.ts"
+    }
+  ],
+  "canSupport": {
+    "perEntityType": [
+      {
+        "className": "api-credential",
+        "goldPositives": 16,
+        "scoredNegatives": null,
+        "recallStep": 0.0625,
+        "note": "per-type recall moves in steps of 6.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "bank-account-identifier",
+        "goldPositives": 17,
+        "scoredNegatives": null,
+        "recallStep": 0.058823529411764705,
+        "note": "per-type recall moves in steps of 5.9 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "client-name",
+        "goldPositives": 19,
+        "scoredNegatives": null,
+        "recallStep": 0.05263157894736842,
+        "note": "per-type recall moves in steps of 5.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "db-connection-string",
+        "goldPositives": 9,
+        "scoredNegatives": null,
+        "recallStep": 0.1111111111111111,
+        "note": "per-type recall moves in steps of 11.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "in-aadhaar",
+        "goldPositives": 11,
+        "scoredNegatives": null,
+        "recallStep": 0.09090909090909091,
+        "note": "per-type recall moves in steps of 9.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "in-pan",
+        "goldPositives": 7,
+        "scoredNegatives": null,
+        "recallStep": 0.14285714285714285,
+        "note": "per-type recall moves in steps of 14.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "internal-customer-id",
+        "goldPositives": 11,
+        "scoredNegatives": null,
+        "recallStep": 0.09090909090909091,
+        "note": "per-type recall moves in steps of 9.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      },
+      {
+        "className": "private-key-material",
+        "goldPositives": 18,
+        "scoredNegatives": null,
+        "recallStep": 0.05555555555555555,
+        "note": "per-type recall moves in steps of 5.6 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+      }
+    ],
+    "goldSpans": 108,
+    "negativeSurface": {
+      "pristineNegativeItems": 81,
+      "confusableSpans": 219,
+      "scoredConfusableSpans": 212,
+      "excludedConfusableSpans": 7,
+      "movedIntoScopeByThisRound": 13,
+      "note": "before this round every contested span was excluded from the false-positive claim. The adjudication resolved 13 of them (neg:sftp-endpoint), so they are now scoreable, and left 7 out (neg:retrieval-reference)."
+    },
+    "predicate": {
+      "className": "pred:client-relationship-disclosure",
+      "goldPositives": 0,
+      "scoredNegatives": 19,
+      "recallStep": null,
+      "note": "this round contributes 0 positive(s) and 19 scored negative(s). RECALL IS NOT DEFINED on this file alone -- a fraction with a zero denominator -- and pooling it with corpora/fixtures/smoke.gold-tier2.jsonl (2 positives, 11 negatives) still leaves 2 positives in total, so pooled predicate recall is quantised to steps of 50.0 percentage points and can express only three values. What this round DOES buy is the negative side: 30 scored negatives pooled, so an over-firing rate moves in steps of 3.3 points, and an arm that fires on none of them supports \"predicate false-positive rate at most 9.5% with 95% confidence\"."
+    },
+    "canRank": [
+      "api-credential (16 gold spans, 6.3 pp steps)",
+      "bank-account-identifier (17 gold spans, 5.9 pp steps)",
+      "client-name (19 gold spans, 5.3 pp steps)",
+      "private-key-material (18 gold spans, 5.6 pp steps)"
+    ],
+    "cannotRank": [
+      "db-connection-string: 9 gold spans. Recall steps of 11.1 pp, so only a very large arm difference is visible.",
+      "in-aadhaar: 11 gold spans. Recall steps of 9.1 pp, so only a very large arm difference is visible.",
+      "in-pan: 7 gold spans. Recall steps of 14.3 pp, so only a very large arm difference is visible.",
+      "internal-customer-id: 11 gold spans. Recall steps of 9.1 pp, so only a very large arm difference is visible.",
+      "pred:client-relationship-disclosure RECALL: 0 positives from this round. Not rankable at all -- there is no denominator. Pooled with the smoke fixture there are 2, which can express recall 0, 0.5 or 1 and cannot order two arms in any useful sense.",
+      "neg:retrieval-reference: the adjudication left this type DISPUTED, so its spans are outside both the match set and the false-positive set. Nothing about an arm's behaviour on them is scoreable."
+    ],
+    "verdict": "THIS CORPUS CAN SUPPORT A COARSE MODEL RANKING ON ENTITY-TYPE SPAN RECALL AND ON OVER-BLOCKING, AND CANNOT SUPPORT ONE ON THE PREDICATE. The entity side has 108 gold spans over 8 types with per-type recall steps between 5.3 and 14.3 percentage points, and the false-positive side has 81 pristine negative items plus 212 scored confusable spans -- enough to order arms that differ substantially, not enough to resolve small differences on the scarce types (db-connection-string at 9, in-pan at 7). The predicate side is the deliverable this round was commissioned for and it did not arrive: 19 scored rows, 0 of them positive, so an arm can be measured for OVER-FIRING on the predicate and cannot be measured for CATCHING it. Any headline that reads 'tier-2 predicate accuracy' off this corpus would be reporting a precision-only number as if it were both halves."
+  },
+  "artifact": {
+    "corpusPath": "corpora/generated/injection-p-fin-v2.labelled.jsonl",
+    "corpusSha256": "9d07ed614af76f1716a0c3a8c37aed9b6108e7aefd482bc4b89050a8069b3fef",
+    "goldPath": "corpora/generated/injection-p-fin-v2.gold-tier2.jsonl",
+    "goldSha256": "b4eb58ad5d64ddc02f45df404fef778f4ad8563784c9b9c94fd4a1a3e469ff27"
+  },
+  "verification": {
+    "source": {
+      "corpusPath": "corpora/generated/injection-p-fin-v2.jsonl",
+      "corpusSha256": "25e3a3e0c439fe0f8c6a1df787d64bfbd9dc0745f85687f455d4581eade6cf12",
+      "queuePath": "corpora/generated/injection-p-fin-v2.labelling-queue.jsonl",
+      "queueSha256": "2f9dd0c245848e43fdb7ddc27f1a1293d2f71715dc23ff9d1b54271997f42dad",
+      "checkedAgainst": "the sha256 buildV2Artifacts() produces in this process, not a digest copied from the committed manifest",
+      "note": "both files are byte-identical to what the two annotators were handed. Nothing in this round edits either; every artifact it produces is a new file."
+    },
+    "itemsChecked": 189,
+    "goldSpansChecked": 108,
+    "contestedSpansChecked": 20,
+    "tier2RowsChecked": 20,
+    "tier2SpansChecked": 0,
+    "checks": [
+      "the source corpus and the labelling queue still hash to what the v2 builder produces, so these labels are about the bytes the annotators read",
+      "every labelled item exists in the source corpus, matched by id",
+      "every emitted item's text, policy and gold array are IDENTICAL to the source item's, so v2's injection invariant carries over by identity rather than by re-derivation",
+      "every gold span still slices back: text.slice(start, end) === span.text. The refusal comes from CorpusItemSchema's refine when loadCorpus parses the serialized bytes, which fires before the loop below reaches the same span; the loop keeps its copy as a second line rather than relying on a refine in another module staying where it is",
+      "no gold span carries a pred: type -- predicate labels live in the tier-2 sidecar, which is the only shape that can record 'we asked and the answer was no'",
+      "every tier-2 gold row parses through loadTier2Gold FROM THE SERIALIZED BYTES, names an item in the corpus, and carries spans that slice back on that item's text",
+      "every contested span in the corpus has an adjudication, and every adjudicated type is one the corpus actually contains",
+      "no annotator split a contested family, so a family-level adjudication stands for items that were all answered the same way"
+    ]
+  },
+  "unvalidated": [
+    "THE DELIVERABLE DID NOT ARRIVE. This round was commissioned to produce pred: gold at a scale above the two positives in corpora/fixtures/smoke.gold-tier2.jsonl. It produced 19 scored rows and ZERO positives, because both annotators were scoped to the 20 span-bearing queue rows and those 20 are disjoint from the 19 items the generator predicts satisfy the predicate. Predicate RECALL is still unmeasurable outside the smoke fixture.",
+    "THE ROUND'S TOLD CHANNEL CARRIED THREE BREACHES, one of them first-order: the brief handed both annotators a paraphrase of the predicate that is the COMPILED IR's own nlPredicate (round.blindness.channels[told], TOLD-1). No label in this round is affected -- the phrase omits the NDA limb and no NDA-party item was covered -- but a round that had covered the other 169 would have been keyed against text taken from the arm under test.",
+    "THE BLIND ARTIFACT ITSELF LEAKS. The queue's question field names each span's semantic type and pre-argues both readings with clause numbers, and item ids encode the hard-negative stratum (round.blindness.channels[structural]). questions.ts's docblock claims the queue carries nothing an annotator could read the generator's intent off; that claim is false and is committed in the v2 manifest.",
+    "AGREEMENT ON THE PREDICATE IS 1.0 AND MEANS LESS THAN IT LOOKS. Both annotators answered 'no' on all 20, so chance agreement is 1 and kappa is undefined. The number says the two agree about the negative class on a subset selected for something else; it says nothing about how reliably the clause can be labelled where it bites.",
+    "SEVEN SPANS ARE DISPUTED AND EXCLUDED, and the exclusion is not neutral: it removes the seven spans on which a §5-aware model would look wrong under the current gold. The underlying defect is PGAP-2, a compiled IR with no representation of §1.2 customer data.",
+    "THE CARRIERS, THE REALISM GATES, CERTIFICATION STAGES 2 AND 3, AND p-med/p-corp ARE UNCHANGED AND STILL UNVALIDATED. Everything in injection-p-fin-v2.manifest.json's unvalidated block still applies; this round adjudicated labels and touched none of it."
+  ]
+}
