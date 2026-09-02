@@ -134,7 +134,7 @@ rather than a description of anything shipped.
 | `apps/eval` | Playwright harness: corpus in, JSONL out. Computes throughput/hygiene run gates; **no accuracy metric**. |
 | `packages/tier2` | The in-browser instruct-LLM judge (`@mlc-ai/web-llm`, WebGPU) behind core's `SemanticJudge` seam, plus **Approach B** — a `Detector` that takes the whole policy document and the whole message in one model call, with no compiler and no tiers. |
 | `policies/` | Three deliberately disagreeing policy documents (finance, healthcare, generic corporate) plus the provider manifest. `policies/compiled/` holds compiled artifacts — see the caveat below. |
-| `corpora/` | Corpus fixtures and, later, the build pipeline. Never raw third-party data. |
+| `corpora/` | `fixtures/` holds the 13-item smoke fixture and its blind-labelled tier-2 gold; `generated/` holds the seeded injection corpus and its manifest, built by `apps/eval/src/corpus/`. Never raw third-party data. |
 | `docs/superpowers/` | The design spec and the per-plan implementation plans, including their deviation logs. |
 
 ### How core's runtime boundary is actually enforced
@@ -224,9 +224,13 @@ Typechecking clean across five projects.
   ~2.7 s on p50 prompts of 1,433/1,450 tokens (four runs agreed on the token counts exactly and
   on the latencies to within 2%). No arm files a budget notice of either kind. Read that as a *prompt-size* difference and not yet as a method result: nothing here
   scores what either arm found.
-- **No accuracy numbers exist.** The corpus in this repo is a 13-item smoke fixture whose only
-  job is to prove the pipe carries data end to end. It cannot produce meaningful tier-1
-  accuracy in either direction, and says so.
+- **No accuracy numbers exist.** Nothing has been scored. `corpora/fixtures/smoke.jsonl` is a
+  13-item fixture whose only job is to prove the pipe carries data end to end, and
+  `corpora/generated/injection-p-fin-v1.jsonl` — 154 items, 88 gold spans across eight p-fin
+  entity types, 88 injected confusables — has been *built*, not *run*: no arm has been executed
+  against it and no metric computed from it. Its manifest says **NOT CERTIFIED**, because one of
+  spec 6.2's three carrier-certification stages ran and two are blocked (see
+  `apps/eval/src/corpus/certify.ts`).
 - **The backend axis of the experiment is compromised** by the WebGPU defect above, and is
   reported as a finding rather than quietly dropped.
 - **The four-model bake-off has never been run.** `runBakeoff` is complete and tested, and as
@@ -381,6 +385,14 @@ and with no network call:
 
 ```bash
 pnpm -C packages/compiler exec vite-node ../../scripts/compile-policies.ts
+```
+
+The injection corpus is regenerated the same way, from a seed and the compiled p-fin IR, with no
+network call. It is committed, and `apps/eval/test/corpus-artifact.test.ts` fails if a run stops
+reproducing it byte for byte:
+
+```bash
+pnpm -C packages/compiler exec vite-node ../../scripts/build-corpus.ts
 ```
 
 ---

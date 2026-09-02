@@ -1,0 +1,472 @@
+{
+  "generator": {
+    "name": "sih-injection-corpus",
+    "version": "1",
+    "seed": "sih-p7-injection-v1"
+  },
+  "policy": {
+    "id": "p-fin",
+    "irSource": "policies/compiled/p-fin.ir.json",
+    "irHash": "b00e5ce67a7e6d1643c81b2e8f29498faad71b5d6b4a6e53b70b644b34f592d0",
+    "policyHash": "ebb3cd68d973175f3ea40faeec00685e2cb9d83c6940e96a57e88ee269e8110a"
+  },
+  "counts": {
+    "items": 154,
+    "positives": 88,
+    "negatives": 66,
+    "goldSpans": 88,
+    "confusableSpans": 88,
+    "goldSpansByType": {
+      "api-credential": 15,
+      "bank-account-identifier": 16,
+      "client-name": 12,
+      "db-connection-string": 6,
+      "in-aadhaar": 12,
+      "in-pan": 11,
+      "internal-customer-id": 10,
+      "private-key-material": 6
+    },
+    "confusableSpansByType": {
+      "neg:aadhaar-shaped-bad-verhoeff": 11,
+      "neg:email-address": 11,
+      "neg:git-commit-sha": 11,
+      "neg:micr-code": 11,
+      "neg:non-client-org": 11,
+      "neg:pan-shaped-invalid-holder": 11,
+      "neg:swift-bic": 11,
+      "neg:ticket-id": 11
+    }
+  },
+  "certification": {
+    "claim": "NOT CERTIFIED",
+    "stagesRun": [
+      "tier0-sweep"
+    ],
+    "stagesUnrun": [
+      {
+        "stage": "high-recall-model-sweep",
+        "blockedOn": "a Python corpora/ toolchain with GLiNER2-PII and gliner-pii-large checked out",
+        "why": "spec 6.2 specifies this stage as offline Python over the strongest available detectors, configured differently from the arms under test. This repository has no Python package and no checkout of either model, and substituting @sih/tier1 would violate the stage's own requirement, since tier 1 is an arm under test."
+      },
+      {
+        "stage": "frontier-adjudication",
+        "blockedOn": "a live frontier-model call (deferred by the user since 2026-08-18) and compiled p-med / p-corp IRs",
+        "why": "spec 6.2 requires adjudication against the union of all three policies. Two of the three have never been compiled, so the union does not exist as an artifact, and the adjudicator itself is the deferred live call."
+      }
+    ],
+    "supplementarySweepsRun": [
+      "orthographic-org-sweep"
+    ],
+    "carriers": {
+      "total": 25,
+      "certifiedClear": 0,
+      "provisionalClear": 22,
+      "quarantined": 3
+    },
+    "quarantined": [
+      {
+        "carrierId": "d01-email",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 100,
+            "end": 123,
+            "text": "varsha.menon@brightline",
+            "label": "bank-account-identifier"
+          }
+        ]
+      },
+      {
+        "carrierId": "d02-titlecase",
+        "hits": [
+          {
+            "sweep": "orthographic-org-sweep",
+            "start": 120,
+            "end": 146,
+            "text": "Ferndale Conference Centre",
+            "label": "title-case-bigram"
+          }
+        ]
+      },
+      {
+        "carrierId": "d03-kv",
+        "hits": [
+          {
+            "sweep": "tier0-sweep",
+            "start": 69,
+            "end": 84,
+            "text": "LOG_LEVEL=debug",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "tier0-sweep",
+            "start": 85,
+            "end": 100,
+            "text": "RETRY_BUDGET=30",
+            "label": "api-credential"
+          },
+          {
+            "sweep": "tier0-sweep",
+            "start": 101,
+            "end": 132,
+            "text": "UPLOAD_MODE=production_readonly",
+            "label": "api-credential"
+          }
+        ]
+      }
+    ],
+    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive."
+  },
+  "injection": {
+    "invariant": "every gold span is the span the generator wrote, derived from the splice offset and never re-found by search; text.slice(start, end) === the injected value, and each injected value occurs in the text exactly as many times as it was injected",
+    "itemsChecked": 154,
+    "spansChecked": 176,
+    "carrierSource": "hand-authored"
+  },
+  "labels": {
+    "policies": [
+      "p-fin",
+      "p-med",
+      "p-corp"
+    ],
+    "populated": [
+      "p-fin"
+    ],
+    "unpopulated": [
+      {
+        "policy": "p-med",
+        "blockedOn": "a live policy compile (frontier call), deferred by the user since 2026-08-18",
+        "why": "policies/p-med.md has never been compiled: policies/compiled/ contains p-fin.ir.json and no p-med.ir.json, so there is no actions table to read an action from. Nothing here guesses one."
+      },
+      {
+        "policy": "p-corp",
+        "blockedOn": "a live policy compile (frontier call), deferred by the user since 2026-08-18",
+        "why": "policies/p-corp.md has never been compiled: policies/compiled/ contains p-fin.ir.json and no p-corp.ir.json, so there is no actions table to read an action from. Nothing here guesses one."
+      }
+    ]
+  },
+  "contamination": {
+    "n": 8,
+    "threshold": 0.7,
+    "sources": [
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.0985a63c4115c33e.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.0985a63c4115c33e.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.1076c4ca349823b8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.1076c4ca349823b8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.40f50d6e6c83a278.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.40f50d6e6c83a278.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.58bd28ec04a4f507.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.58bd28ec04a4f507.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7570b3df32ce79b8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7570b3df32ce79b8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.7808f1de86789d52.json#negatives",
+        "examples": 3
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.bc76ef400ebc9447.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.bc76ef400ebc9447.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d7a5a40091d49573.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d7a5a40091d49573.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d81d9013acf25bba.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.d81d9013acf25bba.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.dac94dd682d410f8.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.dac94dd682d410f8.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.eb507851944072cd.json#negatives",
+        "examples": 20
+      },
+      {
+        "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.eb507851944072cd.json#positives",
+        "examples": 20
+      },
+      {
+        "sourceId": "policies/compiled/p-fin.selftest.json",
+        "examples": 280
+      }
+    ],
+    "taggedSources": [
+      {
+        "corpusTag": "selftest-v1",
+        "examples": 280
+      }
+    ],
+    "itemsChecked": 154,
+    "dropped": [],
+    "unscoreable": [],
+    "examplesUnscoreable": 263,
+    "maxScoreKept": 0,
+    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests."
+  },
+  "splits": {
+    "devFraction": 0.2,
+    "dev": [
+      "inj-c01-4",
+      "inj-c02-5",
+      "inj-c03-0",
+      "inj-c04-2",
+      "inj-c04-5",
+      "inj-c06-2",
+      "inj-c06-3",
+      "inj-c06-4",
+      "inj-c07-0",
+      "inj-c07-1",
+      "inj-c08-4",
+      "neg-c09",
+      "inj-c11-1",
+      "inj-c11-2",
+      "inj-c12-5",
+      "inj-c13-2",
+      "inj-c13-3",
+      "inj-c14-0",
+      "inj-c14-3",
+      "neg-c14",
+      "inj-c15-0",
+      "inj-c15-4",
+      "inj-c16-4",
+      "inj-c17-5",
+      "neg-c18",
+      "inj-c19-0",
+      "inj-c19-2",
+      "inj-c20-1",
+      "inj-c20-3",
+      "inj-c20-5",
+      "neg-c20",
+      "inj-c22-2"
+    ],
+    "test": [
+      "inj-c01-0",
+      "inj-c01-1",
+      "inj-c01-2",
+      "inj-c01-3",
+      "inj-c01-5",
+      "neg-c01",
+      "inj-c02-0",
+      "inj-c02-1",
+      "inj-c02-2",
+      "inj-c02-3",
+      "inj-c02-4",
+      "neg-c02",
+      "inj-c03-1",
+      "inj-c03-2",
+      "inj-c03-3",
+      "inj-c03-4",
+      "inj-c03-5",
+      "neg-c03",
+      "inj-c04-0",
+      "inj-c04-1",
+      "inj-c04-3",
+      "inj-c04-4",
+      "neg-c04",
+      "inj-c05-0",
+      "inj-c05-1",
+      "inj-c05-2",
+      "inj-c05-3",
+      "inj-c05-4",
+      "inj-c05-5",
+      "neg-c05",
+      "inj-c06-0",
+      "inj-c06-1",
+      "inj-c06-5",
+      "neg-c06",
+      "inj-c07-2",
+      "inj-c07-3",
+      "inj-c07-4",
+      "inj-c07-5",
+      "neg-c07",
+      "inj-c08-0",
+      "inj-c08-1",
+      "inj-c08-2",
+      "inj-c08-3",
+      "inj-c08-5",
+      "neg-c08",
+      "inj-c09-0",
+      "inj-c09-1",
+      "inj-c09-2",
+      "inj-c09-3",
+      "inj-c09-4",
+      "inj-c09-5",
+      "inj-c10-0",
+      "inj-c10-1",
+      "inj-c10-2",
+      "inj-c10-3",
+      "inj-c10-4",
+      "inj-c10-5",
+      "neg-c10",
+      "inj-c11-0",
+      "inj-c11-3",
+      "inj-c11-4",
+      "inj-c11-5",
+      "neg-c11",
+      "inj-c12-0",
+      "inj-c12-1",
+      "inj-c12-2",
+      "inj-c12-3",
+      "inj-c12-4",
+      "neg-c12",
+      "inj-c13-0",
+      "inj-c13-1",
+      "inj-c13-4",
+      "inj-c13-5",
+      "neg-c13",
+      "inj-c14-1",
+      "inj-c14-2",
+      "inj-c14-4",
+      "inj-c14-5",
+      "inj-c15-1",
+      "inj-c15-2",
+      "inj-c15-3",
+      "inj-c15-5",
+      "neg-c15",
+      "inj-c16-0",
+      "inj-c16-1",
+      "inj-c16-2",
+      "inj-c16-3",
+      "inj-c16-5",
+      "neg-c16",
+      "inj-c17-0",
+      "inj-c17-1",
+      "inj-c17-2",
+      "inj-c17-3",
+      "inj-c17-4",
+      "neg-c17",
+      "inj-c18-0",
+      "inj-c18-1",
+      "inj-c18-2",
+      "inj-c18-3",
+      "inj-c18-4",
+      "inj-c18-5",
+      "inj-c19-1",
+      "inj-c19-3",
+      "inj-c19-4",
+      "inj-c19-5",
+      "neg-c19",
+      "inj-c20-0",
+      "inj-c20-2",
+      "inj-c20-4",
+      "inj-c21-0",
+      "inj-c21-1",
+      "inj-c21-2",
+      "inj-c21-3",
+      "inj-c21-4",
+      "inj-c21-5",
+      "neg-c21",
+      "inj-c22-0",
+      "inj-c22-1",
+      "inj-c22-3",
+      "inj-c22-4",
+      "inj-c22-5",
+      "neg-c22"
+    ],
+    "disjoint": true,
+    "devSha256Note": "the split is a pure function of the seed and the generator version; regenerating with both unchanged reproduces these lists exactly, which is what 'frozen before tuning' means here"
+  },
+  "gaps": [
+    {
+      "id": "carriers-not-sharechat",
+      "what": "Carriers are hand-authored, not ShareChat/WildChat conversations. Spec 6.2's negatives (~1,500) and its 'real carriers' claim for positives are both unmet.",
+      "blockedOn": "a network fetch and a licensing review, neither available in this session"
+    },
+    {
+      "id": "certification-stage-2",
+      "what": "Certification stage 2 (high-recall Python model sweep) did not run.",
+      "blockedOn": "a Python corpora/ toolchain with GLiNER2-PII and gliner-pii-large"
+    },
+    {
+      "id": "certification-stage-3",
+      "what": "Certification stage 3 (frontier adjudication against the union of all three policies) did not run, so no carrier is certified-clear and no corpus emitted here is certified.",
+      "blockedOn": "a live frontier call (deferred since 2026-08-18) and compiled p-med / p-corp IRs"
+    },
+    {
+      "id": "labels-p-med-p-corp",
+      "what": "violatesUnder carries all three policies; only p-fin is populated. p-med and p-corp are marked unpopulated and reading an action out of one throws.",
+      "blockedOn": "compiling policies/p-med.md and policies/p-corp.md"
+    },
+    {
+      "id": "difficulty-implicit",
+      "what": "Spec 6.2's third difficulty tier, 'implicit' ('our biggest client, the Cupertino fruit company'), is not generated: it injects no literal value, so no gold span can be derived from the write.",
+      "blockedOn": "a labelling round that can annotate a span nothing wrote"
+    },
+    {
+      "id": "tier2-predicate-gold",
+      "what": "No pred: gold is emitted. Items carrying an organisation are stratified by constructedRole and marked meta.predicateLabelling.state = 'unlabelled'.",
+      "blockedOn": "a blind two-annotator labelling round with adjudication"
+    },
+    {
+      "id": "realism-gates",
+      "what": "None of spec 6.2's three realism gates ran: no frontier naturalness score, no adversarial style probe, no human spot check. The style probe is the one most likely to fail on a hand-authored pool.",
+      "blockedOn": "a frontier adjudicator, a trained probe classifier, and human annotators"
+    },
+    {
+      "id": "residual-contamination-audit",
+      "what": "Spec 6.2's honesty mechanism (a) -- human review of ~200 certified-clear carriers producing a 'contamination <= X% at 95% confidence' bound -- did not run.",
+      "blockedOn": "human annotators"
+    }
+  ],
+  "artifact": {
+    "corpusSha256": "c31dbf5959cc8547b3273ad5d8b576eaee23161926619326eefafb2bf7138a17",
+    "corpusBytes": 326141,
+    "corpusPath": "corpora/generated/injection-p-fin-v1.jsonl"
+  }
+}
