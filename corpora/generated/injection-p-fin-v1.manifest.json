@@ -35,6 +35,15 @@
       "neg:pan-shaped-invalid-holder": 11,
       "neg:swift-bic": 11,
       "neg:ticket-id": 11
+    },
+    "perTypeResolution": {
+      "minGoldSpansPerType": 6,
+      "scarcestTypes": [
+        "db-connection-string",
+        "private-key-material"
+      ],
+      "recallStepAtMin": 0.16666666666666666,
+      "note": "per-type recall on this corpus is quantised: the scarcest type has 6 gold span(s), so its recall moves in steps of 16.7 percentage points and no per-type difference smaller than that is resolvable. Reported because it bounds every per-type number computed here."
     }
   },
   "certification": {
@@ -115,7 +124,7 @@
         ]
       }
     ],
-    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive."
+    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive. CIRCULARITY: stage 1 is @sih/core runTier0 over maxRecallIr(ir) -- the tier-0 arm under test, widened, run against a widened copy of the very IR the corpus is scored under. The carriers that survive it are the carriers that arm is silent on, chosen by that arm, so the negatives are easy for it by construction. No IR-free sweep ran beside it here, so the size of that bias is UNMEASURED in this corpus; see format-sweep.ts for the sweep that measures it."
   },
   "injection": {
     "invariant": "every gold span is the span the generator wrote, derived from the splice offset and never re-found by search; text.slice(start, end) === the injected value, and each injected value occurs in the text exactly as many times as it was injected",
@@ -148,6 +157,7 @@
   "contamination": {
     "n": 8,
     "threshold": 0.7,
+    "minExampleTokens": 3,
     "sources": [
       {
         "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#negatives",
@@ -253,11 +263,119 @@
       }
     ],
     "itemsChecked": 154,
+    "itemsKept": 154,
     "dropped": [],
     "unscoreable": [],
-    "examplesUnscoreable": 263,
+    "examplesUnscoreable": 115,
+    "examplesScoredAtOwnLength": 148,
+    "examplesMatchableOnlyThroughTheirOwnIdentifier": 300,
     "maxScoreKept": 0,
-    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests."
+    "phraseOverlap": {
+      "maxRunTokens": 5,
+      "histogram": [
+        {
+          "tokens": 1,
+          "items": 3
+        },
+        {
+          "tokens": 2,
+          "items": 57
+        },
+        {
+          "tokens": 3,
+          "items": 67
+        },
+        {
+          "tokens": 4,
+          "items": 16
+        },
+        {
+          "tokens": 5,
+          "items": 11
+        }
+      ],
+      "worst": [
+        {
+          "itemId": "inj-c02-2",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-c04-2",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-c05-3",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-c08-1",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-c09-0",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-c10-1",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-c13-0",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-c14-1",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-c17-1",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-c17-2",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-c21-2",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        }
+      ],
+      "note": "longest contiguous run of word tokens each item shares with any example. No n and no threshold: it is the measurement the >0.7 8-gram ratio cannot make, reported because a maxScoreKept of 0 was being read as 'shares no phrasing', which it does not mean."
+    },
+    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens, an example shorter than 8 tokens matched at its own length and one shorter than 3 not matched at all; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests, and for why a score of 0 here is a weaker statement than it looks -- read phraseOverlap beside it."
   },
   "splits": {
     "devFraction": 0.2,

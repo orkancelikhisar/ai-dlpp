@@ -51,6 +51,23 @@ import type { StageHit, Sweep } from "./certify.js";
  * and which one is contestable. Neither certifier could avoid it. So the round
  * is blind of the generator, of the labels and of each other, and is NOT blind
  * of the authoring intent.
+ *
+ * ## Two channels, and only one of them used to be audited
+ *
+ * The blindness record checked what the certifiers READ -- their `filesRead`
+ * lists, item by item, against the files that would have given the answer away.
+ * It said nothing about what they were TOLD. An annotator's brief is the other
+ * route by which the answer reaches them, and it is the route that leaves no
+ * trace in a file list: a brief saying "four of these were written to fail"
+ * would produce a perfectly clean `filesRead` and a worthless round.
+ *
+ * `blindness.channels` names both channels and states, per channel, whether it
+ * was audited and against what evidence. The told channel comes out UNAUDITED,
+ * and it is recorded as unaudited rather than assumed clean, because the
+ * verbatim briefs were not retained -- `blindness.rulesGiven` is this round's
+ * own summary of the instruction, not a transcript of it. `blindnessAudit()`
+ * returns the same structure for a machine, and `corpus-adjudication.test.ts`
+ * fails if a channel is listed with neither evidence nor a declared gap.
  */
 
 export type Confidence = "clear" | "borderline";
@@ -94,6 +111,45 @@ export const ADJUDICATION_ROUND = {
     rulesGiven:
       "read policies/p-fin.md and the wave-2 carrier file only; no families/inject/certify/labels " +
       "modules, no compiled IR, no gold fixtures, nothing under runs/, no git log, no plan",
+    /**
+     * The channels by which the answer can reach an annotator, each with what
+     * was actually checked. `audited: false` is a finding, not a formatting
+     * choice: it means this round cannot say the channel was clean.
+     */
+    channels: [
+      {
+        channel: "read",
+        what: "the files each certifier opened, from their returned filesRead list",
+        audited: true,
+        evidence:
+          "each certifier's returned filesRead list was compared item by item against the modules " +
+          "that carry the answer; the results are in blindness.verified below, including the one " +
+          "range Certifier A disclosed and the line numbers that range was checked against",
+        gap:
+          "a filesRead list is self-reported. It bounds what each certifier SAID they opened, and " +
+          "this repository has no independent record of file access to check it against.",
+      },
+      {
+        channel: "told",
+        what: "the brief each certifier was given: task, scope, decision rule, and any framing in it",
+        audited: false,
+        evidence:
+          "rulesGiven above is this round's summary of the instruction, and both returned method " +
+          "notes are consistent with it -- A's opens 'Scope: the 32 wave-2 carriers', B's 'Read " +
+          "policies/p-fin.md and the wave-2 carrier file only'. Consistency with a summary is not " +
+          "an audit of the text.",
+        gap:
+          "NO VERBATIM BRIEF WAS RETAINED. Neither certifier's prompt is committed anywhere in " +
+          "this repository, so nothing here can rule out answer-bearing framing inside it. The " +
+          "concrete instance: both certifiers demonstrably knew the stratum structure -- A's note " +
+          "counts '16 ordinary carriers' and '12 hard negatives', B's says the file 'told B that " +
+          "the d0* carriers were written to fail' -- and the round attributes that to the target " +
+          "file's own header (see breaches, STRUCTURAL). " +
+          "The brief is a second route to the same knowledge and it cannot be excluded, because " +
+          "it cannot be read. Any future round must retain the briefs verbatim for this channel " +
+          "to be auditable at all.",
+      },
+    ],
     verified: [
       "Neither filesRead list contains families.candidate.ts, families.ts, inject.ts, certify.ts, " +
         "labels.ts, universe*.ts, generate.ts, policies/compiled/p-fin.ir.json, " +
@@ -644,6 +700,61 @@ export const CARRIER_VERDICTS: readonly CarrierVerdicts[] = [
     },
   },
 ];
+
+/**
+ * The channels a blindness audit has to cover. Two, and the second is the one
+ * that was missing: an audit that only checks reading is an audit of half the
+ * ways an annotator learns the answer.
+ */
+export const BLINDNESS_CHANNELS = ["read", "told"] as const;
+export type BlindnessChannel = (typeof BLINDNESS_CHANNELS)[number];
+
+export interface BlindnessChannelAudit {
+  readonly channel: BlindnessChannel;
+  readonly what: string;
+  readonly audited: boolean;
+  readonly evidence: string;
+  readonly gap: string;
+}
+
+export interface BlindnessAudit {
+  readonly channels: readonly BlindnessChannelAudit[];
+  /** Channels this round cannot say were clean. Non-empty is the honest answer here. */
+  readonly unaudited: readonly BlindnessChannel[];
+  readonly note: string;
+}
+
+/**
+ * The audit, derived from `ADJUDICATION_ROUND.blindness.channels` rather than
+ * restated beside it. A second copy of the verdict is a second thing to keep
+ * true.
+ */
+export function blindnessAudit(): BlindnessAudit {
+  const channels = ADJUDICATION_ROUND.blindness.channels.map((c) => ({
+    channel: c.channel as BlindnessChannel,
+    what: c.what,
+    audited: c.audited,
+    evidence: c.evidence,
+    gap: c.gap,
+  }));
+  const missing = BLINDNESS_CHANNELS.filter((id) => !channels.some((c) => c.channel === id));
+  if (missing.length > 0) {
+    throw new Error(
+      `blindness audit covers ${channels.map((c) => c.channel).join(", ")} but not ${missing.join(", ")}; ` +
+        `an uncovered channel is an unaudited one and must be listed as such, not omitted`,
+    );
+  }
+  const unaudited = channels.filter((c) => !c.audited).map((c) => c.channel);
+  return {
+    channels,
+    unaudited,
+    note:
+      unaudited.length === 0
+        ? "every channel by which the answer could reach a certifier was audited"
+        : `${unaudited.join(", ")}: audited by nothing. What a blind round is worth is bounded by ` +
+          `its least audited channel, and this one is unbounded there -- see each channel's gap.`,
+  };
+}
 
 export const ADJUDICATION_SWEEP_ID = "blind-double-adjudication-p-fin";
 

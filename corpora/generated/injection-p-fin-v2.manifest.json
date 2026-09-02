@@ -54,6 +54,14 @@
       "neg:tan": 15,
       "neg:terminal-id": 7,
       "neg:uuid": 5
+    },
+    "perTypeResolution": {
+      "minGoldSpansPerType": 7,
+      "scarcestTypes": [
+        "in-pan"
+      ],
+      "recallStepAtMin": 0.14285714285714285,
+      "note": "per-type recall on this corpus is quantised: the scarcest type has 7 gold span(s), so its recall moves in steps of 14.3 percentage points and no per-type difference smaller than that is resolvable. Reported because it bounds every per-type number computed here."
     }
   },
   "certification": {
@@ -587,7 +595,7 @@
         ]
       }
     ],
-    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive.",
+    "invariantScope": "stage 1 only: the injection invariant is established for tier-0 entity classes. A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no stage that ran can see, so a finding of those classes outside a gold span is not provably a false positive. CIRCULARITY: stage 1 is @sih/core runTier0 over maxRecallIr(ir) -- the tier-0 arm under test, widened, run against a widened copy of the very IR the corpus is scored under. The carriers that survive it are the carriers that arm is silent on, chosen by that arm, so the negatives are easy for it by construction. Measured against the IR-free format-spec-sweep: 0 carrier(s) quarantined by stage 1 alone, 6 by both, 0 by the independent sweep alone.",
     "circularity": {
       "independentSweep": "format-spec-sweep",
       "note": "stage 1 is runTier0 over maxRecallIr(ir) -- the tier-0 arm under test, widened. stage1Only names the carriers it quarantined that the IR-free format-spec sweep did not, which is the part of the quarantine decision the arm made on its own. A pool cleaned by any detector is easy for that detector; this counts how much of the cleaning was the arm's.",
@@ -634,6 +642,7 @@
   "contamination": {
     "n": 8,
     "threshold": 0.7,
+    "minExampleTokens": 3,
     "sources": [
       {
         "sourceId": "packages/compiler/test/fixtures/llm/SelfTestCases.08f3cde6d16e1418.json#negatives",
@@ -739,11 +748,77 @@
       }
     ],
     "itemsChecked": 189,
+    "itemsKept": 189,
     "dropped": [],
     "unscoreable": [],
-    "examplesUnscoreable": 263,
+    "examplesUnscoreable": 115,
+    "examplesScoredAtOwnLength": 148,
+    "examplesMatchableOnlyThroughTheirOwnIdentifier": 300,
     "maxScoreKept": 0,
-    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests."
+    "phraseOverlap": {
+      "maxRunTokens": 5,
+      "histogram": [
+        {
+          "tokens": 1,
+          "items": 1
+        },
+        {
+          "tokens": 2,
+          "items": 77
+        },
+        {
+          "tokens": 3,
+          "items": 70
+        },
+        {
+          "tokens": 4,
+          "items": 36
+        },
+        {
+          "tokens": 5,
+          "items": 5
+        }
+      ],
+      "worst": [
+        {
+          "itemId": "inj-hn03-1",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-hn08-0",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-o02-3",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        },
+        {
+          "itemId": "inj-o03-0",
+          "tokens": 5,
+          "phrase": "the permanent account number on",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 3
+        },
+        {
+          "itemId": "inj-o12-3",
+          "tokens": 5,
+          "phrase": "the servicing console shows cif",
+          "sourceId": "policies/compiled/p-fin.selftest.json",
+          "exampleIndex": 120
+        }
+      ],
+      "note": "longest contiguous run of word tokens each item shares with any example. No n and no threshold: it is the measurement the >0.7 8-gram ratio cannot make, reported because a maxScoreKept of 0 was being read as 'shares no phrasing', which it does not mean."
+    },
+    "note": "score = max(|item n example| / |item|, |item n example| / |example|) over 8-grams of lowercased word tokens, an example shorter than 8 tokens matched at its own length and one shorter than 3 not matched at all; strictly greater than 0.7 is dropped. See the module header for why the maximum and not the item-side containment the spec's wording most directly suggests, and for why a score of 0 here is a weaker statement than it looks -- read phraseOverlap beside it."
   },
   "splits": {
     "devFraction": 0.2,
@@ -1405,6 +1480,22 @@
       },
       "blindness": {
         "rulesGiven": "read policies/p-fin.md and the wave-2 carrier file only; no families/inject/certify/labels modules, no compiled IR, no gold fixtures, nothing under runs/, no git log, no plan",
+        "channels": [
+          {
+            "channel": "read",
+            "what": "the files each certifier opened, from their returned filesRead list",
+            "audited": true,
+            "evidence": "each certifier's returned filesRead list was compared item by item against the modules that carry the answer; the results are in blindness.verified below, including the one range Certifier A disclosed and the line numbers that range was checked against",
+            "gap": "a filesRead list is self-reported. It bounds what each certifier SAID they opened, and this repository has no independent record of file access to check it against."
+          },
+          {
+            "channel": "told",
+            "what": "the brief each certifier was given: task, scope, decision rule, and any framing in it",
+            "audited": false,
+            "evidence": "rulesGiven above is this round's summary of the instruction, and both returned method notes are consistent with it -- A's opens 'Scope: the 32 wave-2 carriers', B's 'Read policies/p-fin.md and the wave-2 carrier file only'. Consistency with a summary is not an audit of the text.",
+            "gap": "NO VERBATIM BRIEF WAS RETAINED. Neither certifier's prompt is committed anywhere in this repository, so nothing here can rule out answer-bearing framing inside it. The concrete instance: both certifiers demonstrably knew the stratum structure -- A's note counts '16 ordinary carriers' and '12 hard negatives', B's says the file 'told B that the d0* carriers were written to fail' -- and the round attributes that to the target file's own header (see breaches, STRUCTURAL). The brief is a second route to the same knowledge and it cannot be excluded, because it cannot be read. Any future round must retain the briefs verbatim for this channel to be auditable at all."
+          }
+        ],
         "verified": [
           "Neither filesRead list contains families.candidate.ts, families.ts, inject.ts, certify.ts, labels.ts, universe*.ts, generate.ts, policies/compiled/p-fin.ir.json, corpora/fixtures/smoke.gold-tier2.jsonl, or anything under runs/.",
           "Certifier A additionally read carriers.ts lines 1-40 and 55-85 and disclosed it. VERIFIED against the file: the provenance docblock ends at line 43 and CLEAN_CARRIERS begins at line 101, so both ranges are docblock and type declarations and neither contains wave-1 carrier text. The docblock does disclose that the wave-1 carriers were authored to pass certify.ts's sweeps and that DIRTY_CARRIERS exist to fail them."
@@ -1491,6 +1582,28 @@
       },
       "caveat": "These are agreement numbers over two certifiers who read the SAME two files, one of which (the carrier file) carries a header comment naming which carriers were written to fail and which one is contestable. See ADJUDICATION_ROUND.blindness.breaches: the round is blind of the generator, the labels and each other, and not blind of the authoring intent. Agreement on exactly the carriers that comment singles out is therefore weaker evidence than the number looks."
     },
+    "blindness": {
+      "channels": [
+        {
+          "channel": "read",
+          "what": "the files each certifier opened, from their returned filesRead list",
+          "audited": true,
+          "evidence": "each certifier's returned filesRead list was compared item by item against the modules that carry the answer; the results are in blindness.verified below, including the one range Certifier A disclosed and the line numbers that range was checked against",
+          "gap": "a filesRead list is self-reported. It bounds what each certifier SAID they opened, and this repository has no independent record of file access to check it against."
+        },
+        {
+          "channel": "told",
+          "what": "the brief each certifier was given: task, scope, decision rule, and any framing in it",
+          "audited": false,
+          "evidence": "rulesGiven above is this round's summary of the instruction, and both returned method notes are consistent with it -- A's opens 'Scope: the 32 wave-2 carriers', B's 'Read policies/p-fin.md and the wave-2 carrier file only'. Consistency with a summary is not an audit of the text.",
+          "gap": "NO VERBATIM BRIEF WAS RETAINED. Neither certifier's prompt is committed anywhere in this repository, so nothing here can rule out answer-bearing framing inside it. The concrete instance: both certifiers demonstrably knew the stratum structure -- A's note counts '16 ordinary carriers' and '12 hard negatives', B's says the file 'told B that the d0* carriers were written to fail' -- and the round attributes that to the target file's own header (see breaches, STRUCTURAL). The brief is a second route to the same knowledge and it cannot be excluded, because it cannot be read. Any future round must retain the briefs verbatim for this channel to be auditable at all."
+        }
+      ],
+      "unaudited": [
+        "told"
+      ],
+      "note": "told: audited by nothing. What a blind round is worth is bounded by its least audited channel, and this one is unbounded there -- see each channel's gap."
+    },
     "admitted": [
       "o01",
       "o02",
@@ -1571,7 +1684,8 @@
     "p-med AND p-corp LABELS ARE UNPOPULATED. Any per-policy or policy-adaptivity number computed from this corpus is a p-fin number.",
     "NO pred: GOLD, AND THE PREDICATE IS CONSTRUCTED ON BOTH SIDES. meta.predicateConstruction records what the generator wrote as a PREDICTION with its provenance; meta.labelQuestions carries the question a blind round answers; meta.scoringScope excludes the class from the false-positive claim until it does.",
     "THE CONTESTED CONFUSABLES ARE EXCLUDED FROM THE FALSE-POSITIVE CLAIM TOO. Their p-fin reading can be reached either way from the document, each family says which clause would overturn it, and each span carries its own question in the queue.",
-    "THE ADJUDICATION ROUND THAT ADMITTED THE CARRIERS WAS NOT BLIND OF THE AUTHORING INTENT. See adjudication.round.blindness.breaches. Nothing about that changed this round."
+    "THE ADJUDICATION ROUND THAT ADMITTED THE CARRIERS WAS NOT BLIND OF THE AUTHORING INTENT. See adjudication.round.blindness.breaches. Nothing about that changed this round.",
+    "THE TOLD CHANNEL OF THAT ROUND IS UNAUDITED. The blindness record checked what each certifier READ and never what they were TOLD; no verbatim brief was retained, so nothing can rule out answer-bearing framing in the instruction itself. adjudication.blindness names both channels and marks this one unaudited rather than clean."
   ],
   "artifact": {
     "corpusSha256": "25e3a3e0c439fe0f8c6a1df787d64bfbd9dc0745f85687f455d4581eade6cf12",

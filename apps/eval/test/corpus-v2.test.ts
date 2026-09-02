@@ -517,6 +517,51 @@ describe("the injection invariant still holds, and stage 1's circularity is now 
     expect(formatSpecSweep("nothing here but ordinary words about a meeting.", "t")).toEqual([]);
   });
 
+  it("puts the circularity in the sentence a reader quotes, not only in a side block", () => {
+    // certification.circularity has counted this since wave 3, but
+    // invariantScope -- the field that says what the corpus is worth -- did not
+    // mention that stage 1 IS an arm under test. The same objection this module
+    // raises against standing tier 1 in for stage 2.
+    const scope = manifest.certification.invariantScope;
+    const c = manifest.certification.circularity!;
+    expect(scope).toContain("CIRCULARITY");
+    expect(scope).toContain("the tier-0 arm under test");
+    // The numbers in the sentence come from the block beside it rather than
+    // from a second count that could drift.
+    expect(scope).toContain(`Measured against the IR-free ${c.independentSweep}`);
+    expect(scope).toContain(`${c.stage1Only.length} carrier(s) quarantined by stage 1 alone`);
+    expect(scope).toContain(`${c.both.length} by both`);
+  });
+
+  it("states the resolution of its own per-type rates", () => {
+    // The shipped corpus's scarcest gold type carries 7 spans, so its recall
+    // moves in 14.3-point steps. That is a coarser grid than "de-quantised"
+    // suggests and the manifest now says the number rather than implying none.
+    const r = manifest.counts.perTypeResolution;
+    expect(r.minGoldSpansPerType).toBe(7);
+    expect(r.scarcestTypes).toEqual(["in-pan"]);
+    expect(r.note).toContain("14.3 percentage points");
+    expect(r.minGoldSpansPerType).toBe(Math.min(...Object.values(manifest.counts.goldSpansByType)));
+    expect(r.recallStepAtMin).toBeCloseTo(1 / 7, 12);
+  });
+
+  it("reports the phrase overlap the 8-gram ratio scores at zero", () => {
+    const c = manifest.contamination;
+    expect([c.dropped.length, c.maxScoreKept, c.itemsKept]).toEqual([0, 0, 189]);
+    // Five items share a five-token sentence stem with the compiler self-test
+    // corpus. The ratio cannot see it and the report says so beside the zero.
+    expect(c.phraseOverlap.maxRunTokens).toBe(5);
+    expect(c.phraseOverlap.worst).toHaveLength(5);
+    for (const w of c.phraseOverlap.worst) {
+      expect([w.itemId, w.sourceId]).toEqual([w.itemId, "policies/compiled/p-fin.selftest.json"]);
+    }
+  });
+
+  it("marks the adjudication round's told channel unaudited", () => {
+    expect(manifest.adjudication.blindness.unaudited).toEqual(["told"]);
+    expect(manifest.unvalidated.some((u) => u.startsWith("THE TOLD CHANNEL"))).toBe(true);
+  });
+
   it("is not certified, and says so", () => {
     expect(manifest.certification.claim).toBe("NOT CERTIFIED");
     expect(manifest.certification.carriers.certifiedClear).toBe(0);

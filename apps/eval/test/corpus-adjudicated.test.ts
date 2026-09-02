@@ -10,6 +10,7 @@ import {
   ADJUDICATED_MANIFEST_PATH,
   EXCLUDED_FAMILY_IDS,
   OFFERED_CARRIERS,
+  VERIFICATION_CHECKS,
   buildAdjudicatedArtifacts,
   verifyOrRefuse,
 } from "../src/corpus/build-adjudicated.js";
@@ -247,18 +248,81 @@ describe("the emit gate refuses a corpus that violates the invariant", () => {
     expect(() => verifyOrRefuse(items, built.generated.certifications, "probe")).toThrowError(/but it occurs 2 time/);
   });
 
+  /**
+   * The sixth advertised check, which had no test of its own. Five of the six
+   * entries in VERIFICATION_CHECKS were exercised above; "the item's carrier
+   * came through every sweep that ran with zero hits" was not, so the gate
+   * could have been advertising a refusal it did not make.
+   *
+   * It is reached through the CERTIFICATIONS argument rather than through the
+   * items, because the admission check runs first: a carrier the round refused
+   * throws before the certification is looked at, so a carrier that is admitted
+   * AND quarantined is the only way in, and the certification list is the only
+   * place that state can come from.
+   */
+  describe("refuses an item whose carrier a sweep hit", () => {
+    const usedCarrier = () => built.items.find((i) => i.gold.length > 0)!.meta!["carrierId"] as string;
+    const withCert = (patch: (c: (typeof built.generated.certifications)[number]) => unknown) =>
+      built.generated.certifications.map((c) =>
+        c.carrierId === usedCarrier() ? (patch(c) as typeof c) : c,
+      );
+
+    it("refuses on a sweep hit even while the status still reads provisional-clear", () => {
+      // The two conditions are ORed for a reason: a status is a summary and the
+      // hit list is the evidence, and an item must not ride on a status that
+      // disagrees with it.
+      const certs = withCert((c) => ({
+        ...c,
+        hits: [{ sweep: "tier0-sweep", start: 0, end: 4, text: "AAAA", label: "in-pan" }],
+      }));
+      expect(certs.find((c) => c.carrierId === usedCarrier())!.status).toBe("provisional-clear");
+      expect(() => verifyOrRefuse(built.items, certs, "probe")).toThrowError(
+        /which is provisional-clear with 1 sweep hit\(s\)/,
+      );
+    });
+
+    it("refuses a quarantined carrier even when its hit list was emptied", () => {
+      const certs = withCert((c) => ({ ...c, status: "quarantined" }));
+      expect(() => verifyOrRefuse(built.items, certs, "probe")).toThrowError(
+        /which is quarantined with 0 sweep hit\(s\)/,
+      );
+    });
+
+    it("refuses an item whose carrier was never certified at all", () => {
+      const certs = built.generated.certifications.filter((c) => c.carrierId !== usedCarrier());
+      expect(() => verifyOrRefuse(built.items, certs, "probe")).toThrowError(/which was never certified/);
+    });
+
+    it("refuses an item that records no carrier at all", () => {
+      const items = clone();
+      delete (items.find((i) => i.gold.length > 0)!.meta as { carrierId?: string }).carrierId;
+      expect(() => verifyOrRefuse(items, built.generated.certifications, "probe")).toThrowError(
+        /records no meta.carrierId/,
+      );
+    });
+  });
+
   it("accepts the real corpus, so the refusals above are not a gate stuck shut", () => {
     const report = verifyOrRefuse(built.items, built.generated.certifications, "probe");
     expect([report.itemsChecked, report.positives, report.negatives, report.goldSpansChecked]).toEqual([
       189, 108, 81, 108,
     ]);
   });
+
+  it("advertises exactly six checks, and this file refuses on every one of them", () => {
+    // The list is pinned so that adding a seventh advertised check without a
+    // refusal test fails here rather than shipping as an unbacked claim in a
+    // committed manifest.
+    const report = verifyOrRefuse(built.items, built.generated.certifications, "probe");
+    expect(report.checks).toEqual(VERIFICATION_CHECKS);
+    expect(VERIFICATION_CHECKS).toHaveLength(6);
+  });
 });
 
 describe("what the manifest reports", () => {
   const m = built.manifest;
 
-  it("counts 189 items over 27 carriers, with per-type denominators in double figures", () => {
+  it("counts 189 items over 27 carriers, with a scarcest per-type denominator of 9", () => {
     expect([m.counts.items, m.counts.positives, m.counts.negatives]).toEqual([189, 108, 81]);
     expect([m.counts.goldSpans, m.counts.confusableSpans]).toEqual([108, 108]);
     expect(m.counts.goldSpansByType).toEqual({
@@ -277,6 +341,21 @@ describe("what the manifest reports", () => {
     expect(Object.keys(m.counts.goldSpansByType).sort()).toEqual(scorable);
     expect(Object.keys(m.counts.confusableSpansByType)).toHaveLength(24);
     for (const [t, n] of Object.entries(m.counts.confusableSpansByType)) expect([t, n >= 4]).toEqual([t, true]);
+  });
+
+  it("states the resolution of its own per-type rates instead of implying it has none", () => {
+    // The round that built this corpus was framed as de-quantising per-type
+    // recall, and the framing outran the counts: two types sit at 9, so their
+    // recall moves in steps of 11.1 points and no smaller per-type difference
+    // is resolvable here. Reported in the manifest rather than left for a
+    // reader to divide out.
+    const r = m.counts.perTypeResolution;
+    expect(r.minGoldSpansPerType).toBe(9);
+    expect(r.scarcestTypes).toEqual(["in-pan", "internal-customer-id"]);
+    expect(r.recallStepAtMin).toBeCloseTo(1 / 9, 12);
+    expect(r.note).toContain("11.1 percentage points");
+    // Derived, not stated: the number is the minimum of the table beside it.
+    expect(r.minGoldSpansPerType).toBe(Math.min(...Object.values(m.counts.goldSpansByType)));
   });
 
   it("reports the quarantine rate over the pool it was offered, not a curated one", () => {

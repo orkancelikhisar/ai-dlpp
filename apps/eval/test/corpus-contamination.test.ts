@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  MIN_EXAMPLE_TOKENS,
   NGRAM_N,
   OVERLAP_DROP_THRESHOLD,
+  buildRunIndex,
   checkContamination,
   containment,
+  exampleNgrams,
+  longestSharedRun,
   ngrams,
   overlapScore,
   selfTestExamplesFromCompiledCorpus,
@@ -12,6 +16,7 @@ import {
   type SelfTestExample,
 } from "../src/corpus/contamination.js";
 import { loadSelfTestExamples } from "../src/corpus/build.js";
+import { buildV2Artifacts } from "../src/corpus/build-v2.js";
 
 /** A real self-test case, copied from policies/compiled/p-fin.selftest.json. */
 const EXAMPLE = "Onboarding record shows AWEFT3518Q as the permanent account number on file.";
@@ -149,5 +154,139 @@ describe("loading this repository's self-test examples", () => {
     );
     expect(fixtures.size).toBe(12);
     expect(examples.length).toBeGreaterThan(280);
+  });
+});
+
+/**
+ * A REAL self-test case that a fixed n = 8 could not see, copied verbatim from
+ * `policies/compiled/p-fin.selftest.json`. Six word tokens under this module's
+ * tokenizer, so it carries no 8-gram at all; 263 of this repository's 723
+ * examples are in that position.
+ */
+const SHORT_EXAMPLE = "Onboarding record shows AWEFT3518Q as PAN.";
+
+describe("an example shorter than n, which used to be invisible", () => {
+  it("has no 8-gram, so the old fixed-n rule could not match it at any score", () => {
+    const tokens = tokenize(SHORT_EXAMPLE);
+    expect(tokens.length).toBeLessThan(NGRAM_N);
+    expect(ngrams(tokens).size).toBe(0);
+  });
+
+  it("is matched at its own length instead", () => {
+    const tokens = tokenize(SHORT_EXAMPLE);
+    expect(exampleNgrams(tokens).size).toBe(1);
+    expect([...exampleNgrams(tokens)][0]).toBe(tokens.join(" "));
+  });
+
+  it("drops an item that copies it verbatim, which the fixed-n rule kept", () => {
+    const item = {
+      id: "copied-short",
+      text: `hi, quick question about a record we were sent this morning. ${SHORT_EXAMPLE} is that ok to paste here or should i strip it first?`,
+    };
+    // The old behaviour, reconstructed from the primitives rather than asserted
+    // from memory: at a fixed n = 8 the example contributes no gram, so the pair
+    // cannot be compared at all and the item survives.
+    expect(overlapScore(ngrams(tokenize(item.text)), ngrams(tokenize(SHORT_EXAMPLE)))).toBeUndefined();
+
+    const report = checkContamination([item], [{ sourceId: "s", index: 7, text: SHORT_EXAMPLE }]);
+    expect(report.dropped).toHaveLength(1);
+    expect(report.dropped[0]).toMatchObject({ itemId: "copied-short", score: 1, direction: "example-in-item" });
+    expect(report.examplesUnscoreable).toBe(0);
+    expect(report.examplesScoredAtOwnLength).toBe(1);
+  });
+
+  it("still refuses to match on an example below the floor, which is a value and not phrasing", () => {
+    // "encoding utf-8" is a real two-token self-test case. Matching on it would
+    // drop any honest item that mentions an encoding.
+    const below = "encoding: UTF-8";
+    expect(tokenize(below).length).toBeLessThan(MIN_EXAMPLE_TOKENS);
+    const report = checkContamination(
+      [{ id: "mentions", text: "the export job writes csv with encoding: UTF-8 and a header row, which the importer then rejects for some reason" }],
+      [{ sourceId: "s", index: 0, text: below }],
+    );
+    expect(report.dropped).toEqual([]);
+    expect(report.examplesUnscoreable).toBe(1);
+    // And the item is reported as unscoreable rather than kept: with the only
+    // example below the floor, no comparison was made, and "kept" would claim
+    // one was.
+    expect(report.itemsKept).toBe(0);
+    expect(report.unscoreable).toEqual([{ itemId: "mentions", tokens: 20 }]);
+  });
+});
+
+describe("phrase overlap: the copying the ratio cannot see", () => {
+  const stem = "The servicing console shows CIF 30045512 for this relationship.";
+
+  it("finds the longest shared run and names the example it came from", () => {
+    const index = buildRunIndex([tokenize(stem)]);
+    const run = longestSharedRun(index, tokenize("the servicing console shows CIF 88112200 for that account, which is a different customer entirely"));
+    expect(run).toMatchObject({ tokens: 5, phrase: "the servicing console shows cif", exampleIndex: 0 });
+  });
+
+  it("reports the run on an item the ratio scores at zero", () => {
+    const item = {
+      id: "shares-a-stem",
+      text: "the servicing console shows CIF 88112200 for that account, and i cannot tell whether the branch code beside it matters for what i am asking",
+    };
+    const report = checkContamination([item], [{ sourceId: "s", index: 3, text: stem }]);
+    expect(report.dropped).toEqual([]);
+    expect(report.maxScoreKept).toBe(0);
+    expect(report.phraseOverlap.maxRunTokens).toBe(5);
+    expect(report.phraseOverlap.worst).toEqual([
+      { itemId: "shares-a-stem", tokens: 5, phrase: "the servicing console shows cif", sourceId: "s", exampleIndex: 3 },
+    ]);
+  });
+
+  it("distinguishes a zero measured over kept items from a zero measured over none", () => {
+    // certificationSummary shipped the same defect: an empty input is not a
+    // clean result. maxScoreKept is 0 in both cases; itemsKept is what tells
+    // them apart.
+    const empty = checkContamination([], [{ sourceId: "s", index: 0, text: stem }]);
+    expect([empty.itemsKept, empty.maxScoreKept, empty.phraseOverlap.maxRunTokens]).toEqual([0, 0, 0]);
+  });
+});
+
+describe("what the shipped corpus actually shares with the compiler self-test", () => {
+  // The published measurement. It is not a round number and it is not zero: the
+  // >0.7 8-gram ratio scores every item at 0.000, and five items share a
+  // five-token sentence stem with policies/compiled/p-fin.selftest.json.
+  const c = buildV2Artifacts().manifest.contamination;
+
+  it("drops nothing, over a pool that was actually scored", () => {
+    expect([c.itemsChecked, c.itemsKept, c.dropped.length, c.unscoreable.length]).toEqual([189, 189, 0, 0]);
+    expect(c.maxScoreKept).toBe(0);
+  });
+
+  it("can now see the 148 examples a fixed n = 8 could not", () => {
+    expect(c.examplesScoredAtOwnLength).toBe(148);
+    expect(c.examplesUnscoreable).toBe(115);
+    // 263 = what the old rule reported as unscoreable; 115 of those are values
+    // below the floor and the other 148 are now matched at their own length.
+    expect(c.examplesScoredAtOwnLength + c.examplesUnscoreable).toBe(263);
+  });
+
+  it("says why a score of 0 is a weaker statement than it looks", () => {
+    // Of the examples long enough to carry a full 8-gram, most have none free
+    // of a digit-bearing token, so matching one requires reproducing its
+    // identifier -- which leakage.ts separately proves the generator never does.
+    expect(c.examplesMatchableOnlyThroughTheirOwnIdentifier).toBe(300);
+  });
+
+  it("reports the five-token overlap that is really there", () => {
+    expect(c.phraseOverlap.maxRunTokens).toBe(5);
+    expect(c.phraseOverlap.histogram).toEqual([
+      { tokens: 1, items: 1 },
+      { tokens: 2, items: 77 },
+      { tokens: 3, items: 70 },
+      { tokens: 4, items: 36 },
+      { tokens: 5, items: 5 },
+    ]);
+    expect(c.phraseOverlap.worst.map((w) => [w.itemId, w.phrase, w.sourceId])).toEqual([
+      ["inj-hn03-1", "the permanent account number on", "policies/compiled/p-fin.selftest.json"],
+      ["inj-hn08-0", "the servicing console shows cif", "policies/compiled/p-fin.selftest.json"],
+      ["inj-o02-3", "the servicing console shows cif", "policies/compiled/p-fin.selftest.json"],
+      ["inj-o03-0", "the permanent account number on", "policies/compiled/p-fin.selftest.json"],
+      ["inj-o12-3", "the servicing console shows cif", "policies/compiled/p-fin.selftest.json"],
+    ]);
   });
 });

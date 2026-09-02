@@ -100,12 +100,26 @@ export function unpopulatedLabel(policy: PolicyId): PolicyLabel {
  *
  * - `type` is one of the IR's entityTypes -> the action is
  *   `ir.actions.default[type]`, verbatim.
- * - `type` is a `neg:` confusable -> the action is `"none"`, DERIVED from the
- *   IR rather than assumed: p-fin's obligations are enumerated by
- *   `actions.default`, a type absent from that table has no obligation under
- *   p-fin, and a confusable is by construction not an instance of any type in
- *   it. That derivation is the reason a confusable can be labelled at all
- *   without a second adjudication round.
+ * - `type` is a `neg:` confusable -> the action is `"none"`. This was documented
+ *   as DERIVED from the IR and was not: the old code returned `"none"` off the
+ *   `neg:` PREFIX alone and never opened the IR, while its `source` string said
+ *   the type "is not an entityType of this IR". It now reads the IR and throws
+ *   if the type appears in `actions.default` or in `entityTypes`, so the
+ *   sentence in `source` is a fact the function checked.
+ *
+ *   What that derivation covers, exactly: p-fin's obligations are enumerated by
+ *   `actions.default`, so a type ABSENT from that table has no obligation under
+ *   p-fin. That much is read off the artifact.
+ *
+ *   What it does NOT cover, and this is the part the old comment overstated: the
+ *   claim that a confusable SPAN is not an instance of some other type that IS
+ *   in the table. Nothing here derives that. It is an authoring property of the
+ *   confusable family, and it is not even universally true in the weak sense --
+ *   MEASURED in `corpus-adjudicated.test.ts`, stock tier 0 fires `api-credential`
+ *   inside `neg:csr-pem-block` and `neg:tutorial-api-key` spans, which is
+ *   exactly the false positive those families exist to provoke. A confusable's
+ *   `"none"` is therefore a statement about its TYPE ID, not an adjudication of
+ *   its text.
  *
  * `providerOverrides` is deliberately NOT consulted. The override table keys on
  * a provider id (chatgpt / gemini / deepseek), which is a property of the RUN,
@@ -116,6 +130,30 @@ export function unpopulatedLabel(policy: PolicyId): PolicyLabel {
  */
 export function pFinLabel(ir: PolicyIr, type: string, irSource: string): PolicyLabel {
   if (!isIrBacked(type)) {
+    // Read, not assumed. Both tables, because they are two ways for the id to
+    // be real: an entityType with no default action would still be an entity
+    // p-fin knows, and an action with no entityType would still be an
+    // obligation. A `neg:` id in either one means the corpus and the policy
+    // have collided in a namespace this prefix exists to keep apart, and
+    // "none" would then be a claim about a type the IR does have an opinion on.
+    const inActions = Object.prototype.hasOwnProperty.call(ir.actions.default, type);
+    const inEntityTypes = ir.entityTypes.some((e) => e.id === type);
+    if (inActions || inEntityTypes) {
+      throw new Error(
+        `corpus label type "${type}" carries the ${NEG_PREFIX} prefix but ${irSource} does declare ` +
+          `it (${[inActions ? "actions.default" : "", inEntityTypes ? "entityTypes" : ""]
+            .filter(Boolean)
+            .join(" and ")}); "none" would be a claim about a type this policy has an action for`,
+      );
+    }
+    // Byte-identical to what this function has always returned, deliberately.
+    // The sentence is now CHECKED rather than asserted, which was the defect;
+    // rewording it would rewrite `meta.labels[].violatesUnder["p-fin"].source`
+    // on every item of all three committed corpora, and GENERATOR_VERSION --
+    // which is what a bytes change is supposed to bump -- is an input to the
+    // per-item RNG seed, so bumping it would re-mint every value in the corpus
+    // to improve a provenance string. The richer wording lives in the throw
+    // below and in this function's docblock, neither of which is serialized.
     return {
       state: "populated",
       action: "none",

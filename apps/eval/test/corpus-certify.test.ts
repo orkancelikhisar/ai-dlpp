@@ -13,6 +13,7 @@ import {
   tier0Sweep,
   type Sweep,
 } from "../src/corpus/certify.js";
+import { FORMAT_SPEC_SWEEP_ID, formatSpecSweep } from "../src/corpus/format-sweep.js";
 
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const IR: PolicyIr = loadPolicyIr(readFileSync(`${REPO}policies/compiled/p-fin.ir.json`, "utf8"));
@@ -224,5 +225,86 @@ describe("certificationSummary", () => {
       }),
     ];
     expect(certificationSummary(certs).stagesRun).toHaveLength(3);
+  });
+});
+
+describe("the vacuous certification: an empty pool must not certify everything", () => {
+  // The defect this replaces: certificationSummary([]) returned
+  // claim "CERTIFIED" with stagesRun [] and an invariantScope naming all three
+  // stages. The general path derives "all stages ran" from "no stage result
+  // said ran: false", and with no carrier there are no stage results at all --
+  // so the most permissive answer in the module belonged to its emptiest input.
+  const summary = certificationSummary([]);
+
+  it("refuses rather than certifies", () => {
+    expect(summary.claim).toBe("NOT CERTIFIED");
+  });
+
+  it("lists all three stages as unrun, blocked on having a carrier at all", () => {
+    expect(summary.stagesRun).toEqual([]);
+    expect(summary.stagesUnrun.map((s) => s.stage)).toEqual([...CERTIFICATION_STAGES]);
+    for (const stage of summary.stagesUnrun) {
+      expect([stage.stage, stage.blockedOn]).toEqual([stage.stage, "at least one carrier"]);
+      // Not UNRUN_STAGES' reason: "unreachable: the tier-0 sweep is always
+      // supplied" is a false sentence about a pool with no carriers in it.
+      expect(stage.why).not.toContain("unreachable");
+    }
+  });
+
+  it("says the invariant is established for nothing, not for a clean pool", () => {
+    expect(summary.carriers).toEqual({ total: 0, certifiedClear: 0, provisionalClear: 0, quarantined: 0 });
+    expect(summary.invariantScope).toContain("no carrier was submitted");
+    expect(summary.invariantScope).toContain("empty one");
+    expect(summary.quarantined).toEqual([]);
+    expect(summary.supplementarySweepsRun).toEqual([]);
+  });
+
+  it("still certifies a non-empty pool with all three stages clear, so the guard is not a blanket refusal", () => {
+    const clear: Sweep = () => [];
+    const cert = certifyCarrier(PROBE, "nothing here at all", {
+      ir: IR,
+      modelSweep: clear,
+      frontierAdjudication: clear,
+      supplementarySweeps: [],
+    });
+    expect(certificationSummary([cert]).claim).toBe("CERTIFIED");
+  });
+});
+
+describe("invariantScope names stage 1's circularity", () => {
+  // The module refuses to stand @sih/tier1 in for stage 2 because tier 1 is an
+  // arm under test, then runs runTier0 for stage 1 without raising it. The
+  // resolution the round took: keep stage 1 -- spec 6.2 prescribes it in those
+  // words -- and put the circularity in the sentence a reader quotes.
+  const clean = CLEAN_CARRIERS.slice(0, 3);
+
+  it("says the size is UNMEASURED when no IR-free sweep ran beside stage 1", () => {
+    const certs = clean.map((c) => certifyCarrier(c.id, carrierText(c), { ir: IR, supplementarySweeps: [] }));
+    const scope = certificationSummary(certs).invariantScope;
+    expect(scope).toContain("CIRCULARITY");
+    expect(scope).toContain("runTier0 over maxRecallIr(ir)");
+    expect(scope).toContain("UNMEASURED");
+    expect(certificationSummary(certs).circularity).toBeUndefined();
+  });
+
+  it("gives the measured split when the format-spec sweep ran beside it", () => {
+    const pool = [...clean, ...DIRTY_CARRIERS];
+    const certs = pool.map((c) =>
+      certifyCarrier(c.id, carrierText(c), {
+        ir: IR,
+        supplementarySweeps: [{ id: FORMAT_SPEC_SWEEP_ID, sweep: formatSpecSweep }],
+      }),
+    );
+    const summary = certificationSummary(certs);
+    const circ = summary.circularity!;
+    expect(summary.invariantScope).toContain("CIRCULARITY");
+    expect(summary.invariantScope).not.toContain("UNMEASURED");
+    // The numbers in the sentence are the numbers in the block, not a second
+    // count that could drift from it.
+    expect(summary.invariantScope).toContain(`${circ.stage1Only.length} carrier(s) quarantined by stage 1 alone`);
+    expect(summary.invariantScope).toContain(`${circ.both.length} by both`);
+    expect(summary.invariantScope).toContain(`${circ.independentOnly.length} by the independent sweep alone`);
+    // And the split is real: the dirty carriers were caught, by both sweeps.
+    expect(circ.both.length).toBeGreaterThan(0);
   });
 });

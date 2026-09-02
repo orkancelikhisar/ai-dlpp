@@ -11,8 +11,10 @@ import {
   CARRIER_VERDICTS,
   adjudicationSweep,
   agreementReport,
+  blindnessAudit,
   isAdmitted,
   type AgreementReport,
+  type BlindnessAudit,
 } from "./adjudication.js";
 import { IR_PATH, OUT_DIR, SELFTEST_PATH, loadSelfTestExamples } from "./build.js";
 import { OFFERED_CARRIERS, verifyOrRefuse, type VerificationReport } from "./build-adjudicated.js";
@@ -262,6 +264,7 @@ export interface V2Manifest extends CorpusManifest {
     readonly round: typeof ADJUDICATION_ROUND;
     readonly admissionRule: string;
     readonly agreement: AgreementReport;
+    readonly blindness: BlindnessAudit;
     readonly admitted: readonly string[];
   };
   readonly verification: VerificationReport;
@@ -398,6 +401,10 @@ export function buildV2Artifacts(seed: string = V2_SEED): BuiltV2Artifacts {
       round: ADJUDICATION_ROUND,
       admissionRule: ADMISSION_RULE,
       agreement: agreementReport(),
+      // Per-channel, and it comes back with one channel unaudited. Hoisted out
+      // of `round.blindness` so the answer is a field a reader can look at
+      // rather than a paragraph they have to find.
+      blindness: blindnessAudit(),
       admitted: ADMITTED_CARRIER_IDS,
     },
     verification,
@@ -421,6 +428,10 @@ export function buildV2Artifacts(seed: string = V2_SEED): BuiltV2Artifacts {
         "and each span carries its own question in the queue.",
       "THE ADJUDICATION ROUND THAT ADMITTED THE CARRIERS WAS NOT BLIND OF THE AUTHORING INTENT. See " +
         "adjudication.round.blindness.breaches. Nothing about that changed this round.",
+      "THE TOLD CHANNEL OF THAT ROUND IS UNAUDITED. The blindness record checked what each certifier " +
+        "READ and never what they were TOLD; no verbatim brief was retained, so nothing can rule out " +
+        "answer-bearing framing in the instruction itself. adjudication.blindness names both channels " +
+        "and marks this one unaudited rather than clean.",
     ],
     artifact: {
       corpusSha256: createHash("sha256").update(corpusJsonl, "utf8").digest("hex"),

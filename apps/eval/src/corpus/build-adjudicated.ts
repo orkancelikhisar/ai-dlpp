@@ -11,9 +11,11 @@ import {
   CARRIER_VERDICTS,
   adjudicationSweep,
   agreementReport,
+  blindnessAudit,
   isAdmitted,
   refusalFor,
   type AgreementReport,
+  type BlindnessAudit,
 } from "./adjudication.js";
 import { IR_PATH, OUT_DIR, loadSelfTestExamples } from "./build.js";
 import { ALL_CARRIERS } from "./carriers.js";
@@ -131,7 +133,13 @@ export interface VerificationReport {
   readonly checks: readonly string[];
 }
 
-const VERIFICATION_CHECKS: readonly string[] = [
+/**
+ * Exported so a test can pin the list itself. An advertised check with no test
+ * is worse than an unadvertised one -- it is a claim in a committed manifest
+ * that nothing holds up -- and `corpus-adjudicated.test.ts` now asserts one
+ * refusal per entry here.
+ */
+export const VERIFICATION_CHECKS: readonly string[] = [
   "every gold span: end <= text.length and text.slice(start, end) === span.text",
   "every gold span is one the generator wrote: matched 1:1 against meta.injections by offset AND " +
     "by type, never by searching the text for the value",
@@ -256,6 +264,7 @@ export interface AdjudicationManifestBlock {
   readonly round: typeof ADJUDICATION_ROUND;
   readonly admissionRule: string;
   readonly agreement: AgreementReport;
+  readonly blindness: BlindnessAudit;
   readonly counts: {
     readonly adjudicated: number;
     readonly admitted: number;
@@ -358,6 +367,9 @@ export function buildAdjudicatedArtifacts(seed: string = ADJUDICATED_SEED): Buil
       round: ADJUDICATION_ROUND,
       admissionRule: ADMISSION_RULE,
       agreement: agreementReport(),
+      // One channel per route by which the answer could reach a certifier. It
+      // comes back with `told` unaudited; see adjudication.ts.
+      blindness: blindnessAudit(),
       counts: {
         adjudicated: CARRIER_VERDICTS.length,
         admitted: ADMITTED_CARRIER_IDS.length,
@@ -406,6 +418,9 @@ export function buildAdjudicatedArtifacts(seed: string = ADJUDICATED_SEED): Buil
       "THE ADJUDICATION ROUND WAS NOT BLIND OF THE AUTHORING INTENT. Both certifiers read the " +
         "carrier file, whose header comment names which carriers were written to fail and which " +
         "one is contestable. See adjudication.round.blindness.breaches.",
+      "THE TOLD CHANNEL OF THAT ROUND IS UNAUDITED. The blindness record checked the files each " +
+        "certifier READ and never the brief each was TOLD, and no verbatim brief was retained. " +
+        "adjudication.blindness lists both channels and marks this one unaudited, not clean.",
     ],
     artifact: {
       corpusSha256: createHash("sha256").update(corpusJsonl, "utf8").digest("hex"),

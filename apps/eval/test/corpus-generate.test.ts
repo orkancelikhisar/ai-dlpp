@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { loadPolicyIr, runTier0, segmentText, type PolicyIr } from "@sih/core";
 import { loadCorpus } from "../src/driver/corpus.js";
 import { buildArtifacts, loadSelfTestExamples } from "../src/corpus/build.js";
-import { CLEAN_CARRIERS, DIRTY_CARRIERS, carrierSlots, carrierText, slotPosition } from "../src/corpus/carriers.js";
+import { ALL_CARRIERS, CLEAN_CARRIERS, DIRTY_CARRIERS, carrierSlots, carrierText, slotPosition } from "../src/corpus/carriers.js";
 import { CONFUSABLE_FAMILIES, POSITIVE_FAMILIES } from "../src/corpus/families.js";
-import { DEFAULT_SEED, generateCorpus, serializeCorpus } from "../src/corpus/generate.js";
+import { DEFAULT_SEED, assertUniqueCarrierIds, generateCorpus, serializeCorpus } from "../src/corpus/generate.js";
 import { isIrBacked } from "../src/corpus/labels.js";
 import { CLIENT_ORGS, FIRM, NON_CLIENT_ORGS } from "../src/corpus/universe.js";
 
@@ -309,17 +309,25 @@ describe("the manifest states fact, not intent", () => {
     expect(manifest.contamination.taggedSources).toEqual([{ corpusTag: "selftest-v1", examples: 280 }]);
     expect(manifest.contamination.dropped).toEqual([]);
     expect(manifest.contamination.unscoreable).toEqual([]);
-    // 263 of the 723 examples are one-line fragments under 8 tokens, so the
-    // check is structurally blind to 36% of what it is checking against. That
-    // is reported, not hidden inside a passing zero.
-    expect(manifest.contamination.examplesUnscoreable).toBe(263);
-    // The check found nothing, and the reason is headroom rather than a check
-    // that cannot fire: the highest score any kept item reached is reported,
-    // and corpus-contamination.test.ts drops a deliberately copied item.
-    // MEASURED: exactly 0. No emitted item shares a single 8-gram with any
-    // self-test example, which is what a hand-authored carrier pool about
-    // operational chat versus a generated identifier corpus should look like.
+    // This number used to be 263 -- every example under 8 tokens, 36% of the
+    // corpus the check exists to compare against, invisible to it. 148 of those
+    // are now matched at their own length and 115 remain below
+    // MIN_EXAMPLE_TOKENS, where they are `key value` fragments rather than
+    // phrasing and leakage.ts checks the value channel instead.
+    expect(manifest.contamination.examplesUnscoreable).toBe(115);
+    expect(manifest.contamination.examplesScoredAtOwnLength).toBe(148);
+    // MEASURED: exactly 0, over 154 items that were actually compared --
+    // itemsKept is what separates that from a zero measured over nothing.
     expect(manifest.contamination.maxScoreKept).toBe(0);
+    expect(manifest.contamination.itemsKept).toBe(items.length);
+    // And the zero is not the whole story, which is why phraseOverlap is beside
+    // it: 11 of these items share a five-token sentence stem with the compiler
+    // self-test corpus, at an 8-gram containment of 0.000.
+    expect(manifest.contamination.phraseOverlap.maxRunTokens).toBe(5);
+    expect(manifest.contamination.phraseOverlap.worst).toHaveLength(11);
+    expect(new Set(manifest.contamination.phraseOverlap.worst.map((w) => w.phrase))).toEqual(
+      new Set(["the servicing console shows cif", "the permanent account number on"]),
+    );
   });
 
   it("counts what it emitted", () => {
@@ -351,5 +359,126 @@ describe("carriers", () => {
 
   it("offer every family a distinct value generator", () => {
     expect(new Set([...POSITIVE_FAMILIES, ...CONFUSABLE_FAMILIES].map((f) => f.id)).size).toBe(24);
+  });
+});
+
+describe("the contamination check is ENFORCED, not merely computed", () => {
+  /**
+   * The two lines that act on `checkContamination`'s result -- building the
+   * dropped-id set and filtering `planned` by it -- had no test. The report was
+   * asserted; the drop was not. So the check could compute a perfect answer and
+   * the generator could emit the contaminated item anyway, with a manifest
+   * saying it had been dropped.
+   *
+   * The probe: generate once against no examples, then again with one of the
+   * generator's OWN item texts standing in as a self-test example. Nothing
+   * about the corpus changes except that one item is now contaminated by
+   * construction, which is the only way to be sure the item that disappears
+   * disappeared for this reason.
+   */
+  const base = {
+    ir: IR,
+    irSource: "policies/compiled/p-fin.ir.json",
+    irHash: "probe",
+    carriers: CLEAN_CARRIERS.slice(0, 3),
+  } as const;
+  const clean = generateCorpus({ ...base, selfTestExamples: [] });
+  const victim = clean.items[4]!;
+  const dirty = generateCorpus({
+    ...base,
+    selfTestExamples: [{ sourceId: "probe-source", index: 0, text: victim.text }],
+  });
+  const droppedIds = dirty.manifest.contamination.dropped.map((d) => d.itemId);
+
+  it("names the victim, and only items from the victim's own carrier", () => {
+    expect(clean.manifest.contamination.dropped).toEqual([]);
+    expect(droppedIds).toContain(victim.id);
+    // The pristine negative for the same carrier goes too, and correctly: it is
+    // the carrier text alone, which the victim contains in full, so its own
+    // grams are wholly inside the example. Every other carrier is untouched.
+    const victimCarrier = victim.meta!["carrierId"];
+    for (const id of droppedIds) {
+      const item = clean.items.find((i) => i.id === id)!;
+      expect([id, item.meta!["carrierId"]]).toEqual([id, victimCarrier]);
+    }
+    expect(dirty.manifest.contamination.dropped.find((d) => d.itemId === victim.id)).toMatchObject({
+      score: 1,
+      sourceId: "probe-source",
+    });
+  });
+
+  it("removes exactly the named items from the emitted corpus", () => {
+    expect(clean.items.map((i) => i.id)).toContain(victim.id);
+    const survivors = dirty.items.map((i) => i.id);
+    expect(survivors).not.toContain(victim.id);
+    expect(survivors).toEqual(clean.items.map((i) => i.id).filter((id) => !droppedIds.includes(id)));
+    expect(droppedIds.length).toBeLessThan(clean.items.length);
+  });
+
+  it("removes them from the counts, the gold and the splits too", () => {
+    // A drop that only reached `items` would leave the manifest describing a
+    // corpus larger than the file.
+    const droppedItems = clean.items.filter((i) => droppedIds.includes(i.id));
+    expect(dirty.manifest.counts.items).toBe(clean.manifest.counts.items - droppedItems.length);
+    expect(dirty.manifest.counts.goldSpans).toBe(
+      clean.manifest.counts.goldSpans - droppedItems.reduce((n, i) => n + i.gold.length, 0),
+    );
+    for (const id of droppedIds) {
+      expect([id, dirty.manifest.splits.dev.includes(id) || dirty.manifest.splits.test.includes(id)]).toEqual([
+        id,
+        false,
+      ]);
+    }
+    expect(dirty.manifest.splits.dev.length + dirty.manifest.splits.test.length).toBe(dirty.items.length);
+    expect(dirty.manifest.injection.itemsChecked).toBe(dirty.items.length);
+  });
+
+  it("leaves every other carrier's items alone, so the filter is not a blanket refusal", () => {
+    const survivors = new Set(dirty.items.map((i) => i.id));
+    const victimCarrier = victim.meta!["carrierId"];
+    let checked = 0;
+    for (const item of clean.items) {
+      if (item.meta!["carrierId"] === victimCarrier) continue;
+      expect([item.id, survivors.has(item.id)]).toEqual([item.id, true]);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe("carrier ids are unique across the offered pool", () => {
+  // The pool is built by concatenating hand-authored modules that do not import
+  // each other, and certifications are resolved by id through a Map -- which
+  // keeps the LAST entry for a repeated key. A duplicate would hand one
+  // carrier's certification to another and collide their item ids, silently.
+  const carrier = CLEAN_CARRIERS[0]!;
+
+  it("throws on a repeat rather than resolving it to whichever came last", () => {
+    expect(() => assertUniqueCarrierIds([carrier, CLEAN_CARRIERS[1]!, carrier])).toThrowError(
+      new RegExp(`repeated: ${carrier.id}`),
+    );
+  });
+
+  it("names every repeated id once, not the first it meets", () => {
+    const other = CLEAN_CARRIERS[1]!;
+    expect(() => assertUniqueCarrierIds([carrier, other, carrier, other, other])).toThrowError(
+      new RegExp(`repeated: ${carrier.id}, ${other.id}`),
+    );
+  });
+
+  it("accepts the real pool, so the check is not stuck shut", () => {
+    expect(() => assertUniqueCarrierIds(ALL_CARRIERS)).not.toThrow();
+  });
+
+  it("stops the generator before anything is certified", () => {
+    expect(() =>
+      generateCorpus({
+        ir: IR,
+        irSource: "p",
+        irHash: "p",
+        carriers: [carrier, carrier],
+        selfTestExamples: [],
+      }),
+    ).toThrowError(/carrier ids must be unique/);
   });
 });

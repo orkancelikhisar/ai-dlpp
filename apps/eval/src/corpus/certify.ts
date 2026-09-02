@@ -340,7 +340,8 @@ export interface CertificationSummary {
   /**
    * The word a reader will quote. Derived from the stage results by
    * `certificationSummary`; there is no setter and no argument that can make it
-   * say "CERTIFIED" while a stage is unrun.
+   * say "CERTIFIED" while a stage is unrun -- nor, since the vacuous case was
+   * found, while there is no carrier to certify.
    */
   readonly claim: "CERTIFIED" | "NOT CERTIFIED";
   readonly stagesRun: readonly StageId[];
@@ -378,7 +379,45 @@ export interface CertificationSummary {
   };
 }
 
+/**
+ * What every stage is blocked on when NOTHING was submitted. Not
+ * `UNRUN_STAGES`: that table explains why a stage did not run for a carrier,
+ * and "unreachable: the tier-0 sweep is always supplied" is a false sentence
+ * about a pool with no carriers in it.
+ */
+const VACUOUS_BLOCKER = {
+  blockedOn: "at least one carrier",
+  why:
+    "certificationSummary was called with an empty certification list, so no stage ran on anything " +
+    "and no carrier was cleared. Every stage is unrun here for that reason and not for the reason " +
+    "UNRUN_STAGES gives.",
+} as const;
+
+/**
+ * The vacuous summary. Split out and returned before any counting, because the
+ * general path derives `allStagesRan` from `stagesUnrun.size === 0` and an empty
+ * input makes that set empty for the wrong reason: with no carrier there is no
+ * stage result saying `ran: false`, so the general path concluded all three
+ * stages ran, found `certifiedClear === total` at 0 === 0, and returned
+ * `claim: "CERTIFIED"` with `stagesRun: []`. A gate whose job is to refuse
+ * cannot have "nothing was submitted" as its most permissive input.
+ */
+function vacuousSummary(): CertificationSummary {
+  return {
+    claim: "NOT CERTIFIED",
+    stagesRun: [],
+    stagesUnrun: CERTIFICATION_STAGES.map((stage) => ({ stage, ...VACUOUS_BLOCKER })),
+    supplementarySweepsRun: [],
+    carriers: { total: 0, certifiedClear: 0, provisionalClear: 0, quarantined: 0 },
+    quarantined: [],
+    invariantScope:
+      "no carrier was submitted for certification, so the spec 6.2 invariant is established for " +
+      "nothing. This is not a clean pool; it is an empty one.",
+  };
+}
+
 export function certificationSummary(certs: readonly CarrierCertification[]): CertificationSummary {
+  if (certs.length === 0) return vacuousSummary();
   const stagesUnrun = new Map<StageId, { stage: StageId; blockedOn: string; why: string }>();
   const stagesRun = new Set<StageId>();
   const supplementarySweepsRun = new Set<string>();
@@ -425,12 +464,30 @@ export function certificationSummary(certs: readonly CarrierCertification[]): Ce
     quarantined: certs
       .filter((c) => c.status === "quarantined")
       .map((c) => ({ carrierId: c.carrierId, hits: c.hits })),
-    invariantScope: allStagesRan
-      ? "all three spec 6.2 stages ran; gold spans on positives are the injected spans"
-      : "stage 1 only: the injection invariant is established for tier-0 entity classes. " +
-        "A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no " +
-        "stage that ran can see, so a finding of those classes outside a gold span is not " +
-        "provably a false positive.",
+    invariantScope:
+      (allStagesRan
+        ? "all three spec 6.2 stages ran; gold spans on positives are the injected spans. "
+        : "stage 1 only: the injection invariant is established for tier-0 entity classes. " +
+          "A carrier may still carry an uninjected tier-1 name or a tier-2 relationship that no " +
+          "stage that ran can see, so a finding of those classes outside a gold span is not " +
+          "provably a false positive. ") +
+      // The circularity, stated here rather than only in `circularity`, because
+      // this is the sentence a reader quotes. It is the same objection this
+      // module raises against standing @sih/tier1 in for stage 2 -- tier 1 is an
+      // arm under test -- and stage 1 runs runTier0 over a widened copy of the
+      // scoring IR, so it is an arm under test too. Spec 6.2 prescribes stage 1
+      // in those words, so it is not replaced; it is disclosed and measured.
+      "CIRCULARITY: stage 1 is @sih/core runTier0 over maxRecallIr(ir) -- the tier-0 arm under " +
+      "test, widened, run against a widened copy of the very IR the corpus is scored under. The " +
+      "carriers that survive it are the carriers that arm is silent on, chosen by that arm, so " +
+      "the negatives are easy for it by construction. " +
+      (circularity === undefined
+        ? "No IR-free sweep ran beside it here, so the size of that bias is UNMEASURED in this " +
+          "corpus; see format-sweep.ts for the sweep that measures it."
+        : `Measured against the IR-free ${circularity.independentSweep}: ` +
+          `${circularity.stage1Only.length} carrier(s) quarantined by stage 1 alone, ` +
+          `${circularity.both.length} by both, ${circularity.independentOnly.length} by the ` +
+          `independent sweep alone.`),
     ...(circularity === undefined ? {} : { circularity }),
   };
 }

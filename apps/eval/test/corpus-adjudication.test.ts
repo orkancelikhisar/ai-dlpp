@@ -3,10 +3,12 @@ import {
   ADJUDICATION_ROUND,
   ADJUDICATION_SWEEP_ID,
   ADMITTED_CARRIER_IDS,
+  BLINDNESS_CHANNELS,
   CARRIER_VERDICTS,
   adjudicationSweep,
   agreementOn,
   agreementReport,
+  blindnessAudit,
   isAdmitted,
   refusalFor,
   refusalForVerdicts,
@@ -218,5 +220,72 @@ describe("the sweep", () => {
     // from the text would be a second, fallible claim.
     expect(adjudicationSweep(textOf("o01"), "hn01")).toHaveLength(1);
     expect(adjudicationSweep(textOf("hn01"), "o01")).toEqual([]);
+  });
+});
+
+describe("the blindness audit covers both channels, not only what was read", () => {
+  /**
+   * The defect: `blindness.verified` audited `filesRead` and nothing else. What
+   * an annotator is TOLD is the other route to the answer, and it leaves no
+   * trace in a file list -- a brief saying "four of these were written to fail"
+   * produces a spotless `filesRead` and a worthless round.
+   */
+  const audit = blindnessAudit();
+
+  it("names every channel, so one cannot be dropped by being unmentioned", () => {
+    expect(audit.channels.map((c) => c.channel)).toEqual([...BLINDNESS_CHANNELS]);
+  });
+
+  it("gives every channel both evidence and a stated gap", () => {
+    for (const channel of audit.channels) {
+      expect([channel.channel, channel.what.length > 0]).toEqual([channel.channel, true]);
+      expect([channel.channel, channel.evidence.length > 0]).toEqual([channel.channel, true]);
+      // A channel with no gap would be a claim of perfect blindness, which no
+      // round in this repository can make.
+      expect([channel.channel, channel.gap.length > 0]).toEqual([channel.channel, true]);
+    }
+  });
+
+  it("marks the told channel UNAUDITED rather than assuming it clean", () => {
+    expect(audit.unaudited).toEqual(["told"]);
+    const told = audit.channels.find((c) => c.channel === "told")!;
+    expect(told.audited).toBe(false);
+    expect(told.gap).toContain("NO VERBATIM BRIEF WAS RETAINED");
+    expect(audit.note).toContain("told");
+  });
+
+  it("still records what the read channel was checked against", () => {
+    const read = audit.channels.find((c) => c.channel === "read")!;
+    expect(read.audited).toBe(true);
+    expect(read.evidence).toContain("filesRead");
+    // Self-reported, and said so: this repository has no independent record of
+    // file access to check either list against.
+    expect(read.gap).toContain("self-reported");
+  });
+
+  it("refuses to report an audit that omits a channel", () => {
+    // The function derives its channels from the record; if that record ever
+    // loses one, the audit must fail rather than quietly cover less.
+    const round = ADJUDICATION_ROUND as unknown as { blindness: { channels: unknown[] } };
+    const saved = round.blindness.channels;
+    round.blindness.channels = saved.filter((c) => (c as { channel: string }).channel !== "told");
+    try {
+      expect(() => blindnessAudit()).toThrowError(/but not told/);
+    } finally {
+      round.blindness.channels = saved;
+    }
+    expect(blindnessAudit().channels).toHaveLength(BLINDNESS_CHANNELS.length);
+  });
+
+  it("keeps the told channel's evidence consistent with the notes it cites", () => {
+    // The gap cites what each certifier's own note says. Those notes are in the
+    // record; the citation is checked against them rather than trusted.
+    expect(ADJUDICATION_ROUND.notes.A).toContain("Scope: the 32 wave-2 carriers");
+    expect(ADJUDICATION_ROUND.notes.B).toContain("Read policies/p-fin.md and the wave-2 carrier file only");
+    expect(ADJUDICATION_ROUND.notes.A).toContain("16 ordinary carriers");
+    expect(ADJUDICATION_ROUND.notes.B).toContain("the d0* carriers were written to fail");
+    const told = audit.channels.find((c) => c.channel === "told")!;
+    expect(told.evidence).toContain("Scope: the 32 wave-2 carriers");
+    expect(told.gap).toContain("the d0* carriers were written to fail");
   });
 });

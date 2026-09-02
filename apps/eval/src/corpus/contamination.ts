@@ -39,10 +39,74 @@
  * containment -- 0/0. Such an item is reported in `unscoreable`, NOT scored as
  * 0 and quietly kept. Scoring it 0 would be an assertion that it is
  * uncontaminated, which is precisely what an empty-set division cannot support.
- */
+ *
+ * ## EXAMPLES too short to score, and why a fixed n was the defect
+ *
+ * The same arithmetic runs the other way and it is where this check was found
+ * broken. A self-test example shorter than 8 tokens has no 8-gram either, so an
+ * item that copied one VERBATIM used to pass. MEASURED over this repository's
+ * 723 examples: 263 (36.4%) are under 8 word tokens, so more than a third of
+ * the corpus the check exists to compare against was invisible to it.
+ *
+ * The fix is `n = min(NGRAM_N, exampleTokens)`: an example is matched at its own
+ * length when it is shorter than 8. It can only ADD drops, and for a precise
+ * reason rather than an intuition: for an example of 8 tokens or more nothing
+ * changes at all, and for a shorter one the old rule made NO comparison -- an
+ * empty gram set has no containment -- so anything the new rule finds is a pair
+ * that previously went unjudged. It costs the check nothing on the three
+ * committed corpora (MEASURED: zero additional drops on each).
+ *
+ * `MIN_EXAMPLE_TOKENS` is the floor, and it is not tuned. MEASURED: every
+ * example under 3 tokens in this repository is a value rather than phrasing --
+ * 114 are two-token `key value` config fragments whose second token is the
+ * identifier ("pan_number mklpd7264v", "encoding utf-8"), and the single
+ * one-token case is a bare `redis://...` connection string. Matching on one
+ * would drop an item for containing one word. Value-level contamination is a different
+ * check and it already runs: `leakage.ts` searches the compiler self-test text
+ * for every minted span value, and `corpus-v2.test.ts` asserts it finds none.
+ * 115 of 723 examples sit under the floor and are reported, not scored.
+ *
+ * ## Why a zero here is not evidence of no copying, and what is reported instead
+ *
+ * All three committed corpora score 0.000 -- no item shares a single 8-gram with
+ * any example. That number is true and it is nearly uninformative, for a reason
+ * that is arithmetic rather than empirical: a short example's identifier sits in
+ * the middle of it, so EVERY 8-gram window of that example contains the
+ * identifier, and an 8-gram match therefore requires the item to reproduce a
+ * self-test identifier verbatim -- which `leakage.ts` separately proves it never
+ * does. MEASURED: of the 460 examples that have at least one 8-gram, 300 (65.2%)
+ * have no 8-gram free of a digit-bearing token.
+ *
+ * So the copying that IS present is invisible to the ratio. MEASURED
+ * independently of this module, by longest common contiguous token run over
+ * every (item, example) pair: `corpora/generated/injection-p-fin-v2.jsonl`
+ * shares a 5-token run with `policies/compiled/p-fin.selftest.json` on 5 of its
+ * 189 items, over exactly two phrases -- "the servicing console shows cif" and
+ * "the permanent account number on". Both are sentence stems the corpus
+ * generator and the compiler's self-test generator arrived at independently or
+ * copied; spec 6.2 asks the two generators to use "different prompt templates
+ * and seeds", and a shared 5-token stem is the closest thing to a violation of
+ * that this repository has.
+ *
+ * `phraseOverlap` reports that distribution in full. It is REPORTED and not
+ * dropped on: 5 shared tokens out of a 75-token item is not ">0.7 8-gram
+ * overlap" under any reading, and inventing a run-length gate to make the
+ * number look acted-on would be tuning the check to the data it was pointed at.
+  */
 
 export const NGRAM_N = 8;
 export const OVERLAP_DROP_THRESHOLD = 0.7;
+/**
+ * An example shorter than this is a value, not phrasing, and is reported as
+ * unscoreable instead of matched. See the module header for the measurement.
+ */
+export const MIN_EXAMPLE_TOKENS = 3;
+/**
+ * Longest shared run `phraseOverlap` will look for. A bound on the work, not a
+ * judgement: no example in this repository exceeds 14 tokens, so nothing is
+ * truncated by it today.
+ */
+export const MAX_PHRASE_RUN_TOKENS = 24;
 
 /**
  * Word tokens, lowercased, punctuation stripped from the edges. Deliberately
@@ -122,33 +186,135 @@ export interface ContaminationDrop {
   readonly example: string;
 }
 
+export interface PhraseRun {
+  readonly itemId: string;
+  /** Length of the shared run, in word tokens. */
+  readonly tokens: number;
+  /** The shared run itself, tokenized and rejoined by single spaces. */
+  readonly phrase: string;
+  readonly sourceId: string;
+  readonly exampleIndex: number;
+}
+
+/**
+ * The overlap the RATIO cannot see: longest contiguous run of word tokens each
+ * item shares with any example, with no n and no threshold anywhere in it.
+ *
+ * It exists because `maxScoreKept: 0` was being read as "these corpora share no
+ * phrasing with the compiler's self-test corpus", and that reading is false.
+ * See the module header for the arithmetic that makes the ratio blind here.
+ */
+export interface PhraseOverlapReport {
+  /** Longest run shared by any item with any example. 0 when nothing is shared. */
+  readonly maxRunTokens: number;
+  /**
+   * How many items have each longest-run length. An array and not an object
+   * keyed by number: `JSON.stringify` hoists integer-like keys to the front in
+   * numeric order whatever the insertion order was, and every other accumulated
+   * key set in this pipeline is a sorted id for exactly that reason.
+   */
+  readonly histogram: readonly { readonly tokens: number; readonly items: number }[];
+  /** Every item tied at `maxRunTokens`. Not a top-k: the cut is the maximum itself. */
+  readonly worst: readonly PhraseRun[];
+  readonly note: string;
+}
+
 export interface ContaminationReport {
   readonly n: number;
   readonly threshold: number;
+  /** Below this an example is a value, not phrasing, and is not scored at all. */
+  readonly minExampleTokens: number;
   readonly sources: readonly { readonly sourceId: string; readonly examples: number }[];
   readonly taggedSources: readonly { readonly corpusTag: string; readonly examples: number }[];
   readonly itemsChecked: number;
+  /** Items that were scored and survived. A `maxScoreKept` of 0 with 0 here is vacuous. */
+  readonly itemsKept: number;
   readonly dropped: readonly ContaminationDrop[];
   /** Items with fewer than `n` tokens: no 8-gram exists, so none was scored. */
   readonly unscoreable: readonly { readonly itemId: string; readonly tokens: number }[];
   /**
-   * Self-test EXAMPLES too short to carry an 8-gram, and therefore invisible to
-   * this check no matter what an item does.
+   * Self-test EXAMPLES below `minExampleTokens`, which are not matched against
+   * at all. MEASURED over this repository's 723 examples: 115, every one of
+   * them a `key value` config fragment. Value-level contamination against the
+   * same sources is `leakage.ts`'s job and it runs.
    *
-   * MEASURED over this repository's sources: 86 of the 280 cases in
-   * `policies/compiled/p-fin.selftest.json` are under 8 word tokens
-   * ("pan_number: MKLPD7264V", "customer_pan=NPZAK8329R"), i.e. 31% of that
-   * corpus cannot be matched against at all. An item that copied one of them
-   * verbatim would pass. That is a property of n = 8 and not a bug to fix by
-   * lowering n -- a 3-gram check over one-line config fragments would drop
-   * honest items by the dozen -- so it is reported instead, and it is exactly
-   * the hole `selftest.ts`'s own comment asks the `corpusTag` provenance rule to
-   * cover.
+   * This number used to be 263 -- every example under 8 tokens -- because the
+   * check scored every example at a fixed n = 8. That was the defect; see the
+   * module header.
    */
   readonly examplesUnscoreable: number;
+  /**
+   * Examples scored at their own length because they are shorter than `n`.
+   * These are exactly the ones a fixed n = 8 could not see.
+   */
+  readonly examplesScoredAtOwnLength: number;
+  /**
+   * Of the examples that carry at least one full-length `n`-gram, how many have
+   * NO `n`-gram free of a digit-bearing token. Such an example can only be
+   * matched by an item that reproduces its identifier verbatim, so it bounds
+   * what a score of 0 is worth. MEASURED here: 300 of 460.
+   */
+  readonly examplesMatchableOnlyThroughTheirOwnIdentifier: number;
   /** The highest score among items that were kept. The headroom to the threshold. */
   readonly maxScoreKept: number;
+  readonly phraseOverlap: PhraseOverlapReport;
   readonly note: string;
+}
+
+/**
+ * Grams of an example, at `min(n, tokens.length)` so that an example shorter
+ * than `n` is matched at its own length instead of not at all. Returns an empty
+ * set below `MIN_EXAMPLE_TOKENS`, which is the one case that stays unscoreable.
+ */
+export function exampleNgrams(tokens: readonly string[], n: number = NGRAM_N): Set<string> {
+  if (tokens.length < MIN_EXAMPLE_TOKENS) return new Set();
+  return ngrams(tokens, Math.min(n, tokens.length));
+}
+
+/**
+ * Every contiguous token run of every example, indexed by run length, so the
+ * per-item scan below is a map lookup and not a rescan of the example set.
+ * Built once per `checkContamination` call: rebuilding it inside the item loop
+ * made the whole test suite visibly slower for no change in the answer.
+ */
+export function buildRunIndex(
+  exampleTokens: readonly (readonly string[])[],
+  max: number = MAX_PHRASE_RUN_TOKENS,
+): readonly ReadonlyMap<string, number>[] {
+  const ceiling = Math.min(max, Math.max(0, ...exampleTokens.map((t) => t.length)));
+  const index: Map<string, number>[] = [];
+  for (let k = 1; k <= ceiling; k += 1) {
+    const m = new Map<string, number>();
+    for (let ei = 0; ei < exampleTokens.length; ei += 1) {
+      const t = exampleTokens[ei]!;
+      for (let i = 0; i + k <= t.length; i += 1) {
+        const gram = t.slice(i, i + k).join(" ");
+        if (!m.has(gram)) m.set(gram, ei);
+      }
+    }
+    index.push(m);
+  }
+  return index;
+}
+
+/**
+ * Longest contiguous token run this item shares with any example, and which
+ * example. Scans from the longest candidate down and stops at the first hit, so
+ * the answer is the maximum and not a sample of it.
+ */
+export function longestSharedRun(
+  index: readonly ReadonlyMap<string, number>[],
+  itemTokens: readonly string[],
+): { tokens: number; phrase: string; exampleIndex: number } | undefined {
+  for (let k = Math.min(index.length, itemTokens.length); k >= 1; k -= 1) {
+    const m = index[k - 1]!;
+    for (let i = 0; i + k <= itemTokens.length; i += 1) {
+      const gram = itemTokens.slice(i, i + k).join(" ");
+      const ei = m.get(gram);
+      if (ei !== undefined) return { tokens: k, phrase: gram, exampleIndex: ei };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -161,7 +327,9 @@ export function checkContamination(
   examples: readonly SelfTestExample[],
   threshold: number = OVERLAP_DROP_THRESHOLD,
 ): ContaminationReport {
-  const exampleGrams = examples.map((e) => ngrams(tokenize(e.text)));
+  const exampleTokens = examples.map((e) => tokenize(e.text));
+  const exampleGrams = exampleTokens.map((t) => exampleNgrams(t));
+  const runIndex = buildRunIndex(exampleTokens);
   const sources = new Map<string, number>();
   const tagged = new Map<string, number>();
   for (const e of examples) {
@@ -170,21 +338,60 @@ export function checkContamination(
   }
 
   const examplesUnscoreable = exampleGrams.filter((g) => g.size === 0).length;
+  const examplesScoredAtOwnLength = exampleTokens.filter(
+    (t) => t.length >= MIN_EXAMPLE_TOKENS && t.length < NGRAM_N,
+  ).length;
+  // The reach bound: an example whose every full-length gram carries a digit
+  // can only be matched by an item that reproduces its identifier.
+  let examplesMatchableOnlyThroughTheirOwnIdentifier = 0;
+  for (const t of exampleTokens) {
+    if (t.length < NGRAM_N) continue;
+    const full = ngrams(t);
+    if (full.size === 0) continue;
+    if (![...full].some((g) => !/[0-9]/.test(g))) examplesMatchableOnlyThroughTheirOwnIdentifier += 1;
+  }
+
+  // Grams of an example are cut at the example's own length when it is short,
+  // so the ITEM's grams have to be cut at the same length to be comparable at
+  // all -- a 6-gram string is never equal to an 8-gram string. Found by the
+  // verbatim-copy test in corpus-contamination.test.ts, which reported zero
+  // drops until the item side was cut per pair.
+  const exampleN = exampleTokens.map((t) => (t.length < MIN_EXAMPLE_TOKENS ? 0 : Math.min(NGRAM_N, t.length)));
+
   const dropped: ContaminationDrop[] = [];
   const unscoreable: { itemId: string; tokens: number }[] = [];
+  const runs: PhraseRun[] = [];
   let maxScoreKept = 0;
+  let itemsKept = 0;
   for (const item of items) {
     const tokens = tokenize(item.text);
-    const itemGrams = ngrams(tokens);
-    if (itemGrams.size === 0) {
-      unscoreable.push({ itemId: item.id, tokens: tokens.length });
-      continue;
+    const run = longestSharedRun(runIndex, tokens);
+    if (run !== undefined) {
+      const e = examples[run.exampleIndex]!;
+      runs.push({
+        itemId: item.id,
+        tokens: run.tokens,
+        phrase: run.phrase,
+        sourceId: e.sourceId,
+        exampleIndex: e.index,
+      });
     }
+
+    const itemGramsByN = new Map<number, Set<string>>();
     let worst: ContaminationDrop | undefined;
     let best = 0;
+    let comparisons = 0;
     for (let i = 0; i < examples.length; i += 1) {
+      const n = exampleN[i]!;
+      if (n === 0) continue;
+      let itemGrams = itemGramsByN.get(n);
+      if (itemGrams === undefined) {
+        itemGrams = ngrams(tokens, n);
+        itemGramsByN.set(n, itemGrams);
+      }
       const overlap = directionalOverlap(itemGrams, exampleGrams[i]!);
       if (overlap === undefined) continue;
+      comparisons += 1;
       if (overlap.score > best) best = overlap.score;
       if (overlap.score > threshold && (worst === undefined || overlap.score > worst.score)) {
         const e = examples[i]!;
@@ -198,24 +405,55 @@ export function checkContamination(
         };
       }
     }
+    // No comparable example: 0/0 again, and reported rather than scored. An
+    // item shorter than every scoreable example lands here.
+    if (comparisons === 0) {
+      unscoreable.push({ itemId: item.id, tokens: tokens.length });
+      continue;
+    }
     if (worst !== undefined) dropped.push(worst);
-    else if (best > maxScoreKept) maxScoreKept = best;
+    else {
+      itemsKept += 1;
+      if (best > maxScoreKept) maxScoreKept = best;
+    }
   }
+
+  const maxRunTokens = Math.max(0, ...runs.map((r) => r.tokens));
+  const byLength = new Map<number, number>();
+  for (const r of runs) byLength.set(r.tokens, (byLength.get(r.tokens) ?? 0) + 1);
 
   return {
     n: NGRAM_N,
     threshold,
+    minExampleTokens: MIN_EXAMPLE_TOKENS,
     sources: [...sources].map(([sourceId, count]) => ({ sourceId, examples: count })).sort((a, b) => a.sourceId.localeCompare(b.sourceId)),
     taggedSources: [...tagged].map(([corpusTag, count]) => ({ corpusTag, examples: count })).sort((a, b) => a.corpusTag.localeCompare(b.corpusTag)),
     itemsChecked: items.length,
+    itemsKept,
     dropped,
     unscoreable,
     examplesUnscoreable,
+    examplesScoredAtOwnLength,
+    examplesMatchableOnlyThroughTheirOwnIdentifier,
     maxScoreKept,
+    phraseOverlap: {
+      maxRunTokens,
+      histogram: [...byLength].sort((a, b) => a[0] - b[0]).map(([tokens, count]) => ({ tokens, items: count })),
+      worst: runs
+        .filter((r) => r.tokens === maxRunTokens && maxRunTokens > 0)
+        .sort((a, b) => a.itemId.localeCompare(b.itemId)),
+      note:
+        "longest contiguous run of word tokens each item shares with any example. No n and no " +
+        "threshold: it is the measurement the >0.7 8-gram ratio cannot make, reported because a " +
+        "maxScoreKept of 0 was being read as 'shares no phrasing', which it does not mean.",
+    },
     note:
       `score = max(|item n example| / |item|, |item n example| / |example|) over ${NGRAM_N}-grams of ` +
-      `lowercased word tokens; strictly greater than ${threshold} is dropped. See the module header ` +
-      `for why the maximum and not the item-side containment the spec's wording most directly suggests.`,
+      `lowercased word tokens, an example shorter than ${NGRAM_N} tokens matched at its own length ` +
+      `and one shorter than ${MIN_EXAMPLE_TOKENS} not matched at all; strictly greater than ` +
+      `${threshold} is dropped. See the module header for why the maximum and not the item-side ` +
+      `containment the spec's wording most directly suggests, and for why a score of 0 here is a ` +
+      `weaker statement than it looks -- read phraseOverlap beside it.`,
   };
 }
 

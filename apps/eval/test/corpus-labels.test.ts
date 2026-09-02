@@ -86,6 +86,47 @@ describe("the three-policy label", () => {
     expect(label.source).toContain("is not an entityType of this IR");
   });
 
+  describe("the confusable's `none` is DERIVED from the IR, which it used not to be", () => {
+    // The old code returned "none" off the `neg:` prefix alone and never opened
+    // the IR, while its `source` string asserted the type "is not an entityType
+    // of this IR". The docblock called that a derivation. It was not one: the
+    // same answer came back for a type the IR did declare.
+    const declared = `${NEG_PREFIX}declared-by-the-ir`;
+
+    it("throws when the IR declares the type in its actions table", () => {
+      const collided: PolicyIr = {
+        ...IR,
+        actions: { ...IR.actions, default: { ...IR.actions.default, [declared]: "block" } },
+      };
+      expect(() => pFinLabel(collided, declared, "collided.json")).toThrow(/does declare it \(actions.default\)/);
+    });
+
+    it("throws when the IR declares it as an entityType", () => {
+      const first = IR.entityTypes[0]!;
+      const collided: PolicyIr = { ...IR, entityTypes: [...IR.entityTypes, { ...first, id: declared }] };
+      expect(() => pFinLabel(collided, declared, "collided.json")).toThrow(/does declare it \(entityTypes\)/);
+    });
+
+    it("names both tables when both declare it", () => {
+      const first = IR.entityTypes[0]!;
+      const collided: PolicyIr = {
+        ...IR,
+        entityTypes: [...IR.entityTypes, { ...first, id: declared }],
+        actions: { ...IR.actions, default: { ...IR.actions.default, [declared]: "block" } },
+      };
+      expect(() => pFinLabel(collided, declared, "collided.json")).toThrow(
+        /does declare it \(actions.default and entityTypes\)/,
+      );
+    });
+
+    it("still returns none for a type the IR really does not declare, so the check is not stuck shut", () => {
+      const type = `${NEG_PREFIX}swift-bic`;
+      expect(IR.entityTypes.some((e) => e.id === type)).toBe(false);
+      expect(Object.hasOwn(IR.actions.default, type)).toBe(false);
+      expect(pFinLabel(IR, type, IR_SOURCE)).toMatchObject({ action: "none" });
+    });
+  });
+
   it("unpopulatedLabel names the policy it is about", () => {
     const med = unpopulatedLabel("p-med");
     const corp = unpopulatedLabel("p-corp");
