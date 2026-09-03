@@ -1,0 +1,1282 @@
+{
+  "id": "v2-blind-predicate-all-messages-p-fin",
+  "what": "the round that put policies/p-fin.md §3 to all 189 messages of injection-p-fin-v2 and adjudicated two blind annotators' answers into a tier-2 predicate gold set",
+  "policy": "policies/p-fin.md",
+  "predicateId": "client-relationship-disclosure",
+  "artifacts": {
+    "corpus": {
+      "path": "corpora/generated/injection-p-fin-v2.labelled.jsonl",
+      "sha256": "c9f9bde006591baa26da45636a3b0a323672991c63860c4ee03b52c67063b770",
+      "rows": 189
+    },
+    "queue": {
+      "path": "corpora/generated/injection-p-fin-v2.predicate-queue.jsonl",
+      "sha256": "d997715f3c801239d9b24bb95d98d1a4b12e7b7610737ffa5f26a7386d65b78b",
+      "rows": 189
+    },
+    "annotatorA": {
+      "path": "corpora/generated/injection-p-fin-v2.predicate-annotator-a.json",
+      "sha256": "e937e86ce2eecb2a737396330582fc4f47deff03b056356dc81c1e33a3bec984",
+      "rows": 189
+    },
+    "annotatorB": {
+      "path": "corpora/generated/injection-p-fin-v2.predicate-annotator-b.json",
+      "sha256": "15c789d331ff189bd7616b906891c07e7e0386fe0f5467c88574a78155d91ce8",
+      "rows": 189
+    },
+    "gold": {
+      "path": "corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl",
+      "sha256": "bdde9ff0dd0784d574a194109378e9ee4a612dcf91198f1d6738dbea9f08e879",
+      "rows": 189
+    }
+  },
+  "handover": {
+    "rowIdAlgorithm": "HMAC-SHA256(key = salt, message = itemId), lowercase hex, first 16 characters",
+    "shuffleConstraint": "carrier",
+    "saltSha256": "a1f5f288997f05a871115ca35ee81ab237d8968beb0c60bbdc75ae1580db384d",
+    "seedSha256": "3be6ad0f9cade7846f30aac402b3f10bb390505cfad1b4d465196914cba30f3c",
+    "saltAndSeed": "NOT COMMITTED, and the two hashes above are commitments this repository cannot verify. The queue therefore cannot be REGENERATED here; it can be verified, which the mapping below does completely.",
+    "mappingDerivedFrom": "the committed queue and corpus, joined on the message text -- all 189 messages are distinct, so the mapping is a fact about the committed bytes rather than a copy of the emitter's own claim. Publishing it ends this queue's usefulness for any future round, which is intended: the round is over, and an unpublished mapping is what made the previous version of this record uncheckable.",
+    "rows": [
+      {
+        "position": 0,
+        "rowId": "5d50d6ee18d8a67f",
+        "itemId": "inj-o07-2"
+      },
+      {
+        "position": 1,
+        "rowId": "0ffada262df0df90",
+        "itemId": "inj-o05-4"
+      },
+      {
+        "position": 2,
+        "rowId": "ace4338aadddc1ac",
+        "itemId": "inj-o01-5"
+      },
+      {
+        "position": 3,
+        "rowId": "40a0357db9ec358e",
+        "itemId": "inj-o09-2"
+      },
+      {
+        "position": 4,
+        "rowId": "8e295a6ad039806a",
+        "itemId": "inj-o05-0"
+      },
+      {
+        "position": 5,
+        "rowId": "56268229dcb4def8",
+        "itemId": "inj-hn06-1"
+      },
+      {
+        "position": 6,
+        "rowId": "8ce7b8a755ce8ef0",
+        "itemId": "inj-hn04-0"
+      },
+      {
+        "position": 7,
+        "rowId": "4b13efe1f9aacc45",
+        "itemId": "inj-hn10-3"
+      },
+      {
+        "position": 8,
+        "rowId": "c9278a488fd9ccd4",
+        "itemId": "inj-hn02-3"
+      },
+      {
+        "position": 9,
+        "rowId": "97d6d4e23cffcd89",
+        "itemId": "inj-o11-4"
+      },
+      {
+        "position": 10,
+        "rowId": "8c3ed6bf67883836",
+        "itemId": "inj-hn05-4"
+      },
+      {
+        "position": 11,
+        "rowId": "9f3abdd9b94c7835",
+        "itemId": "inj-o06-3"
+      },
+      {
+        "position": 12,
+        "rowId": "7380c59d86554521",
+        "itemId": "inj-o01-0"
+      },
+      {
+        "position": 13,
+        "rowId": "cf8171f787a35e8d",
+        "itemId": "inj-o11-2"
+      },
+      {
+        "position": 14,
+        "rowId": "34633a00c873b8af",
+        "itemId": "inj-hn11-2"
+      },
+      {
+        "position": 15,
+        "rowId": "9c0e8b1afbe76aad",
+        "itemId": "inj-hn06-3"
+      },
+      {
+        "position": 16,
+        "rowId": "71818c5d2d193216",
+        "itemId": "inj-o01-4"
+      },
+      {
+        "position": 17,
+        "rowId": "5990671a0a9e30ef",
+        "itemId": "inj-o16-1"
+      },
+      {
+        "position": 18,
+        "rowId": "1b18ebe1d8704725",
+        "itemId": "inj-o12-0"
+      },
+      {
+        "position": 19,
+        "rowId": "05f17944338235c0",
+        "itemId": "inj-hn10-4"
+      },
+      {
+        "position": 20,
+        "rowId": "2bf314efc4947847",
+        "itemId": "inj-hn07-1"
+      },
+      {
+        "position": 21,
+        "rowId": "8af29d4073676424",
+        "itemId": "inj-o07-5"
+      },
+      {
+        "position": 22,
+        "rowId": "dc75272a63418e57",
+        "itemId": "inj-o05-3"
+      },
+      {
+        "position": 23,
+        "rowId": "bc3ab74e955c7a7b",
+        "itemId": "inj-o01-3"
+      },
+      {
+        "position": 24,
+        "rowId": "45ea55d5164fcd88",
+        "itemId": "inj-hn08-2"
+      },
+      {
+        "position": 25,
+        "rowId": "130f203286ec1a77",
+        "itemId": "inj-o16-4"
+      },
+      {
+        "position": 26,
+        "rowId": "526df1c922074e11",
+        "itemId": "inj-hn11-1"
+      },
+      {
+        "position": 27,
+        "rowId": "a709042beebfb945",
+        "itemId": "inj-o06-4"
+      },
+      {
+        "position": 28,
+        "rowId": "35dedf9d1842984c",
+        "itemId": "inj-o13-0"
+      },
+      {
+        "position": 29,
+        "rowId": "77b02e5506bfe64d",
+        "itemId": "inj-o04-1"
+      },
+      {
+        "position": 30,
+        "rowId": "3daae89972b3db33",
+        "itemId": "inj-hn10-1"
+      },
+      {
+        "position": 31,
+        "rowId": "662ae8ab7086d42c",
+        "itemId": "inj-hn03-5"
+      },
+      {
+        "position": 32,
+        "rowId": "ee58ceeb37839db5",
+        "itemId": "inj-o13-2"
+      },
+      {
+        "position": 33,
+        "rowId": "ad66bd99e667397b",
+        "itemId": "inj-o06-2"
+      },
+      {
+        "position": 34,
+        "rowId": "8d71fad54c4dbd28",
+        "itemId": "neg-hn07"
+      },
+      {
+        "position": 35,
+        "rowId": "d0a1c06d59b09e0f",
+        "itemId": "inj-o08-0"
+      },
+      {
+        "position": 36,
+        "rowId": "f7fd003dd55556d1",
+        "itemId": "inj-hn03-4"
+      },
+      {
+        "position": 37,
+        "rowId": "2b0a1f3cec82cc2c",
+        "itemId": "inj-o11-3"
+      },
+      {
+        "position": 38,
+        "rowId": "a16ef39371964306",
+        "itemId": "inj-o03-2"
+      },
+      {
+        "position": 39,
+        "rowId": "4abb2d69129c4c1d",
+        "itemId": "inj-hn11-0"
+      },
+      {
+        "position": 40,
+        "rowId": "c14cf3f55bfba540",
+        "itemId": "inj-hn04-2"
+      },
+      {
+        "position": 41,
+        "rowId": "a40e7d74bae6529f",
+        "itemId": "neg-o03"
+      },
+      {
+        "position": 42,
+        "rowId": "11888077ed3938f2",
+        "itemId": "neg-hn10"
+      },
+      {
+        "position": 43,
+        "rowId": "51b0286c51583352",
+        "itemId": "inj-hn05-1"
+      },
+      {
+        "position": 44,
+        "rowId": "bebb8350aacb8a69",
+        "itemId": "inj-o15-2"
+      },
+      {
+        "position": 45,
+        "rowId": "b78e0321e6652fb0",
+        "itemId": "neg-hn09"
+      },
+      {
+        "position": 46,
+        "rowId": "3e4649abfb977f60",
+        "itemId": "inj-o08-2"
+      },
+      {
+        "position": 47,
+        "rowId": "611d61d029b44d82",
+        "itemId": "inj-o05-2"
+      },
+      {
+        "position": 48,
+        "rowId": "831635adfa3df545",
+        "itemId": "inj-o04-3"
+      },
+      {
+        "position": 49,
+        "rowId": "42bd9ccc8cfe92f5",
+        "itemId": "inj-o16-3"
+      },
+      {
+        "position": 50,
+        "rowId": "978f3d6602e17193",
+        "itemId": "neg-o13"
+      },
+      {
+        "position": 51,
+        "rowId": "434fce67c0c539a8",
+        "itemId": "inj-o02-2"
+      },
+      {
+        "position": 52,
+        "rowId": "f7909d4d179b6caa",
+        "itemId": "neg-hn11"
+      },
+      {
+        "position": 53,
+        "rowId": "eeb2eb761897fcfc",
+        "itemId": "inj-o04-4"
+      },
+      {
+        "position": 54,
+        "rowId": "ad5c5773a413f565",
+        "itemId": "inj-hn02-1"
+      },
+      {
+        "position": 55,
+        "rowId": "654b9816b4ed9eaf",
+        "itemId": "inj-o06-1"
+      },
+      {
+        "position": 56,
+        "rowId": "b525171096975af3",
+        "itemId": "inj-o03-0"
+      },
+      {
+        "position": 57,
+        "rowId": "834c81f278773a36",
+        "itemId": "inj-hn04-1"
+      },
+      {
+        "position": 58,
+        "rowId": "d913055fbaf7ab80",
+        "itemId": "inj-o10-0"
+      },
+      {
+        "position": 59,
+        "rowId": "4ed84f7e5288b754",
+        "itemId": "inj-hn06-0"
+      },
+      {
+        "position": 60,
+        "rowId": "f4ee4fbb38cfc598",
+        "itemId": "inj-o10-3"
+      },
+      {
+        "position": 61,
+        "rowId": "b5e44f6c2cae42f9",
+        "itemId": "inj-o12-5"
+      },
+      {
+        "position": 62,
+        "rowId": "5eb7777ce254667d",
+        "itemId": "inj-hn10-5"
+      },
+      {
+        "position": 63,
+        "rowId": "5ef5ba890dec416f",
+        "itemId": "inj-o15-4"
+      },
+      {
+        "position": 64,
+        "rowId": "af523f5621e30f54",
+        "itemId": "inj-hn12-5"
+      },
+      {
+        "position": 65,
+        "rowId": "00ce82dcd6eee339",
+        "itemId": "inj-o06-0"
+      },
+      {
+        "position": 66,
+        "rowId": "1061d650421c15ad",
+        "itemId": "inj-o07-4"
+      },
+      {
+        "position": 67,
+        "rowId": "0f3c93ef813f4354",
+        "itemId": "inj-o04-5"
+      },
+      {
+        "position": 68,
+        "rowId": "440e06669311dc96",
+        "itemId": "inj-hn03-0"
+      },
+      {
+        "position": 69,
+        "rowId": "f67f06c38fa0b304",
+        "itemId": "inj-o08-5"
+      },
+      {
+        "position": 70,
+        "rowId": "65f7a54e686fdc76",
+        "itemId": "inj-hn08-4"
+      },
+      {
+        "position": 71,
+        "rowId": "38cb49d61b934e16",
+        "itemId": "inj-hn07-0"
+      },
+      {
+        "position": 72,
+        "rowId": "026f5e35f7a3ace7",
+        "itemId": "inj-hn08-5"
+      },
+      {
+        "position": 73,
+        "rowId": "7d0375c6897d9bb0",
+        "itemId": "inj-hn10-0"
+      },
+      {
+        "position": 74,
+        "rowId": "74c725ab44864fb9",
+        "itemId": "inj-o01-2"
+      },
+      {
+        "position": 75,
+        "rowId": "d544254432aebb63",
+        "itemId": "inj-o09-5"
+      },
+      {
+        "position": 76,
+        "rowId": "06cb211d453a36e8",
+        "itemId": "neg-o14"
+      },
+      {
+        "position": 77,
+        "rowId": "1e6a56ca8b523590",
+        "itemId": "inj-hn07-2"
+      },
+      {
+        "position": 78,
+        "rowId": "22c678bb90a0208c",
+        "itemId": "inj-o13-4"
+      },
+      {
+        "position": 79,
+        "rowId": "3fe41ad3df586a7a",
+        "itemId": "inj-o03-3"
+      },
+      {
+        "position": 80,
+        "rowId": "1ed9702abcb04ac6",
+        "itemId": "inj-o10-4"
+      },
+      {
+        "position": 81,
+        "rowId": "65c46f8be0030547",
+        "itemId": "inj-o09-4"
+      },
+      {
+        "position": 82,
+        "rowId": "976499f01b6f9f57",
+        "itemId": "inj-hn09-3"
+      },
+      {
+        "position": 83,
+        "rowId": "8357814fcea97951",
+        "itemId": "inj-hn06-2"
+      },
+      {
+        "position": 84,
+        "rowId": "2e86aa358e6aca80",
+        "itemId": "neg-o16"
+      },
+      {
+        "position": 85,
+        "rowId": "1b8fcdf8739c90c7",
+        "itemId": "neg-hn03"
+      },
+      {
+        "position": 86,
+        "rowId": "a4d7658e391542b6",
+        "itemId": "neg-o10"
+      },
+      {
+        "position": 87,
+        "rowId": "bfb18000d7fdb793",
+        "itemId": "inj-o09-1"
+      },
+      {
+        "position": 88,
+        "rowId": "8c53b852c39f7c5b",
+        "itemId": "inj-hn12-4"
+      },
+      {
+        "position": 89,
+        "rowId": "c1cabca0ee815f3d",
+        "itemId": "inj-hn09-5"
+      },
+      {
+        "position": 90,
+        "rowId": "49df3e7e8178156c",
+        "itemId": "inj-o12-4"
+      },
+      {
+        "position": 91,
+        "rowId": "b5522c2768b0d136",
+        "itemId": "inj-o07-0"
+      },
+      {
+        "position": 92,
+        "rowId": "3dafb2ef06ce61fc",
+        "itemId": "inj-hn05-3"
+      },
+      {
+        "position": 93,
+        "rowId": "b6d4ad9edad159db",
+        "itemId": "inj-o02-4"
+      },
+      {
+        "position": 94,
+        "rowId": "9d673afe278a917c",
+        "itemId": "inj-hn06-5"
+      },
+      {
+        "position": 95,
+        "rowId": "ae5da33428267563",
+        "itemId": "neg-hn02"
+      },
+      {
+        "position": 96,
+        "rowId": "4676987e5b3811f6",
+        "itemId": "inj-hn09-0"
+      },
+      {
+        "position": 97,
+        "rowId": "d2f36f1c32255866",
+        "itemId": "neg-o11"
+      },
+      {
+        "position": 98,
+        "rowId": "5d3ace78b87709f6",
+        "itemId": "neg-hn05"
+      },
+      {
+        "position": 99,
+        "rowId": "1ee94beae39b45ae",
+        "itemId": "inj-o14-4"
+      },
+      {
+        "position": 100,
+        "rowId": "8f24d3d03126bb39",
+        "itemId": "inj-o03-5"
+      },
+      {
+        "position": 101,
+        "rowId": "445675b83083e400",
+        "itemId": "inj-o13-3"
+      },
+      {
+        "position": 102,
+        "rowId": "5b0d5a41489f81b9",
+        "itemId": "inj-o14-0"
+      },
+      {
+        "position": 103,
+        "rowId": "218c6d37309c9e11",
+        "itemId": "inj-hn04-4"
+      },
+      {
+        "position": 104,
+        "rowId": "ed893b8deaf81a45",
+        "itemId": "neg-o06"
+      },
+      {
+        "position": 105,
+        "rowId": "396e3640f38baadf",
+        "itemId": "neg-hn04"
+      },
+      {
+        "position": 106,
+        "rowId": "b02f5b4dc0e521e3",
+        "itemId": "inj-hn05-5"
+      },
+      {
+        "position": 107,
+        "rowId": "a79cebe216d18253",
+        "itemId": "inj-hn04-5"
+      },
+      {
+        "position": 108,
+        "rowId": "1ab15e9d1aa746ef",
+        "itemId": "inj-o07-3"
+      },
+      {
+        "position": 109,
+        "rowId": "046bdbf2f37f159d",
+        "itemId": "inj-o08-4"
+      },
+      {
+        "position": 110,
+        "rowId": "3666a5cdbf04e18d",
+        "itemId": "neg-o07"
+      },
+      {
+        "position": 111,
+        "rowId": "e29556c2603d2889",
+        "itemId": "inj-o09-3"
+      },
+      {
+        "position": 112,
+        "rowId": "7fcffc910a7cfe6c",
+        "itemId": "inj-o11-1"
+      },
+      {
+        "position": 113,
+        "rowId": "b55fce3540d49d4b",
+        "itemId": "inj-o16-5"
+      },
+      {
+        "position": 114,
+        "rowId": "aa32b4805815381f",
+        "itemId": "inj-hn04-3"
+      },
+      {
+        "position": 115,
+        "rowId": "e121af667a3cb5be",
+        "itemId": "inj-hn03-1"
+      },
+      {
+        "position": 116,
+        "rowId": "49aab684abc6c7fe",
+        "itemId": "inj-o11-5"
+      },
+      {
+        "position": 117,
+        "rowId": "5fc87ed837f908c4",
+        "itemId": "inj-hn03-2"
+      },
+      {
+        "position": 118,
+        "rowId": "f126c83aa9220c99",
+        "itemId": "inj-hn11-4"
+      },
+      {
+        "position": 119,
+        "rowId": "8b6c14caff286096",
+        "itemId": "neg-o15"
+      },
+      {
+        "position": 120,
+        "rowId": "dd2844aeafd67201",
+        "itemId": "inj-o13-5"
+      },
+      {
+        "position": 121,
+        "rowId": "655bf5ea2d1f9ebf",
+        "itemId": "neg-o09"
+      },
+      {
+        "position": 122,
+        "rowId": "88ca9543f116a983",
+        "itemId": "inj-o14-1"
+      },
+      {
+        "position": 123,
+        "rowId": "b44e4eda84aeda31",
+        "itemId": "inj-hn06-4"
+      },
+      {
+        "position": 124,
+        "rowId": "c63c0069550f69a8",
+        "itemId": "inj-hn07-4"
+      },
+      {
+        "position": 125,
+        "rowId": "992a3e92adfcd5fd",
+        "itemId": "inj-o08-3"
+      },
+      {
+        "position": 126,
+        "rowId": "712faf8e6e44d546",
+        "itemId": "inj-o10-2"
+      },
+      {
+        "position": 127,
+        "rowId": "178d3f205b79788d",
+        "itemId": "inj-hn08-0"
+      },
+      {
+        "position": 128,
+        "rowId": "5019d473adb02e76",
+        "itemId": "inj-o12-3"
+      },
+      {
+        "position": 129,
+        "rowId": "0363b442b09d8ce7",
+        "itemId": "inj-o05-5"
+      },
+      {
+        "position": 130,
+        "rowId": "8583556aa00a5dfe",
+        "itemId": "inj-o12-2"
+      },
+      {
+        "position": 131,
+        "rowId": "c3c5f9ef253ba9ed",
+        "itemId": "inj-hn09-4"
+      },
+      {
+        "position": 132,
+        "rowId": "390f91800a745cae",
+        "itemId": "inj-o04-0"
+      },
+      {
+        "position": 133,
+        "rowId": "3930146716db9002",
+        "itemId": "inj-hn02-5"
+      },
+      {
+        "position": 134,
+        "rowId": "8dac525c3d9fee9f",
+        "itemId": "inj-o09-0"
+      },
+      {
+        "position": 135,
+        "rowId": "b9ab4834d70c0e9d",
+        "itemId": "neg-o12"
+      },
+      {
+        "position": 136,
+        "rowId": "99aadf4d37b21828",
+        "itemId": "inj-hn12-1"
+      },
+      {
+        "position": 137,
+        "rowId": "d2472d4b5756a427",
+        "itemId": "inj-o15-5"
+      },
+      {
+        "position": 138,
+        "rowId": "2ca10f2ee46b5c9e",
+        "itemId": "inj-o11-0"
+      },
+      {
+        "position": 139,
+        "rowId": "d0c99a554c254080",
+        "itemId": "inj-o08-1"
+      },
+      {
+        "position": 140,
+        "rowId": "7a1ed5a575fc0ad3",
+        "itemId": "neg-hn08"
+      },
+      {
+        "position": 141,
+        "rowId": "8c3bcdf89822bd87",
+        "itemId": "inj-o10-5"
+      },
+      {
+        "position": 142,
+        "rowId": "043d6219725fcfda",
+        "itemId": "inj-hn12-2"
+      },
+      {
+        "position": 143,
+        "rowId": "2d5196eec472a0e5",
+        "itemId": "inj-hn08-1"
+      },
+      {
+        "position": 144,
+        "rowId": "b3b75542c56630eb",
+        "itemId": "inj-o06-5"
+      },
+      {
+        "position": 145,
+        "rowId": "e81c49a5165e209a",
+        "itemId": "inj-hn07-3"
+      },
+      {
+        "position": 146,
+        "rowId": "65a5e14cee809b9f",
+        "itemId": "inj-hn11-5"
+      },
+      {
+        "position": 147,
+        "rowId": "20a840bfb23ac396",
+        "itemId": "inj-o14-5"
+      },
+      {
+        "position": 148,
+        "rowId": "3121e35ac7133ee2",
+        "itemId": "inj-o15-1"
+      },
+      {
+        "position": 149,
+        "rowId": "70b7e7fc52eea6f0",
+        "itemId": "neg-o04"
+      },
+      {
+        "position": 150,
+        "rowId": "328219e51297dd9e",
+        "itemId": "inj-hn05-2"
+      },
+      {
+        "position": 151,
+        "rowId": "0cf5fe5b0e23d898",
+        "itemId": "inj-o02-1"
+      },
+      {
+        "position": 152,
+        "rowId": "4feb2d1663899695",
+        "itemId": "neg-o05"
+      },
+      {
+        "position": 153,
+        "rowId": "2b5fb6554bea110d",
+        "itemId": "neg-o02"
+      },
+      {
+        "position": 154,
+        "rowId": "2073372ae1c94d76",
+        "itemId": "inj-hn02-4"
+      },
+      {
+        "position": 155,
+        "rowId": "d06ea86eb5561ae2",
+        "itemId": "inj-hn08-3"
+      },
+      {
+        "position": 156,
+        "rowId": "b6ffbcea79e09371",
+        "itemId": "inj-hn07-5"
+      },
+      {
+        "position": 157,
+        "rowId": "c4cb7dbabd2435b0",
+        "itemId": "inj-o13-1"
+      },
+      {
+        "position": 158,
+        "rowId": "d2b0e00d28e07424",
+        "itemId": "inj-o01-1"
+      },
+      {
+        "position": 159,
+        "rowId": "597ca0365edd91d1",
+        "itemId": "inj-o05-1"
+      },
+      {
+        "position": 160,
+        "rowId": "a729e29c7f77f784",
+        "itemId": "inj-hn09-2"
+      },
+      {
+        "position": 161,
+        "rowId": "c22b86d85df6a2e9",
+        "itemId": "inj-o04-2"
+      },
+      {
+        "position": 162,
+        "rowId": "7aabc2dfa1ff96ab",
+        "itemId": "inj-hn05-0"
+      },
+      {
+        "position": 163,
+        "rowId": "923aa3dd3b814374",
+        "itemId": "inj-o14-3"
+      },
+      {
+        "position": 164,
+        "rowId": "fee60070da97efcf",
+        "itemId": "neg-hn06"
+      },
+      {
+        "position": 165,
+        "rowId": "d2b12d45996a4f1b",
+        "itemId": "inj-o02-3"
+      },
+      {
+        "position": 166,
+        "rowId": "b4858085f92fe773",
+        "itemId": "inj-o12-1"
+      },
+      {
+        "position": 167,
+        "rowId": "ce6fddd5e0577707",
+        "itemId": "neg-hn12"
+      },
+      {
+        "position": 168,
+        "rowId": "397dbd1ce38a8765",
+        "itemId": "inj-o10-1"
+      },
+      {
+        "position": 169,
+        "rowId": "88774166532db09a",
+        "itemId": "inj-hn02-0"
+      },
+      {
+        "position": 170,
+        "rowId": "20d6dca414100f56",
+        "itemId": "inj-hn10-2"
+      },
+      {
+        "position": 171,
+        "rowId": "f0e30a6ae0711844",
+        "itemId": "inj-o16-0"
+      },
+      {
+        "position": 172,
+        "rowId": "dbbbfec30b453842",
+        "itemId": "inj-hn02-2"
+      },
+      {
+        "position": 173,
+        "rowId": "7795fa825e847979",
+        "itemId": "inj-o02-5"
+      },
+      {
+        "position": 174,
+        "rowId": "b8ca609d778e878b",
+        "itemId": "inj-o15-3"
+      },
+      {
+        "position": 175,
+        "rowId": "98ee0dfa4adbda51",
+        "itemId": "inj-o14-2"
+      },
+      {
+        "position": 176,
+        "rowId": "257b7d0f3bf9d917",
+        "itemId": "inj-hn12-0"
+      },
+      {
+        "position": 177,
+        "rowId": "c4d9fdb6fce662e0",
+        "itemId": "inj-o03-1"
+      },
+      {
+        "position": 178,
+        "rowId": "972b53f156b939c1",
+        "itemId": "neg-o08"
+      },
+      {
+        "position": 179,
+        "rowId": "eff88c67866b78f0",
+        "itemId": "inj-o16-2"
+      },
+      {
+        "position": 180,
+        "rowId": "ff945a73b1f879e7",
+        "itemId": "inj-hn03-3"
+      },
+      {
+        "position": 181,
+        "rowId": "6d2bf6a93347aa4f",
+        "itemId": "neg-o01"
+      },
+      {
+        "position": 182,
+        "rowId": "2776aa9d5d748520",
+        "itemId": "inj-o07-1"
+      },
+      {
+        "position": 183,
+        "rowId": "1fc9769a79d29ed6",
+        "itemId": "inj-hn12-3"
+      },
+      {
+        "position": 184,
+        "rowId": "cf1305cb3e7b724f",
+        "itemId": "inj-o15-0"
+      },
+      {
+        "position": 185,
+        "rowId": "16d40003e665c9cc",
+        "itemId": "inj-hn11-3"
+      },
+      {
+        "position": 186,
+        "rowId": "7691d9204776f03d",
+        "itemId": "inj-hn09-1"
+      },
+      {
+        "position": 187,
+        "rowId": "0066929cd270fb6d",
+        "itemId": "inj-o02-0"
+      },
+      {
+        "position": 188,
+        "rowId": "d7837bba18e25134",
+        "itemId": "inj-o03-4"
+      }
+    ],
+    "adjacency": {
+      "sourceOrder": [
+        {
+          "dimension": "carrier",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 162,
+          "rate": 0.8617021276595744,
+          "chanceRate": 0.031914893617021274
+        },
+        {
+          "dimension": "carrierStratum",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 187,
+          "rate": 0.9946808510638298,
+          "chanceRate": 0.5145784081954294
+        },
+        {
+          "dimension": "wave",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 0,
+          "rate": 0,
+          "chanceRate": 0.13829787234042554
+        },
+        {
+          "dimension": "density",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 24,
+          "rate": 0.1276595744680851,
+          "chanceRate": 0.2619047619047619
+        },
+        {
+          "dimension": "register",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 166,
+          "rate": 0.8829787234042553,
+          "chanceRate": 0.3380614657210402
+        },
+        {
+          "dimension": "constructedPrediction",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 156,
+          "rate": 0.8297872340425532,
+          "chanceRate": 0.8181920522346054
+        }
+      ],
+      "queueOrder": [
+        {
+          "dimension": "carrier",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 0,
+          "rate": 0,
+          "chanceRate": 0.031914893617021274
+        },
+        {
+          "dimension": "carrierStratum",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 86,
+          "rate": 0.4574468085106383,
+          "chanceRate": 0.5145784081954294
+        },
+        {
+          "dimension": "wave",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 24,
+          "rate": 0.1276595744680851,
+          "chanceRate": 0.13829787234042554
+        },
+        {
+          "dimension": "density",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 49,
+          "rate": 0.26063829787234044,
+          "chanceRate": 0.2619047619047619
+        },
+        {
+          "dimension": "register",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 60,
+          "rate": 0.3191489361702128,
+          "chanceRate": 0.3380614657210402
+        },
+        {
+          "dimension": "constructedPrediction",
+          "adjacentPairs": 188,
+          "sameStratumPairs": 150,
+          "rate": 0.7978723404255319,
+          "chanceRate": 0.8181920522346054
+        }
+      ]
+    }
+  },
+  "answers": {
+    "rowsPut": 189,
+    "rowsAnswered": {
+      "a": 189,
+      "b": 189
+    },
+    "satisfiesAgreement": 1,
+    "satisfiesKappa": 1,
+    "confidenceAgreement": 1,
+    "confidenceKappa": 1,
+    "positives": 19,
+    "disputed": 10,
+    "quotesReturned": {
+      "a": 19,
+      "b": 19
+    },
+    "offsetsReturned": "none, by either annotator. Both returned a quoted STRING; the offsets in the gold's `annotators.*.quote` were located afterwards by searching the item text, and each of the 38 quotes occurs in its item exactly once.",
+    "effectiveDecisions": "the 19 positives are seven fixed carrier templates drawn over five organisation names, and the counts per template are below. An arm that memorised seven strings scores here as if it had read §3, and a confidence interval computed at n=19 is computed on a unit that is correlated in groups of two and three. Raw agreement and kappa of 1.0 are facts about two readers of a formulaic corpus, not evidence that §3 is well defined.",
+    "positivesPerDiscriminator": {
+      "the mandate we hold for": 2,
+      "we are pitching": 2,
+      "the party we signed the confidentiality agreement with is": 3,
+      "we are on the other side of that trade from": 3,
+      "the fee note we send to": 3,
+      "the onboarding pack for": 3,
+      "the first of those two is the one we act for": 3
+    }
+  },
+  "blindness": {
+    "rulesGiven": "answer the §3 question from policies/p-fin.md and the queue's message text. The queue carried `rowId` and `text` and nothing else; no brief was retained, so what else was said is unrecorded.",
+    "channels": [
+      {
+        "channel": "structural",
+        "what": "answer-bearing content travelling inside the blind artifact itself",
+        "audited": "audited",
+        "evidence": "the queue an annotator opened is committed and every property is recomputed from its bytes: 189 lines, exactly the keys `rowId` and `text` on each, every rowId 16 lowercase hex characters and distinct, every message byte-identical to a corpus item's, and no corpus family id, entity type, constructed role, carrier id, carrier stratum or item id anywhere outside the message. The previous round's two structural leaks -- an `itemId` naming the stratum and the wave, and a `question` field pre-arguing the clause -- are absent by construction because the row has no other field to carry them.",
+        "gap": "none for this artifact. It says nothing about what reached an annotator by any other route.",
+        "breaches": []
+      },
+      {
+        "channel": "order",
+        "what": "grouping in the queue order that would let an annotator infer a label from its neighbours",
+        "audited": "audited",
+        "evidence": "recomputed from the committed queue and corpus, not read back from the emitter: same-carrier adjacency is 0 of 188 adjacent pairs in queue order against 162 in source order, where seven items share a carrier's sentences verbatim and sit consecutively. The dimensions the shuffle makes WORSE are in `handover.adjacency` beside it rather than omitted.",
+        "gap": "adjacency is a property of the order, not of what an annotator did with it.",
+        "breaches": []
+      },
+      {
+        "channel": "read",
+        "what": "the files each annotator opened",
+        "audited": "unaudited",
+        "evidence": "NONE. Neither annotator was asked for a `filesRead` list and neither returned one, so there is nothing to audit. The previous round collected both and compared them item by item against the modules that carry the answer; this round collected neither, and that is a regression.",
+        "gap": "total. Whether either annotator opened the corpus, the families file or the compiled IR is unknown and unknowable from what was retained.",
+        "breaches": [
+          "MEASURED AND OPEN, whether or not it was used: the message text is a verbatim lookup key into a committed answer key. Seven fragments decide every positive and five more decide the organisation-bearing negatives (`PREDICATE_DISCRIMINATORS`); all twelve appear verbatim in apps/eval/src/corpus/families.v2.ts beside a `constructedRole` and a `labelBasis.reading` naming the clause and the intended answer. An annotator with ordinary repository read access can label all 189 rows without opening the policy.",
+          "MEASURED AND OPEN: apps/eval/src/corpus/labelling.ts, committed before this round, quotes inj-o01-1's \"the party we signed the confidentiality agreement with is Marrowfield Group\" and calls it a clean §3.3 NDA-party hit. inj-o01-1 is one of this round's 19 positives, named by id and by organisation."
+        ]
+      },
+      {
+        "channel": "told",
+        "what": "the brief each annotator was given",
+        "audited": "unaudited",
+        "evidence": "NONE. No brief was retained and neither annotator returned a `wasToldAbout` disclosure. The commit that shipped this gold (f3d2495) states that two told-channel leaks remain and that both annotators flagged them unprompted -- that the brief said to expect both classes and put a number next to the word \"positives\". NOTHING in this repository or in the round's retained artifacts records those flags or the brief that would carry them, so that claim is unsupported and is withdrawn here rather than repeated.",
+        "gap": "total, and it lands on the round's most quotable numbers. If the brief did state a positive count, both annotators returning exactly 19 is what that would produce, and no evidence separates the two explanations. Retain the verbatim brief.",
+        "breaches": []
+      },
+      {
+        "channel": "answer-key",
+        "what": "whether the adjudicated labels are independent of the corpus's own construction record",
+        "audited": "audited",
+        "evidence": "they are not, and the number is total: `meta.predicateConstruction.constructed` equals the adjudicated `satisfies` on 189 of 189 rows, and each of the 19 gold spans is byte- and offset-identical to that item's own `client-name` entry in `item.gold`. The positive set is exactly the set of items carrying a `client-name` gold span. The generator's prediction was compared only after the two annotators' agreement had been computed and `loadTier2Gold` drops the field, so it did not enter a label -- but a `pred:` score over this gold measures the same target as a `client-name` span score and must not be reported as an independent check on the semantic judge.",
+        "gap": "a round that wanted independence here would have to label a corpus it did not generate, or hold the construction record back from the adjudicator as well as from the annotators.",
+        "breaches": []
+      }
+    ]
+  },
+  "corpusScopingDisagreement": "the corpus's own scoping fields describe the PREVIOUS round and this round did not update them -- the corpus is byte-pinned to its builder and cannot be edited to agree. MEASURED on the committed corpus: all 189 items carry `meta.scoringScope.goldIsComplete: false`, 170 list `pred:client-relationship-disclosure` in `unlabelledClasses` (documented there as \"a finding of any class listed here is neither a match nor a false positive on this item\"), all 189 `meta.labelQuestions[kind=message-predicate].state` are \"unanswered\", and `meta.predicateLabelling.state` is \"unlabelled\" on 169. The 19 items on which the corpus does declare the predicate scoreable have ZERO overlap with this round's 19 positives -- they are the previous round's span rows, on which that round returned no positives. A scorer joining THIS gold must take its scoreable set from the gold's own `status`, which is what score.ts does; it never reads `scoringScope`.",
+  "trivialFloor": {
+    "scoredRows": 179,
+    "goldSpans": 19,
+    "readers": [
+      {
+        "reader": "capitalised-multiword",
+        "what": "every run of two or more capitalised words in the message",
+        "findings": 50,
+        "byRule": {
+          "exact": {
+            "rule": "exact",
+            "tp": 19,
+            "fp": 31,
+            "fn": 0,
+            "precision": 0.38,
+            "recall": 1,
+            "f1": 0.5507246376811594,
+            "nearMisses": 0
+          },
+          "overlap": {
+            "rule": "overlap",
+            "tp": 19,
+            "fp": 31,
+            "fn": 0,
+            "precision": 0.38,
+            "recall": 1,
+            "f1": 0.5507246376811594,
+            "nearMisses": 0
+          },
+          "iou50": {
+            "rule": "iou50",
+            "tp": 19,
+            "fp": 31,
+            "fn": 0,
+            "precision": 0.38,
+            "recall": 1,
+            "f1": 0.5507246376811594,
+            "nearMisses": 0
+          }
+        }
+      },
+      {
+        "reader": "first-capitalised-multiword",
+        "what": "the FIRST run of two or more capitalised words, and nothing else",
+        "findings": 30,
+        "byRule": {
+          "exact": {
+            "rule": "exact",
+            "tp": 14,
+            "fp": 16,
+            "fn": 5,
+            "precision": 0.4666666666666667,
+            "recall": 0.7368421052631579,
+            "f1": 0.5714285714285714,
+            "nearMisses": 0
+          },
+          "overlap": {
+            "rule": "overlap",
+            "tp": 14,
+            "fp": 16,
+            "fn": 5,
+            "precision": 0.4666666666666667,
+            "recall": 0.7368421052631579,
+            "f1": 0.5714285714285714,
+            "nearMisses": 0
+          },
+          "iou50": {
+            "rule": "iou50",
+            "tp": 14,
+            "fp": 16,
+            "fn": 5,
+            "precision": 0.4666666666666667,
+            "recall": 0.7368421052631579,
+            "f1": 0.5714285714285714,
+            "nearMisses": 0
+          }
+        }
+      },
+      {
+        "reader": "whole-message",
+        "what": "one span covering the entire message",
+        "findings": 179,
+        "byRule": {
+          "exact": {
+            "rule": "exact",
+            "tp": 0,
+            "fp": 179,
+            "fn": 19,
+            "precision": 0,
+            "recall": 0,
+            "f1": 0,
+            "nearMisses": 19
+          },
+          "overlap": {
+            "rule": "overlap",
+            "tp": 19,
+            "fp": 160,
+            "fn": 0,
+            "precision": 0.10614525139664804,
+            "recall": 1,
+            "f1": 0.1919191919191919,
+            "nearMisses": 0
+          },
+          "iou50": {
+            "rule": "iou50",
+            "tp": 0,
+            "fp": 179,
+            "fn": 19,
+            "precision": 0,
+            "recall": 0,
+            "f1": 0,
+            "nearMisses": 19
+          }
+        }
+      }
+    ],
+    "verdict": "a reader given neither the policy nor the predicate, scored one-to-one over the 179 scored rows exactly as an arm is, reaches F1 exact 0.571 (\"the FIRST run of two or more capitalised words, and nothing else\"), overlap 0.571 (\"the FIRST run of two or more capitalised words, and nothing else\"), iou50 0.571 (\"the FIRST run of two or more capitalised words, and nothing else\"). THIS IS THE FLOOR ANY PREDICATE ACCURACY NUMBER OFF THIS GOLD SITS ON. The best of the sixteen arms is tier2-Qwen3-4B at F1 0.197 under all three rules, so NO ARM BEATS THE FLOOR UNDER ANY RULE and the best of them is a factor of 2.9 below it. The reason is orthographic rather than semantic: the corpus is lowercase informal prose in which the organisation names are almost the only capitalised multi-word tokens, so recall 1.000 costs a regular expression nothing. An oracle handed the answer's vocabulary does better still -- every occurrence of the five names families.v2.ts draws from scores F1 0.585 -- but that one is not a floor, because it has been told what to look for. No predicate accuracy number off this gold should be published without this line beside it; `scoreArm` puts the same figures in `floors` and in `coverage.caveats` so they cannot be dropped by whoever writes the table."
+  },
+  "limits": [
+    "the told channel and the read channel are UNAUDITED; see blindness.channels.",
+    "the labels are not independent of the corpus's construction record: see blindness.channels[answer-key].",
+    "the predicate is decidable on this corpus by seven fixed substrings, all committed in families.v2.ts.",
+    "no arm measured against this gold beats the trivial floor under any match rule; see trivialFloor.verdict.",
+    "`confidence` is \"clear\" on all 179 scored rows, so the column carries no information about the scored set; the adjudication rule it documents (the weaker of the two annotators') never had to resolve a disagreement, because agreement on `confidence` was also 1.0 and every borderline row became `disputed`.",
+    "the disputed exclusion is ONE-SIDED on this gold: all ten disputed rows are negatives carrying no gold span, so it removes false positives and nothing else. `ArmCoverage.findingsOnDisputedRows` sizes it per arm.",
+    "injection-p-fin-v2.gold-tier2.jsonl covers 20 of these items under the same policy hash and the same predicate id, and disagrees with this file on inj-hn08-1 (disputed there, scored here). The two are different rounds and must never be pooled; `loadTier2Gold` refuses the pooling by rejecting a repeated itemId, and every row here names its round."
+  ]
+}

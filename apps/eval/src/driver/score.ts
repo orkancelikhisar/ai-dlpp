@@ -3,7 +3,16 @@ import { RunRecordSchema, type RunRecord } from "./record.js";
 
 /**
  * Span-level precision, recall and F1 for tier-2 predicate findings against a
- * blind-labelled gold set (`corpora/fixtures/smoke.gold-tier2.jsonl`).
+ * blind-labelled gold set. Three exist: `corpora/fixtures/smoke.gold-tier2.jsonl`
+ * (13 items, the fixture this module was written against),
+ * `injection-p-fin-v2.gold-tier2.jsonl` (20 items, 0 positives) and
+ * `injection-p-fin-v2.gold-tier2-predicate.jsonl` (189 items, 19 positives).
+ * They are different rounds over overlapping items and must never be pooled;
+ * `loadTier2Gold` refuses the pooling by rejecting a repeated itemId.
+ *
+ * READ `TRIVIAL_FLOOR_READERS` BELOW BEFORE QUOTING ANY NUMBER THIS MODULE
+ * PRODUCES. On the 189-item predicate gold, no arm of the sixteen measured
+ * beats a regular expression that reads neither the policy nor the message.
  *
  * ## Why three match rules and not one
  *
@@ -100,19 +109,37 @@ import { RunRecordSchema, type RunRecord } from "./record.js";
 // ---------------------------------------------------------------------------
 
 /**
- * One annotator's original call, carried verbatim so the artifact keeps its
- * provenance and a later reader can re-adjudicate without the labelling round.
+ * One annotator's original call.
  *
- * `span` is present exactly when that annotator said yes -- including on a
- * DISPUTED row, which is the one place a span survives adjudication without
- * being scoreable. That asymmetry is deliberate: the row's own `spans` is
- * emptied on a disputed row (see the schema refine) so no scorer can reach it
- * by accident, while the evidence for the dispute stays readable here.
+ * WHAT IS VERBATIM AND WHAT IS NOT, because a provenance field that overstates
+ * itself is worse than none. `satisfies`, `confidence`, `rationale` and
+ * `quote.text` are the annotator's own returned bytes and nothing else -- the
+ * predicate round's two return files are committed beside its gold
+ * (`injection-p-fin-v2.predicate-annotator-{a,b}.json`) and
+ * `corpus-predicate-round.test.ts` fails on any divergence between them and
+ * these fields, so this is a checked claim rather than an asserted one. It is
+ * checked because it was once false: the round that produced that gold shipped
+ * 378 adjudicator-rewritten rationales under this schema's old promise that
+ * they were carried verbatim.
+ *
+ * `quote.start` and `quote.end` are NOT the annotator's. Neither annotator of
+ * that round returned offsets; both returned a quoted STRING, and the offsets
+ * beside it were located afterwards by searching the item text. That search is
+ * only sound where the quote occurs once, which the round's test asserts on all
+ * 38 quotes. A round whose annotators return offsets should record those
+ * instead and say so in its own record.
+ *
+ * `quote` is present exactly when that annotator said yes -- including on a
+ * DISPUTED row, which is the one place an annotator's span survives
+ * adjudication without being scoreable. That asymmetry is deliberate: the row's
+ * own `spans` is emptied on a disputed row (see the schema refine) so no scorer
+ * can reach it by accident, while the evidence for the dispute stays readable
+ * here.
  */
 const AnnotatorCallSchema = z.object({
   satisfies: z.boolean(),
   confidence: z.enum(["clear", "borderline"]),
-  span: z
+  quote: z
     .object({
       start: z.number().int().nonnegative(),
       end: z.number().int().positive(),
@@ -149,6 +176,28 @@ const Tier2GoldSpanSchema = z
 export const Tier2GoldRowSchema = z
   .object({
     itemId: z.string().min(1),
+    /**
+     * The opaque queue id this row's labels came back under, and the id of the
+     * round that produced them.
+     *
+     * OPTIONAL because two committed gold files predate them: the 13-row
+     * `smoke.gold-tier2.jsonl` fixture and `injection-p-fin-v2.gold-tier2.jsonl`,
+     * which is byte-pinned to its builder and cannot gain a field without
+     * breaking that pin. They are NOT optional in practice on the file that has
+     * them -- `corpus-predicate-round.test.ts` requires both on all 189 rows and
+     * joins `rowId` through the committed queue to the corpus item, so a row
+     * claiming a queue id the queue does not carry for that message fails there.
+     *
+     * A gold row without them is a row whose handover cannot be checked, which
+     * is the state every gold file in this repository was in until the predicate
+     * round: nothing on a row named its round, so two files covering the same
+     * item under the same policy hash could disagree about its status and be
+     * told apart only by filename. `injection-p-fin-v2.gold-tier2.jsonl` and
+     * `injection-p-fin-v2.gold-tier2-predicate.jsonl` do exactly that on
+     * `inj-hn08-1` -- disputed in the first, scored in the second.
+     */
+    rowId: z.string().min(1).optional(),
+    round: z.string().min(1).optional(),
     /**
      * The policy the labels were written against, as a name. `smoke.jsonl`'s
      * own items say `minimal-fixture`; these rows say `p-fin`, because they are
@@ -384,6 +433,12 @@ function maximumMatching(
 // Scores
 // ---------------------------------------------------------------------------
 
+/** One item's findings and its gold spans, already filtered to the vocabulary. */
+export interface ScoringPair {
+  readonly findings: readonly SpanLike[];
+  readonly goldSpans: readonly SpanLike[];
+}
+
 export interface RuleScore {
   readonly rule: MatchRule;
   readonly tp: number;
@@ -401,7 +456,27 @@ export interface RuleScore {
    * the number would be describing a timeout as an accuracy.
    */
   readonly precision: number | undefined;
-  /** `tp / (tp + fn)`, or undefined when the scored items carry no gold spans at all. */
+  /**
+   * `tp / (tp + fn)`, or undefined when the scored items carry no gold spans at
+   * all.
+   *
+   * DELIBERATELY NOT SYMMETRIC WITH `precision`, and the asymmetry is argued
+   * here rather than assumed. Precision is undefined when the arm made no
+   * claim, because its denominator is the arm's own output and an empty one
+   * makes the ratio a statement about nothing. Recall's denominator is the GOLD,
+   * which exists whether or not the arm answered, so `tp / (tp + fn)` stays a
+   * true statement -- an arm that produced no token at tier 2 did in fact find 0
+   * of the 19 gold spans it was asked about.
+   *
+   * The cost of that is real and is handled by `caveats` rather than by making
+   * the number undefined: MEASURED over `runs/slate-rebuild-*`, six of sixteen
+   * arms read `P=undefined R=0.000` because their judge produced no completed
+   * call at all, beside `tier2only-Ministral` which answered 162 calls and read
+   * `P=0.000 R=0.000`. In a recall COLUMN those two zeros look identical.
+   * `itemsJudgeUnanswered` and its caveat are what separate them, and F1 is
+   * undefined for the six, so `winnersByRule` puts them in `unrankable` rather
+   * than ranking them last.
+   */
   readonly recall: number | undefined;
   /**
    * `2·tp / (2·tp + fp + fn)`, the harmonic mean written so it needs no
@@ -426,6 +501,155 @@ export interface RuleScore {
    * failure. On `runs/slate-p-fin-02` this is what separates the three rules.
    */
   readonly nearMisses: number;
+}
+
+/**
+ * Scores one set of (findings, gold spans) pairs under all three rules.
+ *
+ * Shared by `scoreArm` and by the trivial floors below, so the floor and the
+ * arm beside it are not two implementations of "the same" matching. A floor
+ * scored by a second matcher would be a different measurement wearing the same
+ * column heading.
+ */
+export function scoreEveryRule(pairs: readonly ScoringPair[]): Record<MatchRule, RuleScore> {
+  const byRule = {} as Record<MatchRule, RuleScore>;
+  for (const rule of MATCH_RULES) {
+    let tp = 0;
+    let fp = 0;
+    let fn = 0;
+    let nearMisses = 0;
+    for (const { findings, goldSpans } of pairs) {
+      const adjacency = findings.map((f) => {
+        const out: number[] = [];
+        for (let g = 0; g < goldSpans.length; g += 1) if (spansMatch(rule, f, goldSpans[g]!)) out.push(g);
+        return out;
+      });
+      const { size, matchedGold } = maximumMatching(adjacency, goldSpans.length);
+      tp += size;
+      const matchedFindings = new Set(matchedGold.filter((f) => f !== -1));
+      const unmatchedFindings = findings.filter((_, i) => !matchedFindings.has(i));
+      const unmatchedGold = goldSpans.filter((_, g) => matchedGold[g] === -1);
+      fp += unmatchedFindings.length;
+      fn += unmatchedGold.length;
+      for (const f of unmatchedFindings) {
+        if (unmatchedGold.some((g) => intersectionLength(f, g) > 0)) nearMisses += 1;
+      }
+    }
+    const precision = tp + fp === 0 ? undefined : tp / (tp + fp);
+    const recall = tp + fn === 0 ? undefined : tp / (tp + fn);
+    const f1 = precision === undefined || recall === undefined ? undefined : (2 * tp) / (2 * tp + fp + fn);
+    byRule[rule] = { rule, tp, fp, fn, precision, recall, f1, nearMisses };
+  }
+  return byRule;
+}
+
+// ---------------------------------------------------------------------------
+// The trivial floor
+// ---------------------------------------------------------------------------
+
+/**
+ * A reader that answers the predicate question without reading it.
+ *
+ * WHY THIS IS IN THE SCORER AND NOT AN AFTERTHOUGHT. `corpus/leakage.ts`
+ * already measures the tier-1 equivalent -- an orthographic oracle scored
+ * exactly as an arm is -- and `corpus-v2.test.ts` calls it "the number an arm
+ * has to beat". The predicate gold shipped without one, and the omission was
+ * not neutral: MEASURED over `injection-p-fin-v2.gold-tier2-predicate.jsonl`'s
+ * 179 scored rows, `capitalised-multiword` scores F1 0.551 under all three
+ * rules and `first-capitalised-multiword` 0.571, while the best of sixteen arms
+ * scores 0.197. Every arm number in that table is a factor of 2.9 BELOW a
+ * regular expression, and none of the sixteen beats any of these three readers
+ * under any rule. A table without this column reads as weak-but-real semantic
+ * detection. It is not.
+ *
+ * Every reader here is a function of the MESSAGE ALONE. None is given the
+ * policy, the predicate, the corpus's organisation pool, or the gold. A reader
+ * that needed any of those would be an oracle and would belong in a different
+ * column: for the record, one that returns every occurrence of the five names
+ * `families.v2.ts` draws from scores F1 0.585 on the same rows -- higher still,
+ * and not a floor, because it has been handed the answer's vocabulary.
+ */
+export interface TrivialFloorReader {
+  readonly id: string;
+  /** What it does, in one sentence, so a report can print the rule beside its score. */
+  readonly what: string;
+  find(text: string): SpanLike[];
+}
+
+/**
+ * `\b[A-Z][a-z]+(?: [A-Z][a-z]+)+\b` -- a run of two or more capitalised words.
+ *
+ * Shared across calls, which is safe with `matchAll` and would NOT be with
+ * `exec`. MEASURED on node 26: `[...text.matchAll(re)]` leaves `re.lastIndex`
+ * at 0 -- `String.prototype.matchAll` iterates a clone -- while `re.exec(text)`
+ * advances it to the end of the match, so an `exec` loop over a shared `g`
+ * regex would start the second item where the first one stopped. This comment
+ * replaces one that asserted the opposite mechanism without measuring it.
+ */
+const CAPITALISED_MULTIWORD = /\b[A-Z][a-z]+(?: [A-Z][a-z]+)+\b/g;
+
+function capitalisedMultiword(text: string): SpanLike[] {
+  const out: SpanLike[] = [];
+  for (const m of text.matchAll(CAPITALISED_MULTIWORD)) {
+    if (m.index === undefined) continue;
+    out.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+}
+
+export const TRIVIAL_FLOOR_READERS: readonly TrivialFloorReader[] = [
+  {
+    id: "capitalised-multiword",
+    what: "every run of two or more capitalised words in the message",
+    find: capitalisedMultiword,
+  },
+  {
+    id: "first-capitalised-multiword",
+    what: "the FIRST run of two or more capitalised words, and nothing else",
+    find: (text) => capitalisedMultiword(text).slice(0, 1),
+  },
+  {
+    id: "whole-message",
+    what: "one span covering the entire message",
+    find: (text) => (text.length > 0 ? [{ start: 0, end: text.length }] : []),
+  },
+];
+
+export interface TrivialFloor {
+  readonly reader: string;
+  readonly what: string;
+  readonly findings: number;
+  readonly byRule: Readonly<Record<MatchRule, RuleScore>>;
+}
+
+/** One item as a floor reader sees it: the message, and the gold spans on it. */
+export interface FloorItem {
+  readonly text: string;
+  readonly goldSpans: readonly SpanLike[];
+}
+
+/** Scores every reader in `TRIVIAL_FLOOR_READERS` over the same items an arm was scored on. */
+export function scoreTrivialFloors(items: readonly FloorItem[]): TrivialFloor[] {
+  return TRIVIAL_FLOOR_READERS.map((reader) => {
+    let findings = 0;
+    const pairs = items.map((item) => {
+      const found = reader.find(item.text);
+      findings += found.length;
+      return { findings: found, goldSpans: item.goldSpans };
+    });
+    return { reader: reader.id, what: reader.what, findings, byRule: scoreEveryRule(pairs) };
+  });
+}
+
+/**
+ * The best defined floor F1 under one rule, and which readers reach it.
+ *
+ * Undefined only when no floor has a defined F1 under that rule, which on a
+ * gold set carrying any span cannot happen: `whole-message` always emits.
+ */
+export function bestFloorF1(floors: readonly TrivialFloor[], rule: MatchRule): number | undefined {
+  const defined = floors.map((f) => f.byRule[rule].f1).filter((f): f is number => f !== undefined);
+  return defined.length === 0 ? undefined : Math.max(...defined);
 }
 
 /**
@@ -484,6 +708,20 @@ export interface ArmCoverage {
    */
   readonly findingsInVocabularyByTier: Readonly<Record<string, number>>;
   /**
+   * In-vocabulary findings this arm made on DISPUTED rows, which the exclusion
+   * removed from every ratio.
+   *
+   * `goldRowsDisputed` counts rows and reads like a symmetric trim of the gold.
+   * On `injection-p-fin-v2.gold-tier2-predicate.jsonl` it is not symmetric:
+   * MEASURED, all ten disputed rows are negatives carrying no gold span, so the
+   * exclusion can remove false positives and nothing else. Over
+   * `runs/slate-rebuild-*` it hides 8 of `tier2-Qwen3-4B`'s 50 findings and
+   * moves its overlap precision from 0.120 to 0.143 -- a 19% relative
+   * improvement produced by the exclusion rather than by the arm. A reader given
+   * only the row count cannot size that; this is the number that sizes it.
+   */
+  readonly findingsOnDisputedRows: number;
+  /**
    * One sentence per reason this arm's score is not a statement about its
    * accuracy. Empty is the positive claim that it is.
    */
@@ -497,6 +735,16 @@ export interface ScoredArm {
   readonly entityTypes: readonly string[];
   readonly coverage: ArmCoverage;
   readonly byRule: Readonly<Record<MatchRule, RuleScore>>;
+  /**
+   * The trivial floors, scored over EXACTLY the rows this arm was scored on --
+   * the same items, the same gold spans, the same matcher, the same three rules.
+   *
+   * Beside `byRule` and not in a separate report, because the failure this
+   * prevents is a table of arm F1s published without the one number that says
+   * what they are worth. `caveats` names any rule where this arm does not beat
+   * it.
+   */
+  readonly floors: readonly TrivialFloor[];
 }
 
 /**
@@ -583,6 +831,8 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
   // Per item, the finding spans in this predicate's vocabulary and the gold
   // spans, paired up once and reused by all three rules.
   const pairs: { findings: SpanLike[]; goldSpans: SpanLike[] }[] = [];
+  /** The same items, as a floor reader sees them: the message and its gold spans. */
+  const floorItems: FloorItem[] = [];
   let goldRowsWithoutRecord = 0;
   let recordsScored = 0;
   let recordsWithError = 0;
@@ -633,46 +883,43 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
       findings: inVocab.map((f) => ({ start: f.start, end: f.end })),
       goldSpans: row.spans.map((s) => ({ start: s.start, end: s.end })),
     });
+    floorItems.push({
+      text: record.text,
+      goldSpans: row.spans.map((s) => ({ start: s.start, end: s.end })),
+    });
+  }
+
+  // What the exclusion actually removed FROM THIS ARM. `goldRowsDisputed` is a
+  // count of rows and reads like a two-sided trim; on the gold that motivated
+  // this it is not one. See `findingsOnDisputedRows`.
+  let findingsOnDisputedRows = 0;
+  for (const row of gold) {
+    if (row.status !== "disputed") continue;
+    const record = recordsById.get(row.itemId);
+    if (record === undefined) continue;
+    findingsOnDisputedRows += record.findings.filter((f) => entityTypes.has(f.entityType)).length;
   }
 
   let recordsWithoutGold = 0;
   for (const record of records) if (!goldById.has(record.itemId)) recordsWithoutGold += 1;
 
-  const byRule = {} as Record<MatchRule, RuleScore>;
-  for (const rule of MATCH_RULES) {
-    let tp = 0;
-    let fp = 0;
-    let fn = 0;
-    let nearMisses = 0;
-    for (const { findings, goldSpans } of pairs) {
-      const adjacency = findings.map((f) => {
-        const out: number[] = [];
-        for (let g = 0; g < goldSpans.length; g += 1) if (spansMatch(rule, f, goldSpans[g]!)) out.push(g);
-        return out;
-      });
-      const { size, matchedGold } = maximumMatching(adjacency, goldSpans.length);
-      tp += size;
-      const matchedFindings = new Set(matchedGold.filter((f) => f !== -1));
-      const unmatchedFindings = findings.filter((_, i) => !matchedFindings.has(i));
-      const unmatchedGold = goldSpans.filter((_, g) => matchedGold[g] === -1);
-      fp += unmatchedFindings.length;
-      fn += unmatchedGold.length;
-      for (const f of unmatchedFindings) {
-        if (unmatchedGold.some((g) => intersectionLength(f, g) > 0)) nearMisses += 1;
-      }
-    }
-    const precision = tp + fp === 0 ? undefined : tp / (tp + fp);
-    const recall = tp + fn === 0 ? undefined : tp / (tp + fn);
-    const f1 = precision === undefined || recall === undefined ? undefined : (2 * tp) / (2 * tp + fp + fn);
-    byRule[rule] = { rule, tp, fp, fn, precision, recall, f1, nearMisses };
-  }
+  const byRule = scoreEveryRule(pairs);
+  const floors = scoreTrivialFloors(floorItems);
 
   const itemsJudgeUnanswered = recordsScored - itemsJudgeAnswered;
   const caveats: string[] = [];
   if (disputed > 0) {
+    const disputedRows = gold.filter((g) => g.status === "disputed");
+    const oneSided = disputedRows.every((g) => !g.satisfies && g.spans.length === 0);
     caveats.push(
       `${disputed} of ${gold.length} gold rows are adjudicated disputed and are excluded from both the ` +
-        `numerator and the denominator of every metric here`,
+        `numerator and the denominator of every metric here` +
+        (oneSided
+          ? `, and on this gold that exclusion is ONE-SIDED: every disputed row is a negative carrying no ` +
+            `gold span, so it can only remove false positives and never a miss. It removed ` +
+            `${findingsOnDisputedRows} of this arm's ${findingsInVocabulary + findingsOnDisputedRows} ` +
+            `in-vocabulary findings, all of which would have been false positives`
+          : ""),
     );
   }
   if (goldRowsWithoutRecord > 0) {
@@ -696,6 +943,27 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
   if (recordsWithError > 0) {
     caveats.push(`${recordsWithError} scored records carry an error; their gold still counts as missed`);
   }
+  // The floor is a caveat and not a footnote: an arm that does not beat it has
+  // not been shown to be reading anything. Stated per rule, because an arm can
+  // clear it under one rule and not another.
+  for (const rule of MATCH_RULES) {
+    const best = bestFloorF1(floors, rule);
+    const mine = byRule[rule].f1;
+    if (best === undefined) continue;
+    const winner = floors.find((f) => f.byRule[rule].f1 === best)!;
+    if (mine === undefined) {
+      caveats.push(
+        `this arm has no defined F1 under ${rule}, so it cannot be compared with the trivial floor, which ` +
+          `scores ${best.toFixed(3)} there ("${winner.what}")`,
+      );
+    } else if (mine <= best) {
+      caveats.push(
+        `under ${rule} this arm's F1 (${mine.toFixed(3)}) DOES NOT BEAT the trivial floor (${best.toFixed(3)}, ` +
+          `"${winner.what}"), a reader given neither the policy nor the predicate; the number below is not ` +
+          `evidence that this arm read the message`,
+      );
+    }
+  }
 
   return {
     arm,
@@ -716,9 +984,11 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
       findingsInVocabulary,
       findingsOutOfVocabulary,
       findingsInVocabularyByTier,
+      findingsOnDisputedRows,
       caveats,
     },
     byRule,
+    floors,
   };
 }
 

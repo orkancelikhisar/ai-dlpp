@@ -79,17 +79,24 @@ describe("corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl", () =
     expect(spans).toBe(19);
   });
 
-  it("every annotator's own quoted span slices back too", () => {
+  it("every annotator's own quote slices back, at the ONE place it occurs", () => {
     // The annotators quoted at two different EXTENTS -- A the bare
-    // organisation name, B the carrier sentence around it -- and both are kept
-    // verbatim. Both must be real offsets into the item, or the provenance
-    // this file exists to preserve is decorative.
+    // organisation name, B the carrier sentence around it -- and both quotes
+    // are kept verbatim. Neither annotator returned OFFSETS; the offsets beside
+    // each quote were located afterwards by searching the item text, so this
+    // asserts the search was unambiguous as well as correct. A quote occurring
+    // twice would have had its offsets chosen by a string search rather than by
+    // the annotator, and the corpus does carry items with two organisation
+    // names in one sentence.
     let checked = 0;
     for (const row of gold) {
       for (const call of [row.annotators.a, row.annotators.b]) {
-        expect(call.span === undefined).toBe(!call.satisfies);
-        if (call.span) {
-          expect(byId.get(row.itemId)!.text.slice(call.span.start, call.span.end)).toBe(call.span.text);
+        expect(call.quote === undefined).toBe(!call.satisfies);
+        if (call.quote) {
+          const text = byId.get(row.itemId)!.text;
+          expect(text.slice(call.quote.start, call.quote.end)).toBe(call.quote.text);
+          expect(text.split(call.quote.text).length - 1, `${row.itemId} ${call.quote.text}`).toBe(1);
+          expect(text.indexOf(call.quote.text)).toBe(call.quote.start);
           checked += 1;
         }
       }
@@ -97,16 +104,46 @@ describe("corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl", () =
     expect(checked).toBe(38);
   });
 
-  it("keeps A's span inside B's on every positive, which is what their disagreement was", () => {
+  it("adjudicates the ORGANISATION NAME ALONE, not the carrier sentence either annotator quoted", () => {
+    // The span convention, asserted against properties of the MESSAGE rather
+    // than against the row's own `annotators` block. The old form of this test
+    // compared `row.spans` with `row.annotators.a.quote` and nothing else,
+    // which is an expectation derived from the thing under test: widening both
+    // together left every assertion passing, and a sentence-extent gold span is
+    // an `overlap` match and an `exact` and `iou50` MISS -- two of the three
+    // columns would read 0.000 for a reason no reader could see.
+    //
+    // What makes a span "the name alone" without consulting the gold: it is a
+    // run of capitalised words with no lowercase word in it, it is bounded by
+    // non-letters on both sides, and it is a PROPER substring of the sentence
+    // annotator B quoted around it.
+    for (const row of gold.filter((g) => g.satisfies)) {
+      const text = byId.get(row.itemId)!.text;
+      expect(row.spans).toHaveLength(1);
+      const span = row.spans[0]!;
+      expect(span.text, row.itemId).toMatch(/^[A-Z][a-z]+(?: [A-Z][a-z]+)+$/);
+      expect(/[A-Za-z]/.test(text.slice(Math.max(0, span.start - 1), span.start)), row.itemId).toBe(false);
+      expect(/[A-Za-z]/.test(text.slice(span.end, span.end + 1)), row.itemId).toBe(false);
+      const b = row.annotators.b.quote!;
+      expect(b.start, row.itemId).toBeLessThan(span.start);
+      expect(b.end, row.itemId).toBeGreaterThanOrEqual(span.end);
+      expect(b.text.includes(span.text), row.itemId).toBe(true);
+      // And a sentence's worth of glue really is what B carried around it:
+      // MEASURED over the 19, B's quote runs 3 to 12 words longer than the
+      // name. 3 is the shortest carrier the corpus has ("we are pitching X").
+      expect(b.text.split(" ").length - span.text.split(" ").length, row.itemId).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("keeps A's quote inside B's on every positive, which is what their disagreement was", () => {
     // Recorded because it is the whole span story of this round: the two
     // annotators never disagreed about WHICH name, only about how much
-    // sentence to carry with it. The adjudicated span is the name alone.
+    // sentence to carry with it.
     for (const row of gold.filter((g) => g.satisfies)) {
-      const a = row.annotators.a.span!;
-      const b = row.annotators.b.span!;
+      const a = row.annotators.a.quote!;
+      const b = row.annotators.b.quote!;
       expect(b.start).toBeLessThanOrEqual(a.start);
       expect(b.end).toBeGreaterThanOrEqual(a.end);
-      expect(row.spans).toEqual([{ start: a.start, end: a.end, text: a.text }]);
     }
   });
 
@@ -149,6 +186,70 @@ describe("corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl", () =
     expect(disagreements.map((g) => g.itemId)).toEqual([]);
   });
 
+  it("names its policy document, its round and its queue row on every row", () => {
+    // `policy` was unasserted: score.ts:165-171 argues at length that the two
+    // gold files disagree about it ON PURPOSE and that joining two policies
+    // into one denominator is the failure to prevent, and the field carrying
+    // that meaning had nothing pinning it. `rowId` and `round` are the binding
+    // to the handover; `corpus-predicate-round.test.ts` checks where they point.
+    for (const row of gold) {
+      expect(row.policy, row.itemId).toBe("p-fin");
+      expect(row.round, row.itemId).toBe("v2-blind-predicate-all-messages-p-fin");
+      expect(row.rowId, row.itemId).toMatch(/^[0-9a-f]{16}$/);
+    }
+    expect(new Set(gold.map((g) => g.rowId)).size).toBe(189);
+  });
+
+  it("takes the WEAKER of the two annotators' confidences, which is what score.ts documents", () => {
+    // Asserted against the annotators' own fields rather than assumed. It is
+    // vacuous-looking on this artifact and deliberately kept: the two agreed on
+    // `confidence` on all 189 rows, so "the weaker" and "either" name the same
+    // value here, and a row whose adjudicated confidence drifted away from both
+    // annotators would otherwise pass every other assertion in this file.
+    for (const row of gold) {
+      const weaker =
+        row.annotators.a.confidence === "borderline" || row.annotators.b.confidence === "borderline"
+          ? "borderline"
+          : "clear";
+      expect(row.confidence, row.itemId).toBe(weaker);
+    }
+  });
+
+  it("writes an adjudication that says what the row says", () => {
+    // `adjudication` was checked only for `length > 0`, so its prose could
+    // contradict the machine-readable fields beside it -- including the SPAN
+    // CONVENTION sentence, which states the rule the gold spans follow.
+    for (const row of gold) {
+      if (row.status === "disputed") {
+        expect(row.adjudication.startsWith("DISPUTED."), row.itemId).toBe(true);
+      } else {
+        expect(row.adjudication.startsWith(`AGREED ${String(row.satisfies)}, `), row.itemId).toBe(true);
+      }
+      if (row.satisfies) {
+        expect(row.adjudication, row.itemId).toContain(
+          "SPAN CONVENTION: the organisation name alone",
+        );
+        // The sentence that was false before this round's fix: the annotators
+        // returned quotes, not extents.
+        expect(row.adjudication, row.itemId).toContain("NEITHER ANNOTATOR RETURNED OFFSETS");
+        expect(row.adjudication, row.itemId).not.toContain("Both extents are recorded verbatim");
+        expect(row.adjudication, row.itemId).toContain(row.spans[0]!.text);
+      }
+    }
+  });
+
+  it("records that `confidence` carries no information about the SCORED set", () => {
+    // Not a bound, a disclosure. Every borderline row became `disputed`, so
+    // `confidence` is "clear" on all 179 scored rows and the field's stated
+    // purpose -- letting a reader see how much of a result rests on soft
+    // labels -- is vacuous on this artifact. Pinned so a later reader does not
+    // take a uniform column as evidence the scored labels were graded soft
+    // against hard, and so a round that DOES score a borderline row has to
+    // change this line deliberately.
+    expect(gold.filter((g) => g.status === "scored" && g.confidence === "borderline")).toEqual([]);
+    expect(gold.filter((g) => g.confidence === "borderline")).toHaveLength(10);
+  });
+
   it("carries the generator's non-blind prediction in the file but keeps it out of the scorer", () => {
     // The generator's `meta.predicateConstruction.constructed` agreed with the
     // adjudication on all 189 rows. That is worth recording and dangerous to
@@ -163,5 +264,35 @@ describe("corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl", () =
     for (const row of gold) {
       expect(row).not.toHaveProperty("generator");
     }
+  });
+
+  it("states the generator's prediction as the corpus states it, and says where it disagrees", () => {
+    // The generator block was checked only for existence and `blind === false`,
+    // so `constructed` could name the opposite of the corpus's own record and
+    // `agreesWithAdjudication` could be true while the two disagreed. Both are
+    // checked here against the corpus, which is the block's cited source.
+    //
+    // The count is the finding, and it is not flattering: the generator's
+    // construction record equals the adjudicated label on 189 of 189 rows. The
+    // gold is therefore NOT independent of the corpus's construction -- see
+    // `corpus-predicate-round.test.ts`, which pins that as a disclosure rather
+    // than leaving it to be rediscovered.
+    let agree = 0;
+    for (const line of rawLines) {
+      const raw = JSON.parse(line) as {
+        itemId: string;
+        satisfies: boolean;
+        generator: { constructed: boolean; agreesWithAdjudication: boolean };
+      };
+      const meta = byId.get(raw.itemId)!.meta as
+        | { predicateConstruction?: { constructed?: boolean } }
+        | undefined;
+      expect(raw.generator.constructed, raw.itemId).toBe(meta!.predicateConstruction!.constructed);
+      expect(raw.generator.agreesWithAdjudication, raw.itemId).toBe(
+        raw.generator.constructed === raw.satisfies,
+      );
+      if (raw.generator.agreesWithAdjudication) agree += 1;
+    }
+    expect(agree).toBe(189);
   });
 });

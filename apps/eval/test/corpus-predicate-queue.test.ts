@@ -1,3 +1,4 @@
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { loadCorpus } from "../src/driver/corpus.js";
@@ -6,13 +7,18 @@ import { BRIEF_PARAPHRASE_FRAGMENT } from "../src/corpus/labelling.js";
 import { PREDICATE_ID, PREDICATE_QUESTION } from "../src/corpus/questions.js";
 import {
   PREDICATE_QUEUE_SOURCE,
+  QUEUE_FILENAME,
+  assertQueueCarriesNothingElse,
   buildPredicateQueueArtifacts,
 } from "../src/corpus/build-predicate-queue.js";
 import {
+  ROW_ID_ALGORITHM,
+  ROW_ID_HEX_LENGTH,
   SHUFFLE_CONSTRAINT,
   STRATUM_DIMENSIONS,
   adjacencyOf,
   buildPredicateQueue,
+  forbiddenTokensOf,
   rowIdFor,
   shuffledPositions,
   strataOf,
@@ -57,6 +63,15 @@ const BUILT = buildPredicateQueueArtifacts({ salt: TEST_SALT, seed: TEST_SEED })
 const LINES = BUILT.queueJsonl.split("\n").filter((l) => l !== "");
 const ROWS = LINES.map((l) => JSON.parse(l) as Record<string, unknown>);
 const MAP = JSON.parse(BUILT.mapJson) as {
+  what: string;
+  salt: string;
+  seed: string;
+  rowIdAlgorithm: string;
+  shuffleConstraint: string;
+  itemCount: number;
+  shuffle: { algorithm: string; constraint: string; seed: string };
+  source: { path: string; sha256: string; items: number };
+  artifact: { path: string; sha256: string; rows: number };
   rows: { position: number; rowId: string; itemId: string }[];
   adjacency: Record<
     string,
@@ -233,6 +248,88 @@ describe("no value in the queue names a family, a type or a stratum", () => {
   it("makes the rowId structurally incapable of carrying one", () => {
     for (const row of ROWS) expect(String(row["rowId"])).toMatch(/^[0-9a-f]{16}$/);
   });
+
+  it("finds no family name in the item ids either, which predicate-queue.ts cites this file for", () => {
+    // `predicate-queue.ts:25` says of the corpus ids "all 189 match
+    // `^inj-(o|hn)\d\d-\d$` or `^neg-(o|hn)\d\d$` and no family id appears in
+    // any of them. Checked, in `corpus-predicate-queue.test.ts`." It was not:
+    // there was no such assertion anywhere in this file. The claim is true, and
+    // the citation is what was false.
+    const shape = /^inj-(?:o|hn)\d\d-\d$|^neg-(?:o|hn)\d\d$/;
+    for (const item of ITEMS) expect(item.id, item.id).toMatch(shape);
+    // Non-vacuous, and the load-bearing half: the family ids the corpus DOES
+    // carry are real strings, and none of them is a substring of any id.
+    const families = new Set<string>();
+    for (const item of ITEMS) {
+      for (const inj of (item.meta?.["injections"] ?? []) as { family?: string }[]) {
+        if (inj.family !== undefined) families.add(inj.family);
+      }
+    }
+    expect(families.size).toBeGreaterThan(10);
+    for (const family of families) {
+      expect(ITEMS.filter((i) => i.id.includes(family)), family).toEqual([]);
+    }
+  });
+});
+
+describe("the emitter's own refusals, on inputs the committed corpus cannot produce", () => {
+  // Both guards live inside the emitter and were exercised by nothing: the test
+  // above builds from the one committed corpus at the one committed shape, so
+  // `if (false && ...)` on either survived the suite.
+  const TOKENS = ["inj-o01-0", "client-name", "hard-negative"];
+
+  it("refuses a third key on a row", () => {
+    const line = JSON.stringify({ rowId: "0123456789abcdef", text: "hello", itemId: "inj-o01-0" });
+    expect(() => assertQueueCarriesNothingElse(`${line}\n`, TOKENS)).toThrow(/carries keys/);
+  });
+
+  it("refuses a forbidden token outside the message, and allows the same token inside it", () => {
+    const leak = JSON.stringify({ rowId: "client-name-0000", text: "hello" });
+    expect(() => assertQueueCarriesNothingElse(`${leak}\n`, TOKENS)).toThrow(/leaks "client-name"/);
+    const inside = JSON.stringify({ rowId: "0123456789abcdef", text: "the client-name is fine here" });
+    expect(() => assertQueueCarriesNothingElse(`${inside}\n`, TOKENS)).not.toThrow();
+  });
+
+  it("refuses a row whose whole message IS a token", () => {
+    const bare = JSON.stringify({ rowId: "0123456789abcdef", text: "client-name" });
+    expect(() => assertQueueCarriesNothingElse(`${bare}\n`, TOKENS)).toThrow(/text is exactly/);
+  });
+
+  it("names the offending line, so a 189-row emission says which row", () => {
+    const good = JSON.stringify({ rowId: "0123456789abcdef", text: "fine" });
+    const bad = JSON.stringify({ rowId: "0123456789abcdef", text: "fine", extra: 1 });
+    expect(() => assertQueueCarriesNothingElse(`${good}\n${good}\n${bad}\n`, TOKENS)).toThrow(/line 3/);
+  });
+
+  it("builds its token list from the corpus, including every id, family, type, role and entity type", () => {
+    // `forbiddenTokensOf` had no test of its own. The test above deliberately
+    // rebuilds the list rather than importing it, which is right for
+    // independence and leaves the emitter's copy uncovered -- so this compares
+    // the two lists, which is the only comparison that can catch an empty one.
+    const emitted = forbiddenTokensOf(ITEMS as unknown as QueueSourceItem[]);
+    expect(emitted).toEqual(FORBIDDEN);
+    expect(emitted.length).toBeGreaterThan(100);
+    // And on a hand-built item, so the mapping from field to token is visible.
+    expect(
+      forbiddenTokensOf([
+        {
+          id: "inj-x01-0",
+          text: "t",
+          meta: {
+            carrierId: "x01",
+            carrierStratum: "hard-negative",
+            injections: [{ family: "fam", type: "typ", dimensions: { constructedRole: "client" } }],
+          },
+        },
+      ]),
+    ).toEqual(["client", "fam", "hard-negative", "inj-x01-0", "typ", "x01"]);
+    // `constructedRole: "none"` is not a leak and must not be listed.
+    expect(
+      forbiddenTokensOf([
+        { id: "a", text: "t", meta: { injections: [{ dimensions: { constructedRole: "none" } }] } },
+      ]),
+    ).toEqual(["a"]);
+  });
 });
 
 describe("the rowId is opaque and reversible only through the mapping file", () => {
@@ -264,8 +361,81 @@ describe("the rowId is opaque and reversible only through the mapping file", () 
     expect(theirTexts).toEqual(myTexts);
   });
 
-  it("refuses a salt too short to be worth having", () => {
+  it("refuses a salt too short to be worth having, AT the boundary", () => {
     expect(() => rowIdFor("inj-o01-0", "short")).toThrow(/at least 32/);
+    // The 5-character case alone leaves the constant free to be anything above
+    // 5 -- including 6, which is brute-forceable by hand against 189 known ids.
+    // The error message cannot pin it either: it interpolates `salt.length`,
+    // not the threshold.
+    expect(() => rowIdFor("inj-o01-0", "x".repeat(31))).toThrow(/at least 32/);
+    expect(rowIdFor("inj-o01-0", "x".repeat(32))).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("is the HMAC the mapping file says it is, computed independently here", () => {
+    // The only previous check was `rowIdFor(itemId, salt) === entry.rowId`,
+    // which calls the function that produced the value. MEASURED: replacing
+    // HMAC-SHA256(salt, itemId) with SHA-256 over salt||itemId left the map
+    // still claiming HMAC and passed the whole suite. So the expectation is
+    // recomputed here from node:crypto, and the map's own prose is compared
+    // with the implementation rather than with itself.
+    for (const entry of MAP.rows) {
+      const expected = createHmac("sha256", TEST_SALT).update(entry.itemId, "utf8").digest("hex").slice(0, 16);
+      expect(entry.rowId, entry.itemId).toBe(expected);
+    }
+    expect(MAP.rowIdAlgorithm).toBe(ROW_ID_ALGORITHM);
+    expect(MAP.rowIdAlgorithm).toContain("HMAC-SHA256");
+    expect(MAP.rowIdAlgorithm).toContain(String(ROW_ID_HEX_LENGTH));
+    // Non-vacuity: the salt-prefixed digest is a DIFFERENT id, so the two
+    // constructions are distinguishable and this assertion is doing work.
+    const notHmac = createHash("sha256").update(`${TEST_SALT}${MAP.rows[0]!.itemId}`, "utf8").digest("hex").slice(0, 16);
+    expect(notHmac).not.toBe(MAP.rows[0]!.rowId);
+  });
+});
+
+describe("the mapping file says what the emission actually did", () => {
+  // The map is the round's only provenance artifact and nothing but
+  // `rows[].rowId` and `rows[].itemId` was asserted. MEASURED: `position` could
+  // carry the source index, `artifact.sha256` the SOURCE's digest, and
+  // `rowIdAlgorithm`, `itemCount`, `source.path`, `source.sha256` and
+  // `artifact.rows` could all be falsified at once, with a green suite.
+
+  it("records the QUEUE position, not the source index", () => {
+    expect(MAP.rows.map((r) => r.position)).toEqual(ROWS.map((_, i) => i));
+    // Non-vacuous: the queue order is not the source order, so the two indices
+    // genuinely differ. If they agreed, this assertion would prove nothing.
+    const sourceIndexOf = new Map(ITEMS.map((item, i) => [item.id, i]));
+    const disagreements = MAP.rows.filter((r) => sourceIndexOf.get(r.itemId) !== r.position);
+    expect(disagreements.length).toBeGreaterThan(150);
+  });
+
+  it("hashes the artifact it emitted and the source it read, and they are different files", () => {
+    const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+    expect(MAP.artifact.sha256).toBe(digest(BUILT.queueJsonl));
+    expect(MAP.source.sha256).toBe(digest(CORPUS_TEXT));
+    expect(MAP.artifact.sha256).not.toBe(MAP.source.sha256);
+    expect(MAP.artifact.path).toBe(QUEUE_FILENAME);
+    expect(MAP.artifact.rows).toBe(189);
+    expect(MAP.source.path).toBe("corpora/generated/injection-p-fin-v2.labelled.jsonl");
+    expect(MAP.source.items).toBe(189);
+    expect(MAP.itemCount).toBe(189);
+    expect(MAP.what).toContain(QUEUE_FILENAME);
+    expect(MAP.what).toContain("NEVER hand an annotator this file");
+  });
+
+  it("records the salt and the seed it was actually given, not the ones it likes", () => {
+    expect(MAP.salt).toBe(TEST_SALT);
+    expect(MAP.seed).toBe(TEST_SEED);
+    expect(MAP.shuffle.seed).toBe(TEST_SEED);
+    expect(MAP.shuffleConstraint).toBe(SHUFFLE_CONSTRAINT);
+    expect(MAP.shuffle.constraint).toBe(SHUFFLE_CONSTRAINT);
+    // A build with the other salt and the other seed records those instead, so
+    // this is reading the option rather than a hardcoded default.
+    const other = JSON.parse(
+      buildPredicateQueueArtifacts({ salt: OTHER_SALT, seed: OTHER_SEED }).mapJson,
+    ) as { salt: string; seed: string; shuffle: { seed: string } };
+    expect(other.salt).toBe(OTHER_SALT);
+    expect(other.seed).toBe(OTHER_SEED);
+    expect(other.shuffle.seed).toBe(OTHER_SEED);
   });
 });
 
@@ -395,6 +565,30 @@ describe("the builder fails loudly rather than emitting something weaker", () =>
     // And on the corpus: 27 carriers of 7 items each is 27 * 7 * 6 = 1134 same-
     // carrier ordered pairs out of 189 * 188 = 35532.
     expect(measurement("sourceOrder", "carrier").chanceRate).toBeCloseTo(1134 / 35532, 12);
+  });
+
+  it("divides the same-stratum count by the number of ADJACENT PAIRS it reports", () => {
+    // `rate` is `same / (n - 1)` and sits beside `adjacentPairs: n - 1`, and
+    // nothing tied the two together: the other assertions on it are
+    // inequalities and a 0.12 tolerance band, which absorb the 0.53% error at
+    // n = 189. MEASURED: `same / n` survived the whole suite.
+    for (const order of ["sourceOrder", "queueOrder", "rowIdSortedOrder"] as const) {
+      for (const dimension of STRATUM_DIMENSIONS) {
+        const m = measurement(order, dimension);
+        expect(m.rate * m.adjacentPairs, `${order} ${dimension}`).toBeCloseTo(m.sameStratumPairs, 9);
+      }
+    }
+    // And on a case small enough that n and n - 1 are obviously different: two
+    // adjacent same-carrier pairs among three, so 2/3 and not 2/4.
+    const three = adjacencyOf([
+      { id: "a", text: "t", meta: { carrierId: "c", carrierRegister: "casual", density: 1, predicateConstruction: { constructed: false } } },
+      { id: "b", text: "t", meta: { carrierId: "c", carrierRegister: "casual", density: 1, predicateConstruction: { constructed: false } } },
+      { id: "c", text: "t", meta: { carrierId: "c", carrierRegister: "casual", density: 1, predicateConstruction: { constructed: false } } },
+      { id: "d", text: "t", meta: { carrierId: "z", carrierRegister: "casual", density: 1, predicateConstruction: { constructed: false } } },
+    ]).find((m) => m.dimension === "carrier")!;
+    expect(three.adjacentPairs).toBe(3);
+    expect(three.sameStratumPairs).toBe(2);
+    expect(three.rate).toBeCloseTo(2 / 3, 12);
   });
 
   it("measures adjacency over the order it is given, not the order it likes", () => {

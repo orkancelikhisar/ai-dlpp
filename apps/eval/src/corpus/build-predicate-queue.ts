@@ -18,13 +18,21 @@ import {
  *
  * ## Why the output directory is an argument and the salt is not committed
  *
- * The queue is a handover artifact for one round, not a corpus, so it does not
- * belong under `corpora/generated/` where the committed-bytes tests would pin
- * it. More importantly the SALT and the SEED must not be committed: the seed
- * alone reconstructs the row ORDER from the source corpus, which re-groups the
- * strata the shuffle exists to break, and the salt alone inverts every row id
- * by hashing the 189 known ids. Both are generated here and written only to the
- * mapping file.
+ * The queue is a LIVE handover while a round is running, so it is written to a
+ * directory the caller names rather than into the tree. The SALT and the SEED
+ * must not be committed at all: the seed alone reconstructs the row ORDER from
+ * the source corpus, which re-groups the strata the shuffle exists to break,
+ * and the salt alone inverts every row id by hashing the 189 known ids. Both
+ * are generated here and written only to the mapping file.
+ *
+ * WHAT HAPPENS AFTER THE ROUND IS DIFFERENT, and the first version of this
+ * comment was wrong about it. A finished round's queue bytes ARE committed --
+ * `corpora/generated/injection-p-fin-v2.predicate-queue.jsonl` is the file the
+ * predicate round's two annotators read -- because a handover nobody can
+ * inspect is a blindness claim nobody can check, which is exactly what that
+ * round shipped. The salt and the seed still stay out; `predicate-round.ts`
+ * records sha256 commitments to them and states plainly that the queue can
+ * therefore be verified but not regenerated.
  *
  * Pass `--salt` and `--seed` to reproduce a previous emission from its mapping
  * file; omit them and this generates 128 bits of each.
@@ -71,31 +79,30 @@ export interface EmittedPredicateQueue {
 }
 
 /**
- * Builds both files' bytes.
+ * The emitter's own refusal: it re-reads the SERIALIZED queue and throws if any
+ * corpus family id, entity type, `neg:` label, role, carrier id or item id
+ * survives into the part of a row that is not the message.
  *
- * The scan below is a self-check, not the test: it re-reads the SERIALIZED
- * queue and refuses to return if any corpus family id, entity type, `neg:`
- * label, role, carrier id or item id survives into the part of a row that is
- * not the message. It is deliberately restricted to the non-`text` part,
- * because the message text legitimately contains some of those strings as
- * ordinary English -- MEASURED on the committed corpus: "client" in 7 items,
- * "competitor" in 8, "counterparty" in 7 (all seven of them carrier hn02's,
- * whose opening sentence is about a counterparty), and the carrier ids "o14"
- * and "o07" as accidental substrings of two random tokens. Scanning the whole
- * line would fail on the message an annotator is supposed to read.
+ * DELIBERATELY RESTRICTED TO THE NON-`text` PART, because the message text
+ * legitimately contains some of those strings as ordinary English -- MEASURED
+ * on the committed corpus: "client" in 7 items, "competitor" in 8,
+ * "counterparty" in 7 (all seven of them carrier hn02's, whose opening sentence
+ * is about a counterparty), and the carrier ids "o14" and "o07" as accidental
+ * substrings of two random tokens. Scanning the whole line would fail on the
+ * message an annotator is supposed to read.
+ *
+ * EXPORTED so it can be exercised on inputs the committed corpus cannot
+ * produce. It was inline and therefore untestable: the test only ever builds
+ * from the one committed corpus at the one committed shape, so both guards
+ * could be disabled -- MEASURED, `if (false && ...)` on either -- with a green
+ * suite. A guard broken since it was written looks identical to a working one
+ * until the next round emits through it.
+ *
+ * @throws when a row has any key but `rowId` and `text`, when a forbidden token
+ *   appears anywhere outside the message, or when a row's whole message IS one
+ *   of the tokens.
  */
-export function buildPredicateQueueArtifacts(options: {
-  readonly salt: string;
-  readonly seed: string;
-  readonly sourcePath?: string;
-}): EmittedPredicateQueue {
-  const sourcePath = options.sourcePath ?? PREDICATE_QUEUE_SOURCE;
-  const sourceText = readFileSync(sourcePath, "utf8");
-  const items = loadCorpus(sourceText) as unknown as readonly QueueSourceItem[];
-  const built = buildPredicateQueue(items, { salt: options.salt, seed: options.seed });
-  const queueJsonl = serializePredicateQueue(built.rows);
-
-  const tokens = forbiddenTokensOf(items);
+export function assertQueueCarriesNothingElse(queueJsonl: string, tokens: readonly string[]): void {
   for (const [i, line] of queueJsonl.split("\n").entries()) {
     if (line === "") continue;
     const parsed = JSON.parse(line) as Record<string, unknown>;
@@ -113,6 +120,21 @@ export function buildPredicateQueueArtifacts(options: {
       }
     }
   }
+}
+
+/** Builds both files' bytes, refusing through `assertQueueCarriesNothingElse` before returning. */
+export function buildPredicateQueueArtifacts(options: {
+  readonly salt: string;
+  readonly seed: string;
+  readonly sourcePath?: string;
+}): EmittedPredicateQueue {
+  const sourcePath = options.sourcePath ?? PREDICATE_QUEUE_SOURCE;
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const items = loadCorpus(sourceText) as unknown as readonly QueueSourceItem[];
+  const built = buildPredicateQueue(items, { salt: options.salt, seed: options.seed });
+  const queueJsonl = serializePredicateQueue(built.rows);
+
+  assertQueueCarriesNothingElse(queueJsonl, forbiddenTokensOf(items));
 
   const mapJson =
     JSON.stringify(

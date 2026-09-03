@@ -11,8 +11,10 @@ import {
   intersectionLength,
   iou,
   loadTier2Gold,
+  bestFloorF1,
   scoreArm,
   scoreArms,
+  scoreTrivialFloors,
   spansMatch,
   winnersByRule,
   type MatchRule,
@@ -388,6 +390,60 @@ describe("scoreArm", () => {
     expect(scored.coverage.caveats.join(" ")).toMatch(/1 of 2 gold rows are adjudicated disputed/);
   });
 
+  it("excludes a disputed NEGATIVE, which is the only shape any shipped gold actually has", () => {
+    // The fixture above is `satisfies: true, status: disputed`, and no row of
+    // that shape exists in any committed gold file. All ten disputed rows of
+    // injection-p-fin-v2.gold-tier2-predicate.jsonl are `satisfies: false,
+    // spans: []`, and smoke.gold-tier2.jsonl has none at all -- so a filter
+    // keying on `satisfies` or on `spans.length` instead of on `status` passed
+    // the whole suite. MEASURED: both `g.status === "scored" || !g.satisfies`
+    // and `... || (g.spans.length === 0 && !g.satisfies)` survived 662 tests.
+    const scored = scoreArm({
+      records: [
+        makeRecord({ itemId: "clean", text: TAMARIND, findings: [{ start: 43, end: 59, text: "Tamarind Grocers" }] }),
+        makeRecord({ itemId: "argued", text: TAMARIND, findings: [{ start: 0, end: 3, text: "Can" }] }),
+      ],
+      gold: [
+        goldRow({ itemId: "clean", satisfies: true, spans: [{ start: 43, end: 59, text: "Tamarind Grocers" }] }),
+        goldRow({ itemId: "argued", satisfies: false, status: "disputed" }),
+      ],
+    });
+    expect(scored.coverage.goldRowsScored).toBe(1);
+    expect(scored.coverage.goldRowsDisputed).toBe(1);
+    // The finding on the disputed row is suppressed, and the count that says so
+    // is reported rather than left to be inferred from the row count.
+    expect(scored.coverage.findingsInVocabulary).toBe(1);
+    expect(scored.coverage.findingsOnDisputedRows).toBe(1);
+    for (const rule of MATCH_RULES) {
+      expect(scored.byRule[rule], rule).toMatchObject({ tp: 1, fp: 0, fn: 0, precision: 1, recall: 1 });
+    }
+    expect(scored.coverage.caveats.join(" ")).toMatch(/that exclusion is ONE-SIDED/);
+    expect(scored.coverage.caveats.join(" ")).toMatch(/removed 1 of this arm's 2 in-vocabulary findings/);
+  });
+
+  it("keeps a row the arm was never asked about out of the RECALL DENOMINATOR, not only out of fn", () => {
+    // The previous test asserts `fn === 0`, which cannot see a denominator that
+    // adds `goldRowsWithoutRecord` back: with no true positive, recall is
+    // undefined either way. MEASURED: `tp / (tp + fn + goldRowsWithoutRecord)`
+    // survived the whole apps/eval suite. This fixture has a true positive, so
+    // the two forms differ -- 1.0 against 0.5.
+    const scored = scoreArm({
+      records: [
+        makeRecord({ itemId: "asked", text: TAMARIND, findings: [{ start: 43, end: 59, text: "Tamarind Grocers" }] }),
+      ],
+      gold: [
+        goldRow({ itemId: "asked", satisfies: true, spans: [{ start: 43, end: 59, text: "Tamarind Grocers" }] }),
+        goldRow({ itemId: "unasked", satisfies: true, spans: [{ start: 43, end: 59, text: "Tamarind Grocers" }] }),
+      ],
+    });
+    expect(scored.coverage.goldRowsWithoutRecord).toBe(1);
+    for (const rule of MATCH_RULES) {
+      expect(scored.byRule[rule].fn, rule).toBe(0);
+      expect(scored.byRule[rule].recall, rule).toBe(1);
+      expect(scored.byRule[rule].f1, rule).toBe(1);
+    }
+  });
+
   it("does not count a gold row the arm was never asked about as a miss", () => {
     const scored = scoreArm({
       records: [makeRecord({ itemId: "asked", text: TAMARIND, findings: [] })],
@@ -670,6 +726,102 @@ describe("winnersByRule", () => {
       expect(r.winners).toEqual(["answers"]);
       expect(r.unrankable).toEqual(["silent"]);
     }
+  });
+});
+
+describe("the trivial floor", () => {
+  // Two capitalised bigrams, one of them the gold span. Worked by hand so the
+  // expectations are not read back from the readers: a reader returning both
+  // scores 1 tp and 1 fp; a reader returning only the first scores 1 tp and 0
+  // fp because the gold name comes first here; a whole-message reader overlaps
+  // the gold span and matches neither its offsets nor half its union.
+  const TEXT = "we are pitching Ashcombe Holdings next month and Bexmoor Associates leases us the floor";
+  const SPAN = { start: 16, end: 33, text: "Ashcombe Holdings" };
+
+  it("slices back, so the hand-worked offsets are the ones being scored", () => {
+    expect(TEXT.slice(SPAN.start, SPAN.end)).toBe(SPAN.text);
+    expect(TEXT.indexOf("Bexmoor Associates")).toBe(49);
+  });
+
+  it("scores each reader over the same items, with the same matcher, under all three rules", () => {
+    const floors = scoreTrivialFloors([{ text: TEXT, goldSpans: [{ start: SPAN.start, end: SPAN.end }] }]);
+    expect(floors.map((f) => f.reader)).toEqual([
+      "capitalised-multiword",
+      "first-capitalised-multiword",
+      "whole-message",
+    ]);
+    const byId = new Map(floors.map((f) => [f.reader, f]));
+    expect(byId.get("capitalised-multiword")!.findings).toBe(2);
+    expect(byId.get("first-capitalised-multiword")!.findings).toBe(1);
+    expect(byId.get("whole-message")!.findings).toBe(1);
+    for (const rule of MATCH_RULES) {
+      expect(byId.get("capitalised-multiword")!.byRule[rule], rule).toMatchObject({ tp: 1, fp: 1, fn: 0 });
+      expect(byId.get("first-capitalised-multiword")!.byRule[rule], rule).toMatchObject({ tp: 1, fp: 0, fn: 0 });
+    }
+    expect(byId.get("whole-message")!.byRule.overlap).toMatchObject({ tp: 1, fp: 0, fn: 0 });
+    expect(byId.get("whole-message")!.byRule.exact).toMatchObject({ tp: 0, fp: 1, fn: 1 });
+    expect(byId.get("whole-message")!.byRule.iou50).toMatchObject({ tp: 0, fp: 1, fn: 1 });
+    expect(bestFloorF1(floors, "overlap")).toBe(1);
+  });
+
+  it("finds the same thing on every item, and would catch a switch to a shared exec loop", () => {
+    // The capitalised readers share one `g` regex. MEASURED on node 26, that is
+    // safe with `matchAll`, which iterates a clone and leaves `lastIndex` at 0;
+    // it would NOT be safe with `exec`, which advances it, so the second item
+    // would be scanned from where the first stopped. This cannot fail against
+    // the current implementation and is recorded as such -- it is a guard on
+    // the shape, not a claim that the shape is currently at risk.
+    const floors = scoreTrivialFloors([
+      { text: TEXT, goldSpans: [] },
+      { text: TEXT, goldSpans: [] },
+      { text: TEXT, goldSpans: [] },
+    ]);
+    expect(floors.find((f) => f.reader === "capitalised-multiword")!.findings).toBe(6);
+    expect(floors.find((f) => f.reader === "first-capitalised-multiword")!.findings).toBe(3);
+  });
+
+  it("rides along on every scored arm and names the rules the arm does not beat it under", () => {
+    // The floor is not a separate report a writer can forget: it is computed
+    // over exactly the rows the arm was scored on, and any rule where the arm
+    // fails to beat it becomes a caveat on the arm.
+    const scored = scoreArm({
+      records: [makeRecord({ itemId: "one", text: TEXT, findings: [{ start: 0, end: 2, text: "we" }] })],
+      gold: [goldRow({ itemId: "one", satisfies: true, spans: [SPAN] })],
+    });
+    expect(scored.floors.map((f) => f.reader)).toContain("capitalised-multiword");
+    expect(scored.byRule.overlap.f1).toBe(0);
+    const caveats = scored.coverage.caveats.join(" ");
+    for (const rule of MATCH_RULES) {
+      expect(caveats, rule).toContain(`under ${rule} this arm's F1 (0.000) DOES NOT BEAT the trivial floor`);
+    }
+  });
+
+  it("says nothing about an arm that beats it", () => {
+    const scored = scoreArm({
+      records: [makeRecord({ itemId: "one", text: TEXT, findings: [{ start: SPAN.start, end: SPAN.end, text: SPAN.text }] })],
+      gold: [goldRow({ itemId: "one", satisfies: true, spans: [SPAN] })],
+    });
+    expect(scored.byRule.overlap.f1).toBe(1);
+    // It ties the perfect floor here rather than beating it, which is exactly
+    // what the caveat should say -- "does not beat" and not "loses to".
+    expect(scored.coverage.caveats.join(" ")).toContain("DOES NOT BEAT the trivial floor");
+    // An arm that DOES beat it: two items with no capitalised word anywhere, so
+    // the capitalised readers find nothing at all, and one scored negative, so
+    // the whole-message reader buys its overlap recall with a false positive.
+    const harder = scoreArm({
+      records: [
+        makeRecord({ itemId: "one", text: "the answer is xy", findings: [{ start: 14, end: 16, text: "xy" }] }),
+        makeRecord({ itemId: "two", text: "nothing here", findings: [] }),
+      ],
+      gold: [
+        goldRow({ itemId: "one", satisfies: true, spans: [{ start: 14, end: 16, text: "xy" }] }),
+        goldRow({ itemId: "two", satisfies: false }),
+      ],
+    });
+    expect(harder.byRule.overlap.f1).toBe(1);
+    expect(bestFloorF1(harder.floors, "overlap")).toBeCloseTo(2 / 3, 12);
+    expect(bestFloorF1(harder.floors, "exact")).toBe(0);
+    expect(harder.coverage.caveats.join(" ")).not.toContain("DOES NOT BEAT");
   });
 });
 
