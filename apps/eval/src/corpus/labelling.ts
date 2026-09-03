@@ -582,10 +582,42 @@ export const LABELS_BY_ITEM: Readonly<Record<Annotator, ReadonlyMap<string, Anno
   B: new Map(ANNOTATOR_LABELS.B.map((l) => [l.itemId, l])),
 };
 
-/** The items both annotators labelled, sorted. Empty if the two sets ever diverge. */
-export const LABELLED_ITEM_IDS: readonly string[] = ANNOTATOR_LABELS.A.map((l) => l.itemId)
-  .filter((id) => LABELS_BY_ITEM.B.has(id))
-  .sort();
+/**
+ * The items both annotators labelled, sorted.
+ *
+ * This docblock used to end "Empty if the two sets ever diverge", which the
+ * code has never done: the expression is an INTERSECTION, so on divergence it
+ * silently SHRINKS. A future round where B skipped one item would drop that
+ * item from the gold file, from `predicateAdjudication`'s counts and from
+ * `coverage` -- quietly reducing the round's scope with a green suite and a
+ * reader expecting a loud empty set.
+ *
+ * So the divergence is now a throw at module load rather than a comment. The
+ * intersection is kept as the value because every consumer wants "items with
+ * two answers"; what changed is that reaching a state where the intersection is
+ * smaller than either side is refused instead of absorbed.
+ */
+export function assertBothAnnotatorsLabelledTheSameItems(
+  a: readonly string[] = ANNOTATOR_LABELS.A.map((l) => l.itemId),
+  b: readonly string[] = ANNOTATOR_LABELS.B.map((l) => l.itemId),
+): readonly string[] {
+  const inA = new Set(a);
+  const inB = new Set(b);
+  const onlyA = a.filter((id) => !inB.has(id)).sort();
+  const onlyB = b.filter((id) => !inA.has(id)).sort();
+  if (onlyA.length > 0 || onlyB.length > 0) {
+    throw new Error(
+      `the two annotators labelled different item sets: ${onlyA.length} only A ` +
+        `(${onlyA.join(", ") || "none"}), ${onlyB.length} only B (${onlyB.join(", ") || "none"}). ` +
+        "Every downstream count -- the gold file, the predicate adjudication, the coverage report -- " +
+        "is over the intersection, so a silent divergence would shrink the round's scope without " +
+        "saying so.",
+    );
+  }
+  return [...a].sort();
+}
+
+export const LABELLED_ITEM_IDS: readonly string[] = assertBothAnnotatorsLabelledTheSameItems();
 
 /**
  * What the generator proposed for every contested span, and how it was
@@ -815,7 +847,19 @@ export function overrideReport(
       "is a recorded dissent inside an affirmation, and the adjudication below turns on it. The " +
       "predicate override rate of 0 for both is uninformative for a different reason: the " +
       "construction predicted 'no' on every covered item, so agreeing cost neither annotator a " +
-      "positive call.",
+      "positive call. AND THE SPAN RATE HAS TO BE READ AGAINST THE CHANNEL IT CAME THROUGH, which " +
+      "this note used to leave to a separate section. The queue's span objects carry no type, so " +
+      "both annotators recovered the generator's proposal by opening " +
+      "corpora/generated/injection-p-fin-v2.jsonl and reading the contested offsets against `gold` " +
+      "-- and for a contested span, ABSENCE from gold IS the proposal. All 20 are absent, so that " +
+      "read handed both annotators the generator's answer for all 20 rather than merely the " +
+      "context. It is recorded as a structural breach (blindness.channels[read]) and it is the " +
+      "reason A's 0 of 20 cannot be read as independent corroboration. What keeps the round from " +
+      "being a rubber stamp is B: B committed the 20 predicate answers to a file BEFORE opening " +
+      "gold, then overrode the same proposal on 7 of 20 after reading it -- so the channel " +
+      "demonstrably did not determine the answer, on the one annotator whose ordering makes that " +
+      "checkable. The 13 spans this round moved into the false-positive denominator rest on an " +
+      "affirmation from A that was not blind and an affirmation from B that was not either.",
   };
 }
 
@@ -980,11 +1024,29 @@ export function contestedSpansOf(item: {
  * and a family-level ruling applied to a split family would put an adjudication
  * on items nobody adjudicated. So this throws instead.
  */
-export function assertFamilyUniformity(typeOfItem: ReadonlyMap<string, string>): void {
+export function assertFamilyUniformity(typesOfItem: ReadonlyMap<string, readonly string[]>): void {
+  // Before the per-family check, the precondition it silently assumed. An
+  // `AnnotatorLabel` carries ONE `spanLabelCorrect` for the whole item, so an
+  // item bearing contested spans of two different types has one answer and two
+  // families to attribute it to. The previous signature took `itemId -> type`
+  // and was fed by a loop that overwrote, so such an item presented only its
+  // LAST contested type and a split family could pass. Every item in the
+  // shipped corpus carries exactly one contested span; this throws rather than
+  // guessing if that ever stops being true.
+  for (const [itemId, types] of typesOfItem) {
+    const distinct = [...new Set(types)];
+    if (distinct.length > 1) {
+      throw new Error(
+        `item ${itemId} carries contested spans of ${distinct.length} types (${distinct.sort().join(", ")}) ` +
+          "and this round records one span answer per item, so neither family's adjudication can be " +
+          "attributed to it",
+      );
+    }
+  }
   for (const annotator of ANNOTATORS) {
     const byType = new Map<string, Set<boolean>>();
     for (const label of ANNOTATOR_LABELS[annotator]) {
-      const type = typeOfItem.get(label.itemId);
+      const type = typesOfItem.get(label.itemId)?.[0];
       if (type === undefined) continue;
       const set = byType.get(type) ?? new Set<boolean>();
       set.add(label.spanLabelCorrect);
@@ -1038,9 +1100,18 @@ export interface PredicateVerdict {
  * difference is one item -- inj-o15-1, which A flagged borderline and B did not
  * -- and no positives either way.
  */
-export function predicateVerdictFor(itemId: string): PredicateVerdict {
-  const a = LABELS_BY_ITEM.A.get(itemId);
-  const b = LABELS_BY_ITEM.B.get(itemId);
+/**
+ * `labels` defaults to the shipped round and is injectable for the same reason
+ * `overrideReport`'s arguments are: the shipped round reaches only two of this
+ * function's four branches, so a test that can only run it over the real labels
+ * cannot exercise the others. Nothing in the pipeline passes anything else.
+ */
+export function predicateVerdictFor(
+  itemId: string,
+  labels: Readonly<Record<Annotator, ReadonlyMap<string, AnnotatorLabel>>> = LABELS_BY_ITEM,
+): PredicateVerdict {
+  const a = labels.A.get(itemId);
+  const b = labels.B.get(itemId);
   if (a === undefined || b === undefined) {
     return {
       itemId,
@@ -1102,12 +1173,33 @@ export interface PredicateAdjudication {
   readonly disputedRateOfCovered: number;
   readonly positives: number;
   readonly negatives: number;
+  /**
+   * The number of `pred:` gold SPANS in the emitted rows, counted from them.
+   *
+   * Not `positives`. It was `positives`, and that was a statement of intent
+   * rather than of fact: `tier2GoldRows` writes `spans: []` on every row it
+   * builds and has no path from an annotator's yes/no to an offset, so a round
+   * that adjudicated a positive would have published "N gold spans emitted"
+   * while emitting none -- and would in fact have failed the tier-2 schema,
+   * which requires a satisfying row to name at least one span. The builder now
+   * refuses that case explicitly, and this field is passed the count the
+   * serialized rows actually carry.
+   */
   readonly predicateGoldSpansEmitted: number;
   readonly perItem: readonly PredicateVerdict[];
   readonly verdict: string;
 }
 
-export function predicateAdjudication(allItemIds: readonly string[]): PredicateAdjudication {
+/**
+ * `goldSpansEmitted` is supplied by the caller and never derived here, for the
+ * reason standing convention 3 exists: this function knows what the annotators
+ * ANSWERED, and only the builder knows what was WRITTEN. A field describing
+ * what ran is populated from what ran.
+ */
+export function predicateAdjudication(
+  allItemIds: readonly string[],
+  goldSpansEmitted: number,
+): PredicateAdjudication {
   const perItem = allItemIds.map((id) => predicateVerdictFor(id));
   const covered = perItem.filter((v) => v.state !== "uncovered");
   const labelled = covered.filter((v) => v.state === "labelled");
@@ -1128,7 +1220,7 @@ export function predicateAdjudication(allItemIds: readonly string[]): PredicateA
     disputedRateOfCovered: covered.length === 0 ? 0 : (covered.length - labelled.length) / covered.length,
     positives,
     negatives: labelled.length - positives,
-    predicateGoldSpansEmitted: positives,
+    predicateGoldSpansEmitted: goldSpansEmitted,
     perItem,
     verdict:
       positives === 0
@@ -1138,7 +1230,9 @@ export function predicateAdjudication(allItemIds: readonly string[]): PredicateA
           "commissioned for was not delivered. The cause is scope, not judgement: the covered items " +
           "were selected for span contestation and are disjoint from the 19 the generator predicts " +
           "positive, and both annotators said so independently before this was computed."
-        : `${positives} adjudicated predicate positive(s), each emitted as a ${PREDICATE_ID} gold span.`,
+        : `${positives} adjudicated predicate positive(s), carrying ${goldSpansEmitted} emitted ` +
+          `${PREDICATE_ID} gold span(s). If those two numbers disagree the round emitted fewer spans ` +
+          "than it adjudicated positives, which the emit gate refuses.",
   };
 }
 

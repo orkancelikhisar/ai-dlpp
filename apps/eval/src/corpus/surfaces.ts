@@ -26,15 +26,38 @@ import {
  * MEASURED on `corpora/generated/injection-p-fin-adjudicated-v1.jsonl`: 13 of
  * its 24 confusable families are 1:1 with an entry in the IR's own
  * `counterExamples` lists, and those 13 carry 59 of its 108 confusable spans.
- * A counterExample is text the compiled arm is SHOWN. So on more than half the
- * confusable spans the corpus was asking "is this a PAN?" of a model that had
- * already been handed "ABCDE1234F is not a PAN" in its prompt. The positives
- * are the same story from the other side: an IFSC, a UPI address, a labelled
- * account number, a CIF, a CRN, a KYC id, an AKIA key, an xoxb token, a
- * postgres URL and a mongodb+srv URL are the IR's `examples` array read out
- * surface for surface.
+ * The positives are the same story from the other side: an IFSC, a UPI address,
+ * a labelled account number, a CIF, a CRN, a KYC id, an AKIA key, an xoxb
+ * token, a postgres URL and a mongodb+srv URL are the IR's `examples` array
+ * read out surface for surface.
  *
- * So the rule here, and `corpus-surfaces.test.ts` enforces both halves:
+ * ## Which arm that actually reaches, corrected
+ *
+ * An earlier version of this paragraph said "a counterExample is text the
+ * compiled arm is SHOWN ... already handed 'ABCDE1234F is not a PAN' in its
+ * prompt". That is FALSE, and MEASURED false three ways. `judge.ts`'s system
+ * prompt excludes `examples` and `counterExamples` and says so at
+ * `packages/tier2/src/judge.ts:496-501`; `baselineB.ts` is handed entityType
+ * IDS ONLY plus the policy document (`baselineB.ts:881-895`); tier 1 reads
+ * `nlDefinition`. And none of the 23 counterExamples or 20 examples occurs
+ * anywhere in `policies/p-fin.md`, so the prompting arm does not meet them
+ * through the document either. The only consumer in the repository is
+ * `packages/compiler/src/stages/selftest.ts:137`, which generates the
+ * compiler's own self-test cases.
+ *
+ * The channel is real but it is MECHANICAL, not textual: the compiled arm's
+ * tier-0 rules and validators were derived to reject exactly those surfaces --
+ * `pan-structure` rejects `ABCDE1234F`, `verhoeff` rejects `1234 5678 9012` --
+ * so a confusable family that IS a counterExample surface asks the compiled arm
+ * about a string its validator was written against, and it gets that precision
+ * for free. Naming that correctly changes what the check below is worth: it is
+ * a guard against re-testing the compiler's own engineered exclusions, not
+ * against a leak into a prompt.
+ *
+ * So the rule here, and `corpus-v2.test.ts` enforces both halves, at :91, :97
+ * and :123. (An earlier version of this line cited a per-module test file for
+ * this module. No such file has ever existed; `corpus-v2.test.ts` cites every
+ * test file the corpus modules name, and fails on one that is not there.)
  *
  * 1. Every mint is written from a published format rule -- the Income Tax
  *    Department's PAN and TAN layouts, UIDAI's twelve digits and Verhoeff check,

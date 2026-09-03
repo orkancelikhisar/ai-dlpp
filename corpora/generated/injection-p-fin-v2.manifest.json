@@ -1016,7 +1016,7 @@
       "neg-hn12"
     ],
     "disjoint": true,
-    "devSha256Note": "the split is a pure function of the seed and the generator version; regenerating with both unchanged reproduces these lists exactly, which is what 'frozen before tuning' means here"
+    "devSha256Note": "the split is a pure function of the seed and the generator version; regenerating with both unchanged reproduces these lists exactly. That is DETERMINISM and it is NOT what spec 6.2 means by 'test frozen before any tuning' -- an earlier version of this note claimed it was. Spec 6.2 asks that nothing be selected using the test half, and this corpus does not meet that: measureLeakage runs over all 189 items, dev and test pooled (build-v2.ts passes the whole loadCorpus result), and families were removed and rewritten on what those pooled measurements said. The selection was for leakage rather than for accuracy, which makes the contamination milder than tuning a threshold would be; it does not make the test slice held out. Every arm run so far has also SCORED all 189 with no split on any row, so a pooled number cannot be reduced to a test-only one after the fact."
   },
   "gaps": [
     {
@@ -1402,18 +1402,36 @@
   },
   "leakage": {
     "boost": {
-      "window": 70,
       "terms": 38,
-      "goldSpans": 108,
-      "goldSpansWithBoost": 49,
-      "goldRate": 0.4537037037037037,
-      "confusableSpans": 219,
-      "confusableSpansWithBoost": 101,
-      "confusableRate": 0.4611872146118721,
-      "delta": -0.0074835109081684,
-      "goldOwnTypeRate": 0.4351851851851852,
-      "confusablePairedTypeRate": 0.410958904109589,
-      "ownTypeDelta": 0.024226281075596157
+      "asTier0Reads": {
+        "window": 40,
+        "matching": "substring, span's own text INCLUDED in the window -- packages/core/src/detect/tier0.ts hasNearbyKeyword",
+        "goldSpans": 108,
+        "goldSpansWithBoost": 54,
+        "goldRate": 0.5,
+        "confusableSpans": 219,
+        "confusableSpansWithBoost": 93,
+        "confusableRate": 0.4246575342465753,
+        "delta": 0.07534246575342468,
+        "goldOwnTypeRate": 0.48148148148148145,
+        "confusablePairedTypeRate": 0.3835616438356164,
+        "ownTypeDelta": 0.09791983764586504
+      },
+      "wideWordBoundary": {
+        "window": 70,
+        "matching": "word boundary, span's own text EXCLUDED from the window -- this module's boostNear",
+        "goldSpans": 108,
+        "goldSpansWithBoost": 49,
+        "goldRate": 0.4537037037037037,
+        "confusableSpans": 219,
+        "confusableSpansWithBoost": 101,
+        "confusableRate": 0.4611872146118721,
+        "delta": -0.0074835109081684,
+        "goldOwnTypeRate": 0.4351851851851852,
+        "confusablePairedTypeRate": 0.410958904109589,
+        "ownTypeDelta": 0.024226281075596157
+      },
+      "verdict": "NOT SYMMETRIC under the tier-0 reading. A contextBoost keyword sits near 50.0% of gold spans and 42.5% of confusable spans (delta +0.0753), and on the sharper own-entityType form 48.1% against 38.4% (delta +0.0979). The residual favours the compiled arm. It is far smaller than the corpus this replaces -- which read +0.4537 and +0.4352 on the same two forms -- and it is not zero, so a per-entityType accuracy number off this corpus carries a keyword advantage of that size for any arm that reads contextBoost."
     },
     "orthography": {
       "goldSpans": 108,
@@ -1423,7 +1441,39 @@
       "oracleSpans": 306,
       "oracleSpansOnGold": 97,
       "oraclePrecision": 0.31699346405228757,
-      "oracleRecall": 0.8703703703703703
+      "oracleRecall": 0.8703703703703703,
+      "asScored": {
+        "rule": "overlap, maximum one-to-one matching -- the shape apps/eval/src/driver/score.ts uses",
+        "tp": 94,
+        "fp": 212,
+        "fn": 14,
+        "precision": 0.30718954248366015,
+        "recall": 0.8703703703703703,
+        "f1": 0.45410628019323673
+      },
+      "budgetMatched": {
+        "budget": "the item's own gold-span count",
+        "ranking": "document order -- the oracle's first N hits, left to right",
+        "tp": 74,
+        "fp": 31,
+        "fn": 34,
+        "precision": 0.7047619047619048,
+        "recall": 0.6851851851851852,
+        "f1": 0.6948356807511737
+      },
+      "itemsWithGold": 108,
+      "firstHitIsGold": 74,
+      "firstHitIsGoldRate": 0.6851851851851852,
+      "verdict": "a reader that returns every orthographically odd region scores P 0.307 R 0.870 on this corpus, scored exactly as an arm is; told how many spans to return on each item it scores P 0.705 R 0.685, and its first hit in document order is a gold span on 74 of 108 items carrying one (68.5%). THIS IS THE FLOOR ANY ACCURACY NUMBER OFF THIS CORPUS SITS ON. An arm scoring near these figures has not been shown to be reading the policy rather than the character classes. solvedRate is reported beside them and certifies nothing: one same-shape distractor per positive drives it to zero whatever the rest of the message looks like."
+    },
+    "position": {
+      "itemsWithBoth": 108,
+      "goldFirst": 84,
+      "goldFirstRate": 0.7777777777777778,
+      "shadowedPairs": 105,
+      "distractorAfterGold": 81,
+      "distractorAfterGoldRate": 0.7714285714285715,
+      "verdict": "the shape-matched distractor is placed after the span it shadows on 81 of 105 pairs (77.1%), and on 84 of 108 items carrying both a gold and a confusable span the EARLIER span is the gold one (77.8% against a 50% coin flip). THIS IS AN OPEN LEAK. `generate.ts` places the distractor one slot along from its gold span with no randomisation, so position substitutes for the orthographic discriminator the distractor removed. It is not fixed here because fixing it moves every offset in the corpus and the labels a blind round wrote are about these offsets."
     },
     "roles": {
       "orgSpans": 59,
@@ -1436,15 +1486,72 @@
         "Marrowfield Group",
         "Tarnwick Industries"
       ],
-      "namesInOneClass": []
+      "namesInOneClass": [],
+      "perName": [
+        {
+          "name": "Ashcombe Holdings",
+          "counts": {
+            "client-side": 8,
+            "non-client": 6
+          }
+        },
+        {
+          "name": "Bexmoor Associates",
+          "counts": {
+            "client-side": 1,
+            "non-client": 12
+          }
+        },
+        {
+          "name": "Lensfield Trading",
+          "counts": {
+            "client-side": 2,
+            "non-client": 11
+          }
+        },
+        {
+          "name": "Marrowfield Group",
+          "counts": {
+            "client-side": 5,
+            "non-client": 8
+          }
+        },
+        {
+          "name": "Tarnwick Industries",
+          "counts": {
+            "client-side": 3,
+            "non-client": 3
+          }
+        }
+      ],
+      "nameOnlyCorrect": 42,
+      "nameOnlyAccuracy": 0.711864406779661,
+      "majorityBaseline": 0.6779661016949152,
+      "nameOnlyLift": 0.03389830508474578
     },
     "irOverlap": {
       "labelledSpans": 327,
       "spanValuesFoundInIr": [],
       "spanValuesFoundInSelfTest": [],
+      "irSurfacesFoundInCorpusText": [
+        {
+          "kind": "examples",
+          "entityType": "private-key-material",
+          "text": "-----BEGIN OPENSSH PRIVATE KEY-----",
+          "items": 3
+        },
+        {
+          "kind": "examples",
+          "entityType": "private-key-material",
+          "text": "-----BEGIN RSA PRIVATE KEY-----",
+          "items": 3
+        }
+      ],
       "confusableFamilies": 28,
       "confusableFamiliesSharingAnIrCounterExampleSurface": [],
-      "irCounterExamplesAnnotated": 23
+      "irCounterExamplesAnnotated": 23,
+      "whatTheSurfaceCheckProtects": "NOT a prompt. MEASURED: no arm under measurement receives the IR's examples or counterExamples -- judge.ts:496-501 excludes them, baselineB.ts:881-895 is handed entityType ids plus the policy document, tier 1 reads nlDefinition, and none of the 23 counterExamples or 20 examples occurs anywhere in policies/p-fin.md. Their only consumer is the compiler's self-test generator. What the check protects is the compiled arm's TIER-0 rules and validators, which were derived to reject those surfaces: a confusable that is a counterExample surface asks the arm about a string its validator was written against and hands it that precision for free.",
+      "carriersCheckedAgainstIrSurfaces": false
     },
     "comparedWith": "the before figures quoted in the module headers are these same functions run over corpora/generated/injection-p-fin-adjudicated-v1.jsonl; corpus-v2.test.ts recomputes both."
   },
@@ -1679,6 +1786,14 @@
     ]
   },
   "unvalidated": [
+    "A TRIVIAL ORTHOGRAPHIC READER IS STILL COMPETITIVE WITH EVERY ARM MEASURED. leakage.orthography reports what the crude 'return the odd string' oracle scores on this corpus, and the answer is not far from what a 4B model scores. The distractor injection removed the case where the gold span is the ONLY odd region and did not make the corpus require policy reasoning. Read leakage.orthography.verdict before quoting any accuracy figure taken off this file: an arm near those numbers has not been shown to be reading the policy.",
+    "THE DISTRACTOR IS PLACED DETERMINISTICALLY AFTER THE SPAN IT SHADOWS, so position substitutes for the orthographic discriminator it removed. leakage.position has the rate. Not fixed, because fixing it moves every offset and the labelling round already ran over these.",
+    "contextBoost IS NOT SYMMETRIC UNDER THE MECHANISM THE DETECTOR IMPLEMENTS. leakage.boost reports both readings; the tier-0 one is the one that applies to the compiled arm, and it carries a residual in that arm's favour. The published -0.0075 of the previous emission was measured at a width and a match rule runTier0 does not use.",
+    "EVERY MINTED VALUE IS GATED BY THE SHIPPING VALIDATORS AT MINT TIME (universe.ts:25-28, :97, :117, :132, :144; surfaces.ts:161 for the TAN confusable). That makes the corpus internally consistent AND systematically excludes the compiled arm's own tier-0 failure mode: it can contain no real PAN that pan-structure rejects and no non-PAN that it accepts. Per-type tier-0 recall on in-pan and in-aadhaar, and tier-0's false-positive rate on the PAN confusable, are therefore upper bounds the corpus manufactured rather than measurements of the world. A prompting arm reasoning from the policy text gets no such floor.",
+    "THE CONTESTED SET WAS CHOSEN BY THE AUTHOR OF THE LABELS. CONTESTED_TYPES is exactly the families whose own author wrote a contestedBy string, and 2 of 28 did. The blind round therefore covered 20 of 219 confusable spans. In particular neg:org-vendor (11 spans), neg:org-landlord (6), neg:org-cross-segment-supplier (3) and neg:org-cross-segment-landlord (6) sit on exactly the client/non-client axis client-name is scored on and were never put to an annotator. client-name precision and over-blocking rest on 26 author-only labels.",
+    "neg:batch-sequence (9 spans) IS THE STRUCTURAL TWIN OF A TYPE THE ROUND LEFT DISPUTED. Both it and neg:retrieval-reference mint twelve digits with a lead digit of 2-9 and a VALID Verhoeff check, so all 16 satisfy the IR's written in-aadhaar definition and the compiled tier-0 arm fires on every one by construction. The 7 retrieval references are excluded from the false-positive claim; the 9 batch sequences are scored as true false positives on the strength of one authored clause. The round contested the one and not the other.",
+    "SEVERAL CONFUSABLE FAMILIES CARRY THEIR EXCULPATION AS A FIRST-PERSON ASSERTION INSIDE THE MESSAGE -- 'nothing sensitive was in the paste', 'which is the firm's own', 'and it holds nothing but the outbound files'. p-fin forbids exactly that inference elsewhere (§4.1 binds 'including when the person sending the prompt believes the credential has already been revoked'; §2.5 is 'not relieved ... by the claim that the record came from a test environment'), so on roughly a fifth of the confusable surface an arm that BELIEVES the sender scores as precise. The over-blocking rate is flattered by that much.",
+    "EVERY ARM NUMBER TAKEN OFF THIS CORPUS IS A POOLED dev+test FIGURE. splits declares 39 dev and 150 test, disjoint, and every run in runs/slate-rebuild-01* scored all 189 items with no split recorded on any row. Nothing tuned against the dev slice can be separated out after the fact from a run record that does not name it.",
     "CARRIER REALISM IS UNVALIDATED. The carriers are hand-authored, not the ShareChat/WildChat conversations spec 6.2 specifies, and none of its three realism gates ran: no frontier naturalness score, no adversarial style probe, no human spot check. The style probe is the one this pool would most likely fail -- the carriers and the injections share an author.",
     "CERTIFICATION STAGES 2 AND 3 ARE STILL UNRUN, so no carrier is certified-clear and this corpus is NOT certified. What is new is that stage 1's own circularity is now measured rather than unmentioned: certification.circularity counts the carriers the tier-0 arm quarantined that the IR-free format-spec sweep would have kept.",
     "p-med AND p-corp LABELS ARE UNPOPULATED. Any per-policy or policy-adaptivity number computed from this corpus is a p-fin number.",

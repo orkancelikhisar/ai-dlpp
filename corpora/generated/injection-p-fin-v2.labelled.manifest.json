@@ -213,7 +213,7 @@
         "borderlinesFlagged": 1
       }
     ],
-    "note": "A overrode the generator on 0 of 20 span proposals and B on 7 of 20, and neither overrode the construction prediction on the predicate. Read against A's own note before calling A a rubber stamp: A sets out the §1.2/§5.1 reading that would flip the seven RRN spans, argues it at length, declines to apply it on the stated ground that it would assert §2 coverage the enumeration does not support, and asks explicitly for the reading to go to adjudication. That is a recorded dissent inside an affirmation, and the adjudication below turns on it. The predicate override rate of 0 for both is uninformative for a different reason: the construction predicted 'no' on every covered item, so agreeing cost neither annotator a positive call."
+    "note": "A overrode the generator on 0 of 20 span proposals and B on 7 of 20, and neither overrode the construction prediction on the predicate. Read against A's own note before calling A a rubber stamp: A sets out the §1.2/§5.1 reading that would flip the seven RRN spans, argues it at length, declines to apply it on the stated ground that it would assert §2 coverage the enumeration does not support, and asks explicitly for the reading to go to adjudication. That is a recorded dissent inside an affirmation, and the adjudication below turns on it. The predicate override rate of 0 for both is uninformative for a different reason: the construction predicted 'no' on every covered item, so agreeing cost neither annotator a positive call. AND THE SPAN RATE HAS TO BE READ AGAINST THE CHANNEL IT CAME THROUGH, which this note used to leave to a separate section. The queue's span objects carry no type, so both annotators recovered the generator's proposal by opening corpora/generated/injection-p-fin-v2.jsonl and reading the contested offsets against `gold` -- and for a contested span, ABSENCE from gold IS the proposal. All 20 are absent, so that read handed both annotators the generator's answer for all 20 rather than merely the context. It is recorded as a structural breach (blindness.channels[read]) and it is the reason A's 0 of 20 cannot be read as independent corroboration. What keeps the round from being a rubber stamp is B: B committed the 20 predicate answers to a file BEFORE opening gold, then overrode the same proposal on 7 of 20 after reading it -- so the channel demonstrably did not determine the answer, on the one annotator whose ordering makes that checkable. The 13 spans this round moved into the false-positive denominator rest on an affirmation from A that was not blind and an affirmation from B that was not either."
   },
   "coverage": {
     "itemsInCorpus": 189,
@@ -1286,6 +1286,14 @@
         "goldPositives": 16,
         "scoredNegatives": null,
         "recallStep": 0.0625,
+        "compiledArmReach": {
+          "tier0RulesInIr": 2,
+          "exact": 13,
+          "iou50": 13,
+          "overlap": 13,
+          "unreachable": 3,
+          "note": "p-fin's 2 tier-0 rule(s) for this class can produce a matching span for 13 gold span(s) under exact, 13 under iou50 and 13 under overlap; 3 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 6.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1293,6 +1301,14 @@
         "goldPositives": 17,
         "scoredNegatives": null,
         "recallStep": 0.058823529411764705,
+        "compiledArmReach": {
+          "tier0RulesInIr": 3,
+          "exact": 11,
+          "iou50": 14,
+          "overlap": 14,
+          "unreachable": 3,
+          "note": "p-fin's 3 tier-0 rule(s) for this class can produce a matching span for 11 gold span(s) under exact, 14 under iou50 and 14 under overlap; 3 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 5.9 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1300,6 +1316,7 @@
         "goldPositives": 19,
         "scoredNegatives": null,
         "recallStep": 0.05263157894736842,
+        "compiledArmReach": null,
         "note": "per-type recall moves in steps of 5.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1307,6 +1324,14 @@
         "goldPositives": 9,
         "scoredNegatives": null,
         "recallStep": 0.1111111111111111,
+        "compiledArmReach": {
+          "tier0RulesInIr": 1,
+          "exact": 9,
+          "iou50": 9,
+          "overlap": 9,
+          "unreachable": 0,
+          "note": "p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 9 gold span(s) under exact, 9 under iou50 and 9 under overlap; 0 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 11.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1314,6 +1339,14 @@
         "goldPositives": 11,
         "scoredNegatives": null,
         "recallStep": 0.09090909090909091,
+        "compiledArmReach": {
+          "tier0RulesInIr": 1,
+          "exact": 8,
+          "iou50": 8,
+          "overlap": 8,
+          "unreachable": 3,
+          "note": "p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 8 gold span(s) under exact, 8 under iou50 and 8 under overlap; 3 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 9.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1321,6 +1354,14 @@
         "goldPositives": 7,
         "scoredNegatives": null,
         "recallStep": 0.14285714285714285,
+        "compiledArmReach": {
+          "tier0RulesInIr": 1,
+          "exact": 5,
+          "iou50": 5,
+          "overlap": 5,
+          "unreachable": 2,
+          "note": "p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 5 gold span(s) under exact, 5 under iou50 and 5 under overlap; 2 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 14.3 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1328,6 +1369,14 @@
         "goldPositives": 11,
         "scoredNegatives": null,
         "recallStep": 0.09090909090909091,
+        "compiledArmReach": {
+          "tier0RulesInIr": 1,
+          "exact": 8,
+          "iou50": 8,
+          "overlap": 8,
+          "unreachable": 3,
+          "note": "p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 8 gold span(s) under exact, 8 under iou50 and 8 under overlap; 3 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
         "note": "per-type recall moves in steps of 9.1 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
       },
       {
@@ -1335,7 +1384,15 @@
         "goldPositives": 18,
         "scoredNegatives": null,
         "recallStep": 0.05555555555555555,
-        "note": "per-type recall moves in steps of 5.6 percentage points; no difference smaller than that between two arms is resolvable on this corpus."
+        "compiledArmReach": {
+          "tier0RulesInIr": 1,
+          "exact": 0,
+          "iou50": 0,
+          "overlap": 12,
+          "unreachable": 6,
+          "note": "p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 0 gold span(s) under exact, 0 under iou50 and 12 under overlap; 6 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result."
+        },
+        "note": "per-type recall moves in steps of 5.6 percentage points; no difference smaller than that between two arms is resolvable on this corpus. AND THE COMPILED ARM CANNOT SCORE ABOVE ZERO HERE UNDER exact OR iou50: no tier-0 rule for this class can produce a span that matches any of its gold spans under those rules, so a table column using it reports a span convention and not a detector."
       }
     ],
     "goldSpans": 108,
@@ -1352,15 +1409,18 @@
       "goldPositives": 0,
       "scoredNegatives": 19,
       "recallStep": null,
+      "compiledArmReach": null,
       "note": "this round contributes 0 positive(s) and 19 scored negative(s). RECALL IS NOT DEFINED on this file alone -- a fraction with a zero denominator -- and pooling it with corpora/fixtures/smoke.gold-tier2.jsonl (2 positives, 11 negatives) still leaves 2 positives in total, so pooled predicate recall is quantised to steps of 50.0 percentage points and can express only three values. What this round DOES buy is the negative side: 30 scored negatives pooled, so an over-firing rate moves in steps of 3.3 points, and an arm that fires on none of them supports \"predicate false-positive rate at most 9.5% with 95% confidence\"."
     },
     "canRank": [
       "api-credential (16 gold spans, 6.3 pp steps)",
       "bank-account-identifier (17 gold spans, 5.9 pp steps)",
       "client-name (19 gold spans, 5.3 pp steps)",
-      "private-key-material (18 gold spans, 5.6 pp steps)"
+      "private-key-material (18 gold spans, 5.6 pp steps) -- UNDER overlap ONLY; the compiled arm reads 0 under exact and iou50 by span convention"
     ],
     "cannotRank": [
+      "private-key-material under exact: p-fin's own tier-0 rules cannot produce a span matching any of its 18 gold spans under this rule (p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 0 gold span(s) under exact, 0 under iou50 and 12 under overlap; 6 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result.). Every compiled arm reads 0 on this class in that column whatever it detects, so the column ranks nothing.",
+      "private-key-material under iou50: p-fin's own tier-0 rules cannot produce a span matching any of its 18 gold spans under this rule (p-fin's 1 tier-0 rule(s) for this class can produce a matching span for 0 gold span(s) under exact, 0 under iou50 and 12 under overlap; 6 are untouched by any same-class rule. Any shortfall here is a ceiling the span convention imposes on every compiled arm, not a detection result.). Every compiled arm reads 0 on this class in that column whatever it detects, so the column ranks nothing.",
       "db-connection-string: 9 gold spans. Recall steps of 11.1 pp, so only a very large arm difference is visible.",
       "in-aadhaar: 11 gold spans. Recall steps of 9.1 pp, so only a very large arm difference is visible.",
       "in-pan: 7 gold spans. Recall steps of 14.3 pp, so only a very large arm difference is visible.",
@@ -1372,9 +1432,9 @@
   },
   "artifact": {
     "corpusPath": "corpora/generated/injection-p-fin-v2.labelled.jsonl",
-    "corpusSha256": "9d07ed614af76f1716a0c3a8c37aed9b6108e7aefd482bc4b89050a8069b3fef",
+    "corpusSha256": "c9f9bde006591baa26da45636a3b0a323672991c63860c4ee03b52c67063b770",
     "goldPath": "corpora/generated/injection-p-fin-v2.gold-tier2.jsonl",
-    "goldSha256": "b4eb58ad5d64ddc02f45df404fef778f4ad8563784c9b9c94fd4a1a3e469ff27"
+    "goldSha256": "cb6c6a905c1318329cbe9bc6974c5ff3463479e7669ede309a6a90be861e74e8"
   },
   "verification": {
     "source": {
@@ -1402,6 +1462,10 @@
     ]
   },
   "unvalidated": [
+    "A TRIVIAL ORTHOGRAPHIC READER IS COMPETITIVE WITH EVERY ARM MEASURED ON THIS CORPUS, and the shape-matched distractor that removed the old outlier leak introduced a positional one. Both are measured in injection-p-fin-v2.manifest.json's leakage.orthography and leakage.position and neither is closed. An arm's score on this file is not, on its own, evidence that the arm read the policy.",
+    "TWO OF THE THREE MATCH RULES ARE UNUSABLE FOR private-key-material, and canSupport now says so per class in perEntityType[].compiledArmReach. Gold for that class is the whole PEM block and p-fin's only rule for it matches the BEGIN line, so exact and iou50 read 0 of 18 for every compiled arm by span convention. bank-account-identifier loses 6 of 17 on exact for the same kind of reason. A per-class table under exact or iou50 must carry the reach column beside it or it reports conventions as detection.",
+    "THE CONTESTED SET WAS CHOSEN BY THE AUTHOR OF THE LABELS. A family is contested iff its own author wrote a contestedBy string, and 2 of 28 did, so the blind round reached 20 of 219 confusable spans. The org families that decide client-name precision -- neg:org-vendor (11 spans), neg:org-landlord (6), neg:org-cross-segment-supplier (3), neg:org-cross-segment-landlord (6) -- sit on exactly the client/non-client axis being scored and were never put to an annotator. 26 author-only labels carry that number.",
+    "neg:batch-sequence WAS NOT CONTESTED AND ITS STRUCTURAL TWIN WAS. Its 9 spans and neg:retrieval-reference's 7 are both minted 12 digits, lead digit 2-9, valid Verhoeff, so all 16 satisfy the IR's written in-aadhaar definition and tier 0 fires on every one. The 7 are excluded as disputed; the 9 are scored as true false positives on one author's reading.",
     "THE DELIVERABLE DID NOT ARRIVE. This round was commissioned to produce pred: gold at a scale above the two positives in corpora/fixtures/smoke.gold-tier2.jsonl. It produced 19 scored rows and ZERO positives, because both annotators were scoped to the 20 span-bearing queue rows and those 20 are disjoint from the 19 items the generator predicts satisfy the predicate. Predicate RECALL is still unmeasurable outside the smoke fixture.",
     "THE ROUND'S TOLD CHANNEL CARRIED THREE BREACHES, one of them first-order: the brief handed both annotators a paraphrase of the predicate that is the COMPILED IR's own nlPredicate (round.blindness.channels[told], TOLD-1). No label in this round is affected -- the phrase omits the NDA limb and no NDA-party item was covered -- but a round that had covered the other 169 would have been keyed against text taken from the arm under test.",
     "THE BLIND ARTIFACT ITSELF LEAKS. The queue's question field names each span's semantic type and pre-argues both readings with clause numbers, and item ids encode the hard-negative stratum (round.blindness.channels[structural]). questions.ts's docblock claims the queue carries nothing an annotator could read the generator's intent off; that claim is false and is committed in the v2 manifest.",

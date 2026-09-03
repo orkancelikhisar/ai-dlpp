@@ -754,7 +754,15 @@ export function generateCorpus(options: GenerateOptions): GeneratedCorpus {
       disjoint: devIds.every((id) => !testIds.includes(id)),
       devSha256Note:
         "the split is a pure function of the seed and the generator version; regenerating with both " +
-        "unchanged reproduces these lists exactly, which is what 'frozen before tuning' means here",
+        "unchanged reproduces these lists exactly. That is DETERMINISM and it is NOT what spec 6.2 " +
+        "means by 'test frozen before any tuning' -- an earlier version of this note claimed it was. " +
+        "Spec 6.2 asks that nothing be selected using the test half, and this corpus does not meet " +
+        "that: measureLeakage runs over all 189 items, dev and test pooled (build-v2.ts passes the " +
+        "whole loadCorpus result), and families were removed and rewritten on what those pooled " +
+        "measurements said. The selection was for leakage rather than for accuracy, which makes the " +
+        "contamination milder than tuning a threshold would be; it does not make the test slice " +
+        "held out. Every arm run so far has also SCORED all 189 with no split on any row, so a " +
+        "pooled number cannot be reduced to a test-only one after the fact.",
     },
     gaps: NAMED_GAPS,
   };

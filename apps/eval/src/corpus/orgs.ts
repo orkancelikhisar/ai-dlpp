@@ -20,8 +20,11 @@
  * `ORG_POOL` is the fix and it is the whole fix: ONE pool, drawn by every
  * organisation family whatever role it writes. Nothing in "Marrowfield Group"
  * says whether the Firm sells to it, buys from it, competes with it or leases
- * a floor from it, and `corpus-orgs.test.ts` asserts that every family that
- * mints an organisation mints from this array and no other.
+ * a floor from it, and `corpus-v2.test.ts:302` ("draws every organisation
+ * family from the one pool") asserts that every family that mints an
+ * organisation mints from this array and no other. (An earlier version of this
+ * line cited a per-module test file for this module, which has never
+ * existed.)
  *
  * ## The Firm is unnamed in wave 3, and that is a deliberate loss
  *
@@ -44,9 +47,11 @@
  */
 
 /**
- * The organisation pool. Six names, deliberately flavour-neutral: no "Print
+ * The organisation pool. FIVE names, deliberately flavour-neutral: no "Print
  * Works", no "Conference Centre", no "Advisory", nothing that answers the role
- * question before the clause does.
+ * question before the clause does. (This sentence read "Six names" while the
+ * array held five, a leftover from the six-name build the next paragraph
+ * describes.)
  *
  * Five rather than fifteen, and the arithmetic is the reason. The requirement
  * is that every name appear in BOTH role classes in the emitted file, not
@@ -57,7 +62,10 @@
  * MEASURED on a full build; at five the expected count per name per side is
  * about four. The emitted per-name coverage is in the manifest's
  * `leakage.roles` either way, so the claim is a measurement rather than a
- * property of the pool size.
+ * property of the pool size -- and `leakage.roles.perName` now carries the
+ * counts, because "no name is locked to one class" is a binary answer to a
+ * question with a continuous one. `nameOnlyLift` is what a classifier reading
+ * the name and nothing else buys over the majority class.
  */
 export const ORG_POOL = [
   "Marrowfield Group",

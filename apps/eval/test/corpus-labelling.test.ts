@@ -17,6 +17,7 @@ import {
   assertSourceBytesUnchanged,
   buildLabelledArtifacts,
   labelledItems,
+  compiledArmReachByType,
   serializeTier2Gold,
   sha256,
   tier2GoldRows,
@@ -27,6 +28,7 @@ import {
   ANNOTATORS,
   ANNOTATOR_LABELS,
   BRIEF_PARAPHRASE_FRAGMENT,
+  assertBothAnnotatorsLabelledTheSameItems,
   LABELLED_ITEM_IDS,
   LABELS_BY_ITEM,
   LABEL_ROUND,
@@ -36,6 +38,7 @@ import {
   labelAgreementReport,
   overrideReport,
   pairwiseAgreement,
+  predicateAdjudication,
   predicateVerdictFor,
   type AnnotatorLabel,
 } from "../src/corpus/labelling.js";
@@ -392,12 +395,19 @@ describe("the adjudication", () => {
     // Every real item is answered uniformly within its family, so the real
     // table cannot reach this branch and a suite that only ran it would not
     // know the guard exists.
-    const split = new Map<string, string>();
-    for (const label of ANNOTATOR_LABELS.B) split.set(label.itemId, "one-family");
+    const split = new Map<string, string[]>();
+    for (const label of ANNOTATOR_LABELS.B) split.set(label.itemId, ["one-family"]);
     expect(() => assertFamilyUniformity(split)).toThrow(/split the contested family/);
-    const uniform = new Map<string, string>();
-    for (const [type, ids] of CONTESTED_BY_TYPE) for (const id of ids) uniform.set(id, type);
+    const uniform = new Map<string, string[]>();
+    for (const [type, ids] of CONTESTED_BY_TYPE) for (const id of ids) uniform.set(id, [type]);
     expect(() => assertFamilyUniformity(uniform)).not.toThrow();
+    // The precondition the guard used to assume. One item carrying contested
+    // spans of two types has ONE annotator answer and two families to attribute
+    // it to; the builder used to hand over only the last type, so this case
+    // reached the family check looking uniform.
+    const twoTypes = new Map(uniform);
+    twoTypes.set([...uniform.keys()][0]!, ["neg:sftp-endpoint", "neg:retrieval-reference"]);
+    expect(() => assertFamilyUniformity(twoTypes)).toThrow(/carries contested spans of 2 types/);
   });
 
   it("keeps a one-borderline item scored and disputes the two-borderline one", () => {
@@ -471,6 +481,75 @@ describe("the tier-2 predicate gold", () => {
     for (const row of rows) expect(smokeIds.has(row.itemId)).toBe(false);
     for (const row of rows) expect(row.policyHash).toBe(smoke[0]!.policyHash);
     expect(rows[0]!.policyHash).toBe(sha256(POLICY_TEXT));
+  });
+});
+
+describe("the predicate gold this builder can and cannot produce", () => {
+  const withLabels = (itemId: string, patch: Partial<AnnotatorLabel>) => {
+    const a = new Map(LABELS_BY_ITEM.A);
+    const b = new Map(LABELS_BY_ITEM.B);
+    a.set(itemId, { ...a.get(itemId)!, ...patch });
+    b.set(itemId, { ...b.get(itemId)!, ...patch });
+    return { A: a as ReadonlyMap<string, AnnotatorLabel>, B: b as ReadonlyMap<string, AnnotatorLabel> };
+  };
+
+  it("refuses an adjudicated positive rather than emitting a row the schema will reject", () => {
+    // The round produced zero positives, so this branch is unreachable from the
+    // shipped labels. MEASURED before the guard existed: flipping one item to
+    // `satisfiesPredicate: true, predicateConfidence: "clear"` produced
+    // `{"status":"scored","satisfies":true,"spans":[]}` and the build then died
+    // inside loadTier2Gold with "a scored row that satisfies the predicate must
+    // name at least one span" -- a message naming the symptom, not the cause.
+    const id = LABELLED_ITEM_IDS[0]!;
+    const labels = withLabels(id, { satisfiesPredicate: true, predicateConfidence: "clear" });
+    expect(() => tier2GoldRows(COMMITTED_V2, "hash", labels)).toThrow(
+      /adjudicated as SATISFYING .*this builder cannot emit a span for it/s,
+    );
+    // And the same labels with the flag left alone still emit, so the refusal
+    // is about the positive and not about the injected map.
+    expect(tier2GoldRows(COMMITTED_V2, "hash", LABELS_BY_ITEM)).toHaveLength(20);
+  });
+
+  it("reports predicateGoldSpansEmitted from the rows, not from the count of positives", () => {
+    // The field said `positives` and the builder writes `spans: []` on every
+    // row, so a round with a positive would have published a span count it did
+    // not emit. It is now passed what the serialized rows carry.
+    const rows = tier2GoldRows(COMMITTED_V2, "hash");
+    const emitted = rows.reduce((n, r) => n + r.spans.length, 0);
+    expect(emitted).toBe(0);
+    expect(built.manifest.predicateAdjudication.predicateGoldSpansEmitted).toBe(emitted);
+    // And the field is not simply pinned to zero: it reports what it is given.
+    expect(predicateAdjudication(COMMITTED_V2.map((i) => i.id), 7).predicateGoldSpansEmitted).toBe(7);
+    expect(predicateAdjudication(COMMITTED_V2.map((i) => i.id), 0).positives).toBe(0);
+  });
+
+  it("names both annotators on a disputed row instead of presenting A's answer as the verdict", () => {
+    // `satisfies` on a disputed row is A's call, and the adjudication string
+    // used to render it as "DISPUTED false" on an item where a reader would
+    // find B saying true. Swapping A for B in the builder changed nothing in
+    // the suite, because A and B agree on all 20 real items.
+    const id = LABELLED_ITEM_IDS[0]!;
+    const a = new Map(LABELS_BY_ITEM.A);
+    const b = new Map(LABELS_BY_ITEM.B);
+    b.set(id, { ...b.get(id)!, satisfiesPredicate: !b.get(id)!.satisfiesPredicate });
+    const rows = tier2GoldRows(COMMITTED_V2, sha256(POLICY_TEXT), { A: a, B: b });
+    const disputed = rows.find((r) => r.itemId === id)!;
+    expect(disputed.status).toBe("disputed");
+    expect(disputed.adjudication).toContain("NO AGREED ANSWER");
+    expect(disputed.adjudication).toContain("annotator A's false");
+    expect(disputed.adjudication).toContain("annotator B answered true");
+    // The other disputed cause -- both annotators agreeing and both calling it
+    // borderline -- reads differently, because there IS an agreed answer there
+    // and rendering it as "no agreed answer" would be the mirror of the defect.
+    const bothBorderline = tier2GoldRows(COMMITTED_V2, sha256(POLICY_TEXT)).find(
+      (r) => r.itemId === "inj-hn08-1",
+    )!;
+    expect(bothBorderline.status).toBe("disputed");
+    expect(bothBorderline.adjudication).toContain("both annotators answered false");
+    expect(bothBorderline.adjudication).not.toContain("NO AGREED ANSWER");
+    // The row still parses, so the honesty is in the text and not bought by
+    // emitting something the scorer cannot read.
+    expect(loadTier2Gold(serializeTier2Gold(rows))).toHaveLength(20);
   });
 });
 
@@ -615,6 +694,129 @@ describe("the emit gate refuses, once per advertised check", () => {
   });
 });
 
+describe("the labelled items say only what the certification supports", () => {
+  const emitted = loadCorpus(built.corpusJsonl);
+
+  it("does not claim the injection invariant covers classes no stage that ran can see", () => {
+    // The defect: every one of the 189 items said "Every class NOT listed is
+    // now covered by the injection invariant" while the v2 manifest's own
+    // certification.invariantScope says the invariant is established for
+    // TIER-0 entity classes only, and client-name is tier 1. A scorer reading
+    // the item would count a tier-1 finding outside gold as a true false
+    // positive on the authority of a sentence the certification contradicts.
+    const ir = loadPolicyIr(readFileSync(IR_PATH, "utf8"));
+    const tier1Classes = ir.entityTypes.filter((e) => e.tier > 0).map((e) => e.id);
+    expect(tier1Classes).toContain("client-name");
+    for (const item of emitted) {
+      const scope = item.meta!["scoringScope"] as { why: string; unlabelledClasses: string[] };
+      expect([item.id, scope.why.includes("ONLY AS FAR AS THAT INVARIANT REACHES")]).toEqual([item.id, true]);
+      expect([item.id, scope.why.includes("TIER-1")]).toEqual([item.id, true]);
+      // The old sentence, which claimed more than the certification does.
+      expect([item.id, scope.why.includes("Every class NOT listed is now covered")]).toEqual([item.id, false]);
+    }
+    // And the two records now agree rather than contradicting inside one commit.
+    const v2Scope = buildV2Artifacts().manifest.certification.invariantScope;
+    expect(v2Scope).toContain("stage 1 only");
+    expect(v2Scope).toContain("uninjected tier-1 name");
+  });
+});
+
+describe("the guards a mutation survived, exercised", () => {
+  // Each of these was replaced with `if (false)` in a pristine copy and left
+  // the suite green. Mostly unreachable by construction TODAY -- which is the
+  // reason to test them now rather than after a refactor deletes one.
+  const contestedItem = COMMITTED_V2.find((i) => contestedSpansOf(i).length > 0)!;
+
+  it("refuses a contested span whose offsets match no label, or two", () => {
+    const labels = (contestedItem.meta!["labels"] as Record<string, unknown>[]);
+    const contested = contestedSpansOf(contestedItem)[0]!;
+    const dup = {
+      ...contestedItem,
+      meta: { ...contestedItem.meta, labels: [...labels, labels.find((l) => {
+        const s = l["span"] as { start: number; end: number };
+        return s.start === contested.start && s.end === contested.end;
+      })!] },
+    };
+    expect(() => contestedSpansOf(dup)).toThrow(/matches 2 labels/);
+    const none = {
+      ...contestedItem,
+      meta: { ...contestedItem.meta, labels: labels.filter((l) => {
+        const s = l["span"] as { start: number; end: number };
+        return !(s.start === contested.start && s.end === contested.end);
+      }) },
+    };
+    expect(() => contestedSpansOf(none)).toThrow(/matches 0 labels/);
+    // With a duplicate label present and this guard gone, the span would be
+    // typed from whichever copy sorted first -- silently, which is why the
+    // count is asserted rather than the mere presence of a match.
+    expect(contestedSpansOf(contestedItem)).toHaveLength(1);
+  });
+
+  it("refuses a contested-span question carrying no span", () => {
+    const questions = contestedItem.meta!["labelQuestions"] as Record<string, unknown>[];
+    const stripped = {
+      ...contestedItem,
+      meta: {
+        ...contestedItem.meta,
+        labelQuestions: questions.map((q) => (q["kind"] === "contested-span-label" ? { ...q, span: undefined } : q)),
+      },
+    };
+    expect(() => contestedSpansOf(stripped)).toThrow(/carries no span/);
+  });
+
+  it("refuses a gold row for an item the corpus does not hold, and for one nobody answered", () => {
+    expect(() => tier2GoldRows(COMMITTED_V2, sha256(POLICY_TEXT), LABELS_BY_ITEM, ["no-such-item"])).toThrow(
+      /which is not in/,
+    );
+    const unanswered = COMMITTED_V2.find((i) => !LABELLED_ITEM_IDS.includes(i.id))!;
+    expect(() => tier2GoldRows(COMMITTED_V2, sha256(POLICY_TEXT), LABELS_BY_ITEM, [unanswered.id])).toThrow(
+      /is in the labelled set but has no verdict/,
+    );
+  });
+
+  it("refuses when the emitted corpus is a different size from the source", () => {
+    const short = serializeCorpus(labelledItems(COMMITTED_V2).slice(1));
+    expect(() => verifyLabelledOrRefuse(built.manifest.source, COMMITTED_V2, short, built.goldJsonl)).toThrow(
+      /188 labelled items against 189 source items/,
+    );
+  });
+
+  it("refuses a contested span in the emitted meta whose offsets no longer hold its text", () => {
+    // The gate checks the contested span independently of the gold spans,
+    // because a contested span lives in meta and never in `gold` -- so the
+    // corpus schema's own refine cannot see it. Replacing the check with
+    // `if (false)` left the suite green.
+    const drifted = labelledItems(COMMITTED_V2).map((i) => {
+      const questions = (i.meta!["labelQuestions"] ?? []) as Record<string, unknown>[];
+      if (!questions.some((q) => q["kind"] === "contested-span-label")) return i;
+      return {
+        ...i,
+        meta: {
+          ...i.meta,
+          labelQuestions: questions.map((q) =>
+            q["kind"] === "contested-span-label"
+              ? { ...q, span: { ...(q["span"] as Record<string, unknown>), text: "not-what-is-there" } }
+              : q,
+          ),
+        },
+      };
+    });
+    expect(() =>
+      verifyLabelledOrRefuse(built.manifest.source, COMMITTED_V2, serializeCorpus(drifted), built.goldJsonl),
+    ).toThrow(/contested span \[\d+,\d+\) does not slice back/);
+  });
+
+  it("refuses when an item's policy drifts from the source corpus", () => {
+    // Unreachable today -- `labelledItems` spreads `...item`, so policy is
+    // carried by identity -- and a refactor that rebuilt the item field by
+    // field would make it reachable with nothing else to catch it.
+    const drifted = labelledItems(COMMITTED_V2).map((i, n) => (n === 0 ? { ...i, policy: "p-med" } : i));
+    expect(() =>
+      verifyLabelledOrRefuse(built.manifest.source, COMMITTED_V2, serializeCorpus(drifted), built.goldJsonl),
+    ).toThrow(/policy differs from the source corpus/);
+  });
+});
+
 describe("what the corpus can support", () => {
   const support = built.manifest.canSupport;
 
@@ -648,6 +850,45 @@ describe("what the corpus can support", () => {
     expect(support.verdict).toContain("CANNOT SUPPORT ONE ON THE PREDICATE");
   });
 
+  it("measures what the compiled arm's own rules can reach, per match rule, with runTier0", () => {
+    // The defect: the artifact listed private-key-material under canRank with
+    // no caveat while the class is UNSCOREABLE for every compiled arm on two of
+    // the scorer's three rules. Gold is the whole PEM block; p-fin's only rule
+    // matches the BEGIN line. Recomputed here against the shipping detector
+    // rather than read out of the manifest.
+    const ir = loadPolicyIr(readFileSync(IR_PATH, "utf8"));
+    const reach = compiledArmReachByType(COMMITTED_V2, ir);
+    for (const c of support.perEntityType) {
+      expect([c.className, c.compiledArmReach]).toEqual([c.className, reach.get(c.className) ?? null]);
+    }
+    const pem = reach.get("private-key-material")!;
+    expect([pem.exact, pem.iou50, pem.overlap, pem.unreachable]).toEqual([0, 0, 12, 6]);
+    // Non-vacuity: a class whose rule DOES produce the gold span reads
+    // differently, so the zeros above are about this class and not about the
+    // measurement returning zero for everything.
+    expect(reach.get("db-connection-string")!.exact).toBe(9);
+    // And the exact/iou50 gap the account-number convention costs, which the
+    // manifest also did not carry.
+    const account = reach.get("bank-account-identifier")!;
+    expect(account.exact).toBeLessThan(account.iou50);
+    // A tier-1 class has no tier-0 rule, so the field is null rather than a
+    // zero that would read as "the arm cannot detect it".
+    expect(reach.get("client-name")).toBeUndefined();
+    expect(support.perEntityType.find((c) => c.className === "client-name")!.compiledArmReach).toBeNull();
+  });
+
+  it("caveats the rankability claim with the match rules the class cannot express", () => {
+    const pemRow = support.canRank.find((r) => r.startsWith("private-key-material"))!;
+    expect(pemRow).toContain("UNDER overlap ONLY");
+    expect(support.cannotRank).toContain(
+      support.cannotRank.find((r) => r.startsWith("private-key-material under exact")),
+    );
+    expect(support.cannotRank.some((r) => r.startsWith("private-key-material under iou50"))).toBe(true);
+    // And a class with no blocked rule carries no caveat, so the suffix is
+    // derived from the measurement and not appended to everything.
+    expect(support.canRank.find((r) => r.startsWith("api-credential"))).not.toContain("UNDER");
+  });
+
   it("computes the zero-event 95% upper bound as the exact Clopper-Pearson limit", () => {
     // 1 - 0.05^(1/n), computed independently: n=19 -> 0.1458685033, n=30 ->
     // 0.0950338529. n=1 is the sanity anchor -- one trial with no event bounds
@@ -672,6 +913,44 @@ describe("every annotator label attaches to something real", () => {
       }
     }
     expect(LABELLED_ITEM_IDS.length).toBe(20);
+  });
+
+  it("refuses a round where the two annotators labelled different item sets", () => {
+    // The docblock said "Empty if the two sets ever diverge" and the code is an
+    // intersection, so divergence SHRANK the set instead: a future round where
+    // B skipped one item would have dropped it from the gold file, from the
+    // predicate counts and from coverage, quietly. Mutating the intersection
+    // filter to `filter(() => true)` survived the whole suite.
+    const ids = [...LABELLED_ITEM_IDS];
+    expect(assertBothAnnotatorsLabelledTheSameItems(ids, ids)).toEqual([...ids].sort());
+    expect(() => assertBothAnnotatorsLabelledTheSameItems(ids, ids.slice(1))).toThrow(
+      /labelled different item sets: 1 only A/,
+    );
+    expect(() => assertBothAnnotatorsLabelledTheSameItems(ids, [...ids, "extra"])).toThrow(
+      /1 only B \(extra\)/,
+    );
+  });
+
+  it("connects the 0 span-override rate to the channel it came through", () => {
+    // Both annotators recovered the generator's proposal by reading `gold` at
+    // the contested offsets, and for a contested span ABSENCE from gold IS the
+    // proposal -- so that read handed them the answer, not merely the context.
+    // The manifest recorded the read and the 0 rate in separate sections.
+    const contested = COMMITTED_V2.flatMap((i) => contestedSpansOf(i));
+    expect(contested).toHaveLength(20);
+    const inGold = contested.filter((c) =>
+      COMMITTED_V2.some((i) => i.gold.some((g) => g.start === c.start && g.end === c.end)),
+    );
+    expect(inGold).toEqual([]);
+    const note = overrideReport().note;
+    expect(note).toContain("ABSENCE from gold IS the proposal");
+    expect(note).toContain("cannot be read as independent corroboration");
+    // And the note names what keeps the round from being a rubber stamp, which
+    // is B's ordering plus B's 7 overrides -- both facts, recomputed here.
+    const b = overrideReport().perAnnotator.find((r) => r.annotator === "B")!;
+    expect([b.n, b.spanOverrides]).toEqual([20, 7]);
+    const a = overrideReport().perAnnotator.find((r) => r.annotator === "A")!;
+    expect([a.n, a.spanOverrides]).toEqual([20, 0]);
   });
 
   it("carries a correctedType only where the annotator overrode the proposal", () => {

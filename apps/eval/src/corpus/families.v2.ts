@@ -596,6 +596,18 @@ export const V2_POSITIVE_FAMILIES: readonly V2Family[] = [
     // `api-credential` twice on the body lines, because the entropy rule fires
     // on them -- and none outside it, so this family reads 0 on exact-match by
     // construction.
+    //
+    // AND ON iou50, which the earlier version of this comment stopped short of.
+    // MEASURED over the 18 `private-key-material` gold spans in the emitted
+    // corpus: the rule matches inside 12 of them at IoU 0.176 to 0.201, below
+    // the 0.5 cut `apps/eval/src/driver/score.ts:331` applies, and cannot match
+    // the other 6 at all (`certificate-pem-fence` and `hsm-key-label` have no
+    // rule). So the class reads 0 of 18 under BOTH `exact` and `iou50` and 12
+    // of 18 under `overlap`, for the compiled arm, by span convention rather
+    // than by detection. `build-labelled.ts` measures this per entity type and
+    // the labelled manifest carries it in
+    // `canSupport.perEntityType[].compiledArmReach`; the class is listed as
+    // rankable under `overlap` only.
     glue: g("\n\n```\n", "\n```\n\n"),
     labelBasis: { clauses: ["§4.3"], reading: "§4.3 forbids private keys outright." },
   },

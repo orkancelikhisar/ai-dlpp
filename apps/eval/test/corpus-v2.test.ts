@@ -33,13 +33,16 @@ import { formatSpecSweep } from "../src/corpus/format-sweep.js";
 import {
   BOOST_WINDOW,
   IR_COUNTEREXAMPLE_SURFACES,
+  TIER0_BOOST_WINDOW,
   boostNear,
   boostTerms,
   irCounterExamples,
   measureBoost,
   measureOrthography,
+  measurePosition,
   measureRoles,
   orthographicOracle,
+  tier0BoostNear,
 } from "../src/corpus/leakage.js";
 import { ORG_POOL, roleClass } from "../src/corpus/orgs.js";
 import { PREDICATE_ID } from "../src/corpus/questions.js";
@@ -120,6 +123,110 @@ describe("decision 1: surfaces are minted from format specs, not read off the IR
     expect(wave12Confusables).toHaveLength(24);
   });
 
+  it("pins both surfaceName columns, because the disjointness check is a string equality", () => {
+    // `confusableFamiliesSharingAnIrCounterExampleSurface` compares two
+    // hand-typed English phrases. Nothing else reads either column, so
+    // MEASURED by mutation: changing "MICR line" to "MICR line MUTATED" left
+    // all 604 tests green and the manifest bytes unmoved. These two frozen
+    // lists are what makes such an edit visible.
+    //
+    // WHAT THIS DOES NOT CHECK, stated so it is not mistaken for more: it
+    // catches a CHANGE to a name, not a family that is an IR counterExample
+    // surface under a DIFFERENT name. That gap is real and open -- the
+    // disjointness guard is only as good as whoever types the next
+    // surfaceName, and there is no mechanical test for "these two English
+    // phrases denote the same surface".
+    expect([...IR_COUNTEREXAMPLE_SURFACES].map((c) => c.surfaceName).sort()).toEqual([
+      "GSTIN",
+      "MICR line",
+      "PAN-shaped string with an invalid holder-type character",
+      "SWIFT/BIC code",
+      "bare branch code",
+      "certificate signing request block",
+      "email address",
+      "employee id",
+      "incident ticket id",
+      "internal https URL",
+      "name of a tax form",
+      "place name",
+      "prose description of a key format",
+      "prose statement about a database",
+      "prose statement that a credential was rotated",
+      "public key fingerprint",
+      "redaction placeholder in credential shape",
+      "ten-digit number",
+      "truncated PAN",
+      "twelve-digit number with a broken Verhoeff digit",
+      "twelve-digit number with a forbidden leading digit",
+      "unnamed reference to a client",
+      "unnamed reference to a counterparty",
+    ]);
+    expect(V2_CONFUSABLE_FAMILIES.map((f) => [f.id, f.surfaceName]).sort()).toEqual([
+      ["artifact-digest", "container image digest"],
+      ["base64-image-fragment", "fragment of a base64-encoded image"],
+      ["datasource-alias", "datasource alias"],
+      ["deployment-name", "kubernetes deployment name"],
+      ["dh-parameters-block", "Diffie-Hellman parameters block"],
+      ["git-commit-sha", "git commit id"],
+      ["imps-rrn", "NPCI retrieval reference number"],
+      ["kyc-standard-version", "version number of an internal policy document"],
+      ["masked-mobile", "masked telephone number"],
+      ["org-competitor", "named organisation in a competitor clause"],
+      ["org-landlord", "named organisation in a lease clause"],
+      ["org-listed-company", "named organisation read about in the trade press"],
+      ["org-vendor", "named organisation in a supplier clause"],
+      ["org-vendor-cross-segment", "named organisation whose supplier role is assigned in a later segment"],
+      ["package-spec-boosted", "npm package specifier"],
+      ["package-spec-plain", "npm package specifier"],
+      ["person-name", "colleague's name"],
+      ["pos-terminal-id", "card terminal id"],
+      ["product-name", "internal software product name"],
+      ["scheme-code", "internal product scheme code"],
+      ["settlement-batch-number", "settlement batch number"],
+      ["settlement-batch-sequence", "settlement batch sequence number"],
+      ["sftp-endpoint", "sftp file-transfer endpoint"],
+      ["ssh-public-key-line", "ssh public key line"],
+      ["tan-boosted", "TAN (tax deduction and collection account number)"],
+      ["tan-plain", "TAN (tax deduction and collection account number)"],
+      ["uuid", "correlation id"],
+      ["vendor-invoice-number", "supplier invoice number"],
+    ]);
+  });
+
+  it("says which arm the counterExample-surface check protects, and does not say 'the prompt'", () => {
+    // The claim this replaces: "a counterExample is text the compiled arm is
+    // SHOWN". MEASURED false here rather than in a comment. The strings reach
+    // the compiler's self-test generator and nothing else.
+    const irStrings = IR.entityTypes.flatMap((e) => [...(e.counterExamples ?? []), ...(e.examples ?? [])]);
+    expect(irStrings.length).toBeGreaterThan(40);
+    const policyDoc = readFileSync(join(REPO_ROOT, "policies/p-fin.md"), "utf8");
+    expect(irStrings.filter((c) => policyDoc.includes(c))).toEqual([]);
+    expect(manifest.leakage.irOverlap.whatTheSurfaceCheckProtects).toContain("NOT a prompt");
+    expect(manifest.leakage.irOverlap.whatTheSurfaceCheckProtects).toContain("TIER-0 rules");
+    // And the exemption on the other half is a field rather than a silence.
+    expect(manifest.leakage.irOverlap.carriersCheckedAgainstIrSurfaces).toBe(false);
+  });
+
+  it("reports the IR surfaces that DO occur verbatim, which the value-level check cannot see", () => {
+    // `spanValuesFoundInIr` compares whole span VALUES, so a minted PEM block
+    // never matches -- its body is random. Two IR `examples` entries are
+    // nonetheless in the emitted text, and an empty value-level result beside
+    // them would read as "no IR text reaches the corpus".
+    const found = manifest.leakage.irOverlap.irSurfacesFoundInCorpusText;
+    expect(found.map((f) => f.text)).toEqual([
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "-----BEGIN RSA PRIVATE KEY-----",
+    ]);
+    for (const f of found) {
+      expect([f.text, f.kind, f.entityType]).toEqual([f.text, "examples", "private-key-material"]);
+      expect([f.text, f.items]).toEqual([f.text, 3]);
+      // Each really is in the IR and really is in the corpus, so the report is
+      // not a list this test and the builder both invented.
+      expect([f.text, IR_TEXT.includes(f.text)]).toEqual([f.text, true]);
+      expect([f.text, items.filter((i) => i.text.includes(f.text)).length]).toEqual([f.text, f.items]);
+    }
+  });
+
   it("puts no minted value into the IR or the compiler self-test, over 120 seeds a family", () => {
     const leaks: string[] = [];
     for (const family of V2_FAMILIES) {
@@ -184,28 +291,121 @@ describe("decision 2: a contextBoost term is as likely near a confusable as near
     expect(wrong).toEqual([]);
   });
 
-  it("balances the two rates on the emitted corpus, where the previous one did not", () => {
+  it("matches on word boundaries in the wide reading, and on substrings in the tier-0 one", () => {
+    // `containsTerm`'s boundary rule is documented as load-bearing and had no
+    // test at all: replacing the regex with `includes` moved no number
+    // anywhere, because no span in the shipped corpus sits near a string the
+    // two matchers disagree about. These assertions pin the rule to what it
+    // does, INCLUDING the case the old comment got backwards.
+    const span = { start: 30, end: 40 };
+    const pad = (before: string) => `${before.padStart(30, " ")}0123456789 tail`;
+    // Excluded: the term is a prefix of a longer alphanumeric word.
+    expect(boostNear(pad("connection "), span, ["connect"])).toBe(false);
+    expect(boostNear(pad("accounts "), span, ["account"])).toBe(false);
+    // Matched: the term stands alone.
+    expect(boostNear(pad("the account "), span, ["account"])).toBe(true);
+    // NOT excluded, and the comment used to say it was: `_` is outside
+    // [a-z0-9], so the boundary class treats it as a separator.
+    expect(boostNear(pad("storage_account_key "), span, ["account"])).toBe(true);
+    // The tier-0 reading makes none of these distinctions, because
+    // `hasNearbyKeyword` is `window.includes(k)`. That is why both are
+    // reported rather than one standing in for the other.
+    expect(tier0BoostNear(pad("connection "), span, ["connect"])).toBe(true);
+    expect(tier0BoostNear(pad("accounts "), span, ["account"])).toBe(true);
+  });
+
+  it("copies runTier0's window and match rule, checked against runTier0 itself", () => {
+    // The defect this test exists for: `BOOST_WINDOW` was documented as a free
+    // choice because "runTier0 does not implement contextBoost". It does, at 40
+    // characters, by substring, over a window that includes the span. Each
+    // assertion below is a case where `tier0BoostNear` and `boostNear` give
+    // different answers, and runTier0's own confidence -- 0.9 base, +0.05 when
+    // boosted -- is the arbiter.
+    const boosted = (text: string) => {
+      const findings = runTier0(IR, text, segmentText(text));
+      expect([text, findings.length]).toEqual([text, 1]);
+      return findings[0]!.confidence > 0.9;
+    };
+    const spanOf = (text: string) => {
+      const f = runTier0(IR, text, segmentText(text))[0]!;
+      return { start: f.start, end: f.end };
+    };
+    const cases: { text: string; why: string }[] = [
+      {
+        // "cif" is inside the matched span itself. tier0's window includes it.
+        text: "the reference on the ticket reads CIF 300455 and that is all we have.",
+        why: "boost term inside the span",
+      },
+      {
+        // "account" 20 characters before the match: inside 40, inside 70.
+        text: "the beneficiary account was set up wrong, IFSC0012345 is what they sent.",
+        why: "term within both windows",
+      },
+      {
+        // "income tax" ends 49 characters before the match: outside tier0's 40,
+        // inside boostNear's 70.
+        text: "the income tax paperwork is on my desk and the number on it is ABCPZ1234C, which I cannot place.",
+        why: "term between the two widths",
+      },
+    ];
+    for (const c of cases) {
+      const span = spanOf(c.text);
+      const terms = boostTerms(IR).all;
+      expect([c.why, tier0BoostNear(c.text, span, terms)]).toEqual([c.why, boosted(c.text)]);
+    }
+    // And the two functions really do disagree on the first and third, or the
+    // agreement above would be a property of the examples rather than of the
+    // mechanism.
+    const disagreements = cases.filter((c) => {
+      const span = spanOf(c.text);
+      const terms = boostTerms(IR).all;
+      return tier0BoostNear(c.text, span, terms) !== boostNear(c.text, span, terms);
+    });
+    expect(disagreements.map((c) => c.why)).toEqual(["boost term inside the span", "term between the two widths"]);
+    expect(TIER0_BOOST_WINDOW).toBe(40);
+    expect(BOOST_WINDOW).toBe(70);
+  });
+
+  it("reports both readings, and does not claim symmetry under the one that applies", () => {
     const after = measureBoost(items, IR, PAIRED_TYPE);
     const before = measureBoost(BEFORE, IR, WAVE2_PAIRED_TYPE);
     // The defect, restated as a measurement: before, a boost term sat near
-    // 40.7% of gold spans and near 0.9% of confusable spans.
-    expect(before.goldRate).toBeGreaterThan(0.35);
-    expect(before.confusableRate).toBeLessThan(0.05);
-    expect(before.delta).toBeGreaterThan(0.3);
-    // After. 0.08 is the bound this corpus is claimed to meet, not a bound
-    // anything was tuned to: the catalogue declares `boost` per family and the
-    // rates fall out of the deal.
-    expect(Math.abs(after.delta)).toBeLessThan(0.08);
-    expect(Math.abs(after.ownTypeDelta)).toBeLessThan(0.08);
+    // 40.7% of gold spans and near 0.9% of confusable spans at the wide width,
+    // and near 51.9% against 6.5% at the width runTier0 uses.
+    expect(before.wideWordBoundary.goldRate).toBeGreaterThan(0.35);
+    expect(before.wideWordBoundary.confusableRate).toBeLessThan(0.05);
+    expect(before.wideWordBoundary.delta).toBeGreaterThan(0.3);
+    expect(before.asTier0Reads.delta).toBeGreaterThan(0.4);
+    // After, at the wide width: the -0.007 the previous emission published.
+    expect(Math.abs(after.wideWordBoundary.delta)).toBeLessThan(0.08);
+    expect(Math.abs(after.wideWordBoundary.ownTypeDelta)).toBeLessThan(0.08);
+    // After, at the width and match rule the detector uses. THESE ARE
+    // REGRESSION PINS ON A MEASURED RESIDUAL, not a symmetry claim: the corpus
+    // does NOT meet the 0.08 bound on the own-type form under this reading, and
+    // the manifest says so in `verdict` rather than the bound being widened to
+    // fit. What is asserted structurally is the improvement, which is real and
+    // large.
+    expect(after.asTier0Reads.delta).toBeCloseTo(0.0753, 3);
+    expect(after.asTier0Reads.ownTypeDelta).toBeCloseTo(0.0979, 3);
+    expect(after.asTier0Reads.delta).toBeLessThan(before.asTier0Reads.delta / 5);
+    expect(after.asTier0Reads.ownTypeDelta).toBeLessThan(before.asTier0Reads.ownTypeDelta / 4);
+    expect(after.verdict).toContain("NOT SYMMETRIC");
     // Non-vacuous on both sides: a corpus with no boost terms at all would also
     // have a delta of zero and would be a different kind of unrealistic.
-    expect(after.goldRate).toBeGreaterThan(0.25);
-    expect(after.confusableRate).toBeGreaterThan(0.25);
+    expect(after.asTier0Reads.goldRate).toBeGreaterThan(0.25);
+    expect(after.asTier0Reads.confusableRate).toBeGreaterThan(0.25);
+    // And the two readings are not the same number wearing two labels.
+    expect(after.asTier0Reads.delta).not.toBeCloseTo(after.wideWordBoundary.delta, 2);
   });
 
   it("carries the measurement into the manifest rather than only into this test", () => {
-    expect(manifest.leakage.boost.window).toBe(BOOST_WINDOW);
-    expect(Math.abs(manifest.leakage.boost.delta)).toBeLessThan(0.08);
+    expect(manifest.leakage.boost.asTier0Reads.window).toBe(TIER0_BOOST_WINDOW);
+    expect(manifest.leakage.boost.wideWordBoundary.window).toBe(BOOST_WINDOW);
+    expect(manifest.leakage.boost.verdict).toContain("NOT SYMMETRIC");
+    // The manifest must not be able to publish a symmetry claim the numbers do
+    // not support: the verdict is generated from the rates, so this pins the
+    // two together.
+    expect(manifest.leakage.boost.verdict).toContain(manifest.leakage.boost.asTier0Reads.delta.toFixed(4));
   });
 });
 
@@ -273,7 +473,7 @@ describe("decision 3: the gold span is not the unique orthographic outlier", () 
     expect(v2DistractorFor(real, seededRng("x"))).toBeDefined();
   });
 
-  it("drops the oracle's solved rate from 58 of 108 to zero", () => {
+  it("drops the oracle's solved rate from 58 of 108 to zero, and says why that certifies nothing", () => {
     const before = measureOrthography(BEFORE);
     const after = measureOrthography(items);
     expect([before.goldSpans, before.goldSpansFound, before.goldSpansSolvedByOracle]).toEqual([108, 95, 58]);
@@ -282,6 +482,59 @@ describe("decision 3: the gold span is not the unique orthographic outlier", () 
     // nothing would also solve nothing. It must still find most of the gold.
     expect(after.oracleRecall).toBeGreaterThan(0.8);
     expect(after.oraclePrecision).toBeLessThan(before.oraclePrecision);
+    // AND THE STATISTIC IS ZEROED BY CONSTRUCTION, which is the point of the
+    // rest of this block. Demonstrated rather than asserted: put ONE extra odd
+    // token anywhere in every message of the corpus this replaces -- changing
+    // nothing about how findable its gold span is -- and its solved rate goes
+    // to zero too.
+    const beforeWithADistractor = BEFORE.map((i) => ({ ...i, text: `${i.text}\nref ZZQQ7788XX9\n` }));
+    expect(measureOrthography(beforeWithADistractor).goldSpansSolvedByOracle).toBe(0);
+    expect(measureOrthography(beforeWithADistractor).oracleRecall).toBeCloseTo(before.oracleRecall, 6);
+  });
+
+  it("measures what the trivial reader actually scores, which is the number an arm has to beat", () => {
+    const after = measureOrthography(items);
+    // No bound is asserted on these. They are the corpus's own floor and the
+    // honest reading of them is in `verdict`: a reader that understands nothing
+    // scores in the same range as the arms measured on this corpus, so the
+    // distractor injection reduced the leak and did not close it. Pinning a
+    // threshold here would turn a disclosure back into a certification.
+    expect(after.asScored.f1).toBeGreaterThan(0.4);
+    // Scored as an arm is, so the two numbers are comparable: the oracle's
+    // one-to-one precision is BELOW the touch-any-gold figure beside it, and
+    // the verdict quotes the comparable one.
+    expect(after.asScored.precision).toBeLessThan(after.oraclePrecision);
+    expect(after.asScored.tp + after.asScored.fn).toBe(after.goldSpans);
+    expect(after.verdict).toContain(after.asScored.precision.toFixed(3));
+    expect(after.budgetMatched.tp + after.budgetMatched.fn).toBe(after.goldSpans);
+    expect(after.budgetMatched.precision).toBeGreaterThan(0.6);
+    expect(after.budgetMatched.recall).toBeGreaterThan(0.6);
+    expect(after.firstHitIsGold).toBeGreaterThan(after.itemsWithGold / 2);
+    expect(after.verdict).toContain("THIS IS THE FLOOR");
+    expect(after.verdict).toContain("certifies nothing");
+    // The budget-matched form is the one a distractor cannot flatter: adding an
+    // odd token to every message does not move it the way it moves solvedRate.
+    const padded = items.map((i) => ({ ...i, text: `${i.text}\nref ZZQQ7788XX9\n` }));
+    const paddedReport = measureOrthography(padded);
+    expect(paddedReport.goldSpansSolvedByOracle).toBe(0);
+    expect(paddedReport.budgetMatched.recall).toBeCloseTo(after.budgetMatched.recall, 6);
+    expect(manifest.leakage.orthography.verdict).toBe(after.verdict);
+  });
+
+  it("measures the positional discriminator the distractor introduced", () => {
+    const position = measurePosition(items);
+    // `generate.ts` places the distractor at (slotIndex + 1) % slots.length, so
+    // this is a fact about the generator and not about the draw. It is measured
+    // rather than fixed, and the manifest says so; the assertion is that the
+    // number is PUBLISHED, not that it is small.
+    expect(position.shadowedPairs).toBeGreaterThan(100);
+    expect(position.distractorAfterGoldRate).toBeGreaterThan(0.5);
+    expect(position.goldFirstRate).toBeGreaterThan(0.5);
+    expect(position.verdict).toContain("THIS IS AN OPEN LEAK");
+    expect(manifest.leakage.position).toEqual(position);
+    // The corpus this replaces had no distractors at all, so it has no pairs --
+    // which is what makes this a NEW leak rather than an inherited one.
+    expect(measurePosition(BEFORE).shadowedPairs).toBe(0);
   });
 
   it("puts at least one other odd region in every message that carries a gold span", () => {
@@ -322,6 +575,23 @@ describe("decision 4: the organisation's role is not readable off its name", () 
     expect(after.roleLockedSpans).toBe(0);
     expect([...after.namesInBothClasses].sort()).toEqual([...ORG_POOL].sort());
     expect(after.orgSpans).toBeGreaterThan(40);
+  });
+
+  it("publishes the per-name marginals, because 'locked' is a binary answer to a continuous question", () => {
+    const after = measureRoles(items, orgRoleClassOf);
+    // Every name appears on both sides, so roleLockedRate is 0 -- and the
+    // counts are still lopsided enough that a name-only classifier beats the
+    // majority class. The residual is what the binary statistic cannot say.
+    expect(after.perName.map((p) => p.name).sort()).toEqual([...ORG_POOL].sort());
+    for (const row of after.perName) {
+      expect([row.name, Object.keys(row.counts).sort()]).toEqual([row.name, ["client-side", "non-client"]]);
+    }
+    expect(after.nameOnlyCorrect).toBe(
+      after.perName.reduce((n, r) => n + Math.max(...Object.values(r.counts)), 0),
+    );
+    expect(after.nameOnlyLift).toBeGreaterThan(0);
+    expect(after.nameOnlyAccuracy).toBeGreaterThan(after.majorityBaseline);
+    expect(manifest.leakage.roles.perName).toEqual(after.perName);
   });
 });
 

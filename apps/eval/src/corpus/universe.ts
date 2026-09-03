@@ -27,6 +27,20 @@ import { getValidator } from "@sih/core";
  * so the corpus cannot contain a "valid PAN" the shipping validator rejects,
  * and it cannot contain an "invalid" one the validator accepts. That check is
  * against the same code the extension runs, not a second copy of the rule.
+ *
+ * ## What that consistency also costs, stated because it is not free
+ *
+ * The same gate that makes the labels consistent SYSTEMATICALLY EXCLUDES the
+ * compiled arm's own tier-0 failure mode. A validator disagreeing with the
+ * world -- a real PAN `pan-structure` rejects, a non-PAN it accepts -- is the
+ * one class of item on which tier 0 is wrong, and by construction no such item
+ * can be minted here or admitted as a confusable (`surfaces.ts:161` throws if
+ * the TAN confusable happens to pass `panStructure`). So per-type tier-0 recall
+ * on `in-pan` and `in-aadhaar`, and tier-0's zero false-positive rate on the
+ * PAN confusable, are upper bounds this corpus manufactured rather than
+ * measurements of the world, and a prompting arm reasoning about the format
+ * from the policy text gets no equivalent floor. The v2 manifest carries this
+ * in `unvalidated`; it is repeated here because this is the file that does it.
  */
 
 // -- the world --------------------------------------------------------------

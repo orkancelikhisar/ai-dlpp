@@ -47,9 +47,11 @@ import {
   IR_COUNTEREXAMPLE_SURFACES,
   measureBoost,
   measureOrthography,
+  measurePosition,
   measureRoles,
   type BoostReport,
   type OrthographyReport,
+  type PositionReport,
   type RoleReport,
 } from "./leakage.js";
 import {
@@ -88,23 +90,52 @@ import {
  *
  * 1. SURFACES FROM THE IR. 13 of the 24 confusable families in the adjudicated
  *    corpus were 1:1 with an entry in the IR's own `counterExamples` lists,
- *    carrying 59 of its 108 confusable spans -- so on more than half of them the
- *    corpus asked "is this a PAN?" of an arm whose prompt already said
- *    "ABCDE1234F is not a PAN". Wave 3 mints every surface from its published
- *    format rule and shares no surface with that list. After: 0 of 27.
- * 2. contextBoost ASYMMETRY. A `contextBoost` term -- a compiled-arm-only
- *    feature -- sat near 40.7% of gold spans and near 0.9% of confusable spans,
- *    so the keyword predicted the label. After: 45.4% against 46.1%, a delta of
- *    -0.007, and the sharper own-entityType form falls from 0.333 to 0.024.
+ *    carrying 59 of its 108 confusable spans. Wave 3 mints every surface from
+ *    its published format rule and shares no surface with that list.
+ *    After: 0 of 27, on the INJECTED half. The channel is the compiled arm's
+ *    tier-0 validators, not a prompt -- see `surfaces.ts` and
+ *    `leakage.irOverlap.whatTheSurfaceCheckProtects`, which correct an earlier
+ *    claim that the arm is shown those strings -- and the hard-negative
+ *    CARRIERS were never run past the same table
+ *    (`irOverlap.carriersCheckedAgainstIrSurfaces: false`).
+ * 2. contextBoost ASYMMETRY. A `contextBoost` term sat near 40.7% of gold spans
+ *    and near 0.9% of confusable spans at 70 characters with word-boundary
+ *    matching. NOT CLOSED, and the earlier "-0.007" here was measured at a
+ *    width and a match rule no arm uses. Measured the way `runTier0` actually
+ *    reads contextBoost -- 40 characters, substring, window including the span
+ *    -- the previous corpus reads +0.4537 and this one reads +0.0753, with the
+ *    sharper own-entityType form falling from +0.4352 to +0.0979. A residual
+ *    that still favours the compiled arm, reported as such in
+ *    `leakage.boost.verdict`.
  * 3. THE GOLD SPAN AS THE UNIQUE ODD TOKEN. On 58 of 108 gold spans the crude
  *    orthographic oracle returned that span and nothing else. Wave 3 injects a
- *    shape-matched, LABELLED confusable beside every positive. After: 0 of 108,
- *    and the oracle's precision over the corpus falls from 0.49 to 0.32.
+ *    shape-matched, LABELLED confusable beside every positive, and that drives
+ *    the statistic to 0 of 108 BY CONSTRUCTION -- which is why it is no longer
+ *    the certification. What the oracle actually scores on the emitted corpus:
+ *    scored exactly as an arm is (overlap, one-to-one), P 0.307 R 0.870
+ *    unbudgeted, P 0.705 R 0.685 when told how many spans to return per item,
+ *    and its first hit in document order is the gold span on 68.5% of the items
+ *    that carry one. The best arm in `runs/slate-rebuild-01*` scores P 0.362
+ *    R 0.731 on the same rule. THE DEFECT IS REDUCED AND NOT CLOSED: a reader
+ *    that understands nothing is still competitive with every arm measured.
+ *    `leakage.orthography.verdict` carries the numbers.
  * 4. ROLE READABLE OFF THE NAME. 19 of 39 organisation spans carried a name that
  *    appears in only one role class corpus-wide, because the client pool, the
  *    supplier pool, the competitor pool and the employer name were four disjoint
  *    arrays. Wave 3 draws every organisation from one pool. After: 0 of 59, with
- *    all five names appearing on both sides.
+ *    all five names appearing on both sides -- and `leakage.roles.perName` now
+ *    publishes the marginals, because a name in both classes can still be 11-2
+ *    on one side. `nameOnlyLift` is the residual.
+ *
+ * ## The leak decision 3's fix INTRODUCED
+ *
+ * `generate.ts` places every shape-matched distractor at
+ * `(slotIndex + 1) % slots.length` -- one slot AFTER the span it shadows, with
+ * no randomisation. So "the earlier of two same-shape odd strings is the gold
+ * one" is true far more often than a coin flip, and `leakage.position` measures
+ * it. It is measured rather than fixed: fixing it moves every offset in the
+ * corpus, and a blind labelling round has already written judgements about
+ * these offsets.
  *
  * ## What this corpus does NOT fix
  *
@@ -187,14 +218,45 @@ export const CONTESTED_TYPES: readonly string[] = [
 export interface LeakageReport {
   readonly boost: BoostReport;
   readonly orthography: OrthographyReport;
+  readonly position: PositionReport;
   readonly roles: RoleReport;
   readonly irOverlap: {
     readonly labelledSpans: number;
     readonly spanValuesFoundInIr: readonly string[];
     readonly spanValuesFoundInSelfTest: readonly string[];
+    /**
+     * The check `spanValuesFoundInIr` cannot make.
+     *
+     * That one asks whether a whole span VALUE occurs in the IR, and a minted
+     * PEM block never will -- its body is random. This one asks the question a
+     * reader auditing the corpus by hand asks: does any string the IR publishes
+     * as an `examples` or `counterExamples` entry occur VERBATIM in the emitted
+     * text? MEASURED: two do, both `private-key-material` examples and both
+     * PEM opening lines, over six items. They are there because RFC 7468 fixes
+     * the encapsulation boundary -- a corpus cannot mint an RSA private key
+     * whose first line is anything else -- so this is reported rather than
+     * removed, and it is reported because an empty `spanValuesFoundInIr` beside
+     * it would otherwise read as "no IR text reaches the corpus".
+     */
+    readonly irSurfacesFoundInCorpusText: readonly { readonly kind: string; readonly entityType: string; readonly text: string; readonly items: number }[];
     readonly confusableFamilies: number;
     readonly confusableFamiliesSharingAnIrCounterExampleSurface: readonly string[];
     readonly irCounterExamplesAnnotated: number;
+    /**
+     * Which arm the counterExample-surface check protects, stated because the
+     * module that runs it used to name the wrong one. See `surfaces.ts`.
+     */
+    readonly whatTheSurfaceCheckProtects: string;
+    /**
+     * The half of the corpus the surface check was NEVER applied to.
+     *
+     * `V2_CONFUSABLE_FAMILIES` is filtered against the annotated surface table;
+     * the hard-negative CARRIERS are not, and `carriers.candidate.ts:63` states
+     * that exemption outright -- they are written "in the SPIRIT of the IR's
+     * counterExample lists and never in their words". So the check is closed on
+     * the injected half and open by design on the carrier half.
+     */
+    readonly carriersCheckedAgainstIrSurfaces: boolean;
   };
   readonly comparedWith: string;
 }
@@ -209,19 +271,38 @@ function measureLeakage(items: readonly CorpusItem[], ir: PolicyIr, irText: stri
       values.add(inj.text);
     }
   }
+  const irStrings = ir.entityTypes.flatMap((e) => [
+    ...(e.examples ?? []).map((text) => ({ kind: "examples", entityType: e.id, text })),
+    ...(e.counterExamples ?? []).map((text) => ({ kind: "counterExamples", entityType: e.id, text })),
+  ]);
   return {
     boost: measureBoost(items, ir, PAIRED_TYPE),
     orthography: measureOrthography(items),
+    position: measurePosition(items),
     roles: measureRoles(items, orgRoleClassOf),
     irOverlap: {
       labelledSpans: labelled,
       spanValuesFoundInIr: [...values].filter((v) => irText.includes(v)).sort(),
       spanValuesFoundInSelfTest: [...values].filter((v) => selfTestText.includes(v)).sort(),
+      irSurfacesFoundInCorpusText: irStrings
+        .map((s) => ({ ...s, items: items.filter((i) => i.text.includes(s.text)).length }))
+        .filter((s) => s.items > 0)
+        .sort((a, b) => a.text.localeCompare(b.text)),
       confusableFamilies: V2_CONFUSABLE_FAMILIES.length,
       confusableFamiliesSharingAnIrCounterExampleSurface: V2_CONFUSABLE_FAMILIES.filter((f) =>
         irSurfaces.has(f.surfaceName),
       ).map((f) => f.id),
       irCounterExamplesAnnotated: IR_COUNTEREXAMPLE_SURFACES.length,
+      whatTheSurfaceCheckProtects:
+        "NOT a prompt. MEASURED: no arm under measurement receives the IR's examples or " +
+        "counterExamples -- judge.ts:496-501 excludes them, baselineB.ts:881-895 is handed entityType " +
+        "ids plus the policy document, tier 1 reads nlDefinition, and none of the 23 counterExamples " +
+        "or 20 examples occurs anywhere in policies/p-fin.md. Their only consumer is the compiler's " +
+        "self-test generator. What the check protects is the compiled arm's TIER-0 rules and " +
+        "validators, which were derived to reject those surfaces: a confusable that is a " +
+        "counterExample surface asks the arm about a string its validator was written against and " +
+        "hands it that precision for free.",
+      carriersCheckedAgainstIrSurfaces: false,
     },
     comparedWith:
       "the before figures quoted in the module headers are these same functions run over " +
@@ -409,6 +490,49 @@ export function buildV2Artifacts(seed: string = V2_SEED): BuiltV2Artifacts {
     },
     verification,
     unvalidated: [
+      "A TRIVIAL ORTHOGRAPHIC READER IS STILL COMPETITIVE WITH EVERY ARM MEASURED. leakage.orthography " +
+        "reports what the crude 'return the odd string' oracle scores on this corpus, and the answer " +
+        "is not far from what a 4B model scores. The distractor injection removed the case where the " +
+        "gold span is the ONLY odd region and did not make the corpus require policy reasoning. Read " +
+        "leakage.orthography.verdict before quoting any accuracy figure taken off this file: an arm " +
+        "near those numbers has not been shown to be reading the policy.",
+      "THE DISTRACTOR IS PLACED DETERMINISTICALLY AFTER THE SPAN IT SHADOWS, so position substitutes " +
+        "for the orthographic discriminator it removed. leakage.position has the rate. Not fixed, " +
+        "because fixing it moves every offset and the labelling round already ran over these.",
+      "contextBoost IS NOT SYMMETRIC UNDER THE MECHANISM THE DETECTOR IMPLEMENTS. leakage.boost " +
+        "reports both readings; the tier-0 one is the one that applies to the compiled arm, and it " +
+        "carries a residual in that arm's favour. The published -0.0075 of the previous emission was " +
+        "measured at a width and a match rule runTier0 does not use.",
+      "EVERY MINTED VALUE IS GATED BY THE SHIPPING VALIDATORS AT MINT TIME (universe.ts:25-28, :97, " +
+        ":117, :132, :144; surfaces.ts:161 for the TAN confusable). That makes the corpus internally " +
+        "consistent AND systematically excludes the compiled arm's own tier-0 failure mode: it can " +
+        "contain no real PAN that pan-structure rejects and no non-PAN that it accepts. Per-type " +
+        "tier-0 recall on in-pan and in-aadhaar, and tier-0's false-positive rate on the PAN " +
+        "confusable, are therefore upper bounds the corpus manufactured rather than measurements of " +
+        "the world. A prompting arm reasoning from the policy text gets no such floor.",
+      "THE CONTESTED SET WAS CHOSEN BY THE AUTHOR OF THE LABELS. CONTESTED_TYPES is exactly the " +
+        "families whose own author wrote a contestedBy string, and 2 of 28 did. The blind round " +
+        "therefore covered 20 of 219 confusable spans. In particular neg:org-vendor (11 spans), " +
+        "neg:org-landlord (6), neg:org-cross-segment-supplier (3) and neg:org-cross-segment-landlord " +
+        "(6) sit on exactly the client/non-client axis client-name is scored on and were never put to " +
+        "an annotator. client-name precision and over-blocking rest on 26 author-only labels.",
+      "neg:batch-sequence (9 spans) IS THE STRUCTURAL TWIN OF A TYPE THE ROUND LEFT DISPUTED. Both it " +
+        "and neg:retrieval-reference mint twelve digits with a lead digit of 2-9 and a VALID Verhoeff " +
+        "check, so all 16 satisfy the IR's written in-aadhaar definition and the compiled tier-0 arm " +
+        "fires on every one by construction. The 7 retrieval references are excluded from the " +
+        "false-positive claim; the 9 batch sequences are scored as true false positives on the " +
+        "strength of one authored clause. The round contested the one and not the other.",
+      "SEVERAL CONFUSABLE FAMILIES CARRY THEIR EXCULPATION AS A FIRST-PERSON ASSERTION INSIDE THE " +
+        "MESSAGE -- 'nothing sensitive was in the paste', 'which is the firm's own', 'and it holds " +
+        "nothing but the outbound files'. p-fin forbids exactly that inference elsewhere (§4.1 binds " +
+        "'including when the person sending the prompt believes the credential has already been " +
+        "revoked'; §2.5 is 'not relieved ... by the claim that the record came from a test " +
+        "environment'), so on roughly a fifth of the confusable surface an arm that BELIEVES the " +
+        "sender scores as precise. The over-blocking rate is flattered by that much.",
+      "EVERY ARM NUMBER TAKEN OFF THIS CORPUS IS A POOLED dev+test FIGURE. splits declares 39 dev and " +
+        "150 test, disjoint, and every run in runs/slate-rebuild-01* scored all 189 items with no " +
+        "split recorded on any row. Nothing tuned against the dev slice can be separated out after " +
+        "the fact from a run record that does not name it.",
       "CARRIER REALISM IS UNVALIDATED. The carriers are hand-authored, not the ShareChat/WildChat " +
         "conversations spec 6.2 specifies, and none of its three realism gates ran: no frontier " +
         "naturalness score, no adversarial style probe, no human spot check. The style probe is the " +

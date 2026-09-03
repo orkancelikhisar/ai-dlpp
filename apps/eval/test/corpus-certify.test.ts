@@ -11,6 +11,7 @@ import {
   maxRecallIr,
   orthographicOrgSweep,
   tier0Sweep,
+  type CarrierCertification,
   type Sweep,
 } from "../src/corpus/certify.js";
 import { FORMAT_SPEC_SWEEP_ID, formatSpecSweep } from "../src/corpus/format-sweep.js";
@@ -209,6 +210,85 @@ describe("certificationSummary", () => {
     const summary = certificationSummary(certs);
     expect(summary.claim).toBe("NOT CERTIFIED");
     expect(summary.quarantined.map((q) => q.carrierId)).toEqual(["dirty"]);
+  });
+
+  it("cannot say CERTIFIED while a stage is unrun, even with every carrier clear", () => {
+    // The conjunct `allStagesRan &&` in `claim:` had no test that could fail on
+    // its removal: every existing case is also caught by the OTHER clause,
+    // because `certifyCarrier` never returns certified-clear with a stage
+    // unrun. So the input has to be built by hand -- which is the only way to
+    // separate the two clauses, and is exactly the state a future stage-2
+    // runner reporting `ran: false` would produce.
+    const clearWithAStageMissing: CarrierCertification = {
+      carrierId: "hand-built",
+      status: "certified-clear",
+      stages: [
+        { sweep: "tier0-sweep", ran: true, detector: "stub", hits: [] },
+        { sweep: "high-recall-model-sweep", ran: false, blockedOn: "a model", why: "no model here" },
+        { sweep: "frontier-adjudication", ran: false, blockedOn: "a frontier model", why: "none here" },
+      ],
+      supplementary: [],
+      hits: [],
+      unrun: ["high-recall-model-sweep", "frontier-adjudication"],
+    };
+    const summary = certificationSummary([clearWithAStageMissing]);
+    // Both halves: the count clause is SATISFIED here (1 of 1 certified-clear),
+    // so only the stage clause can be producing this answer.
+    expect(summary.carriers).toEqual({ total: 1, certifiedClear: 1, provisionalClear: 0, quarantined: 0 });
+    expect(summary.claim).toBe("NOT CERTIFIED");
+    expect(summary.stagesUnrun.map((s) => s.stage)).toEqual([
+      "high-recall-model-sweep",
+      "frontier-adjudication",
+    ]);
+    // And the same object with every stage reported run DOES certify, so the
+    // refusal above is about the stages and not about the hand-built shape.
+    const allRan: CarrierCertification = {
+      ...clearWithAStageMissing,
+      stages: clearWithAStageMissing.stages.map((st) => ({
+        sweep: st.sweep,
+        ran: true as const,
+        detector: "stub",
+        hits: [],
+      })),
+      unrun: [],
+    };
+    expect(certificationSummary([allRan]).claim).toBe("CERTIFIED");
+  });
+
+  it("reports the carriers stage 1 quarantined ALONE, and can produce a non-empty answer", () => {
+    // `circularity.stage1Only` is the round's headline honesty number and its
+    // only observed value is []. A test asserting `toEqual([])` against the
+    // shipped corpus cannot tell a working filter from `filter(() => false)`.
+    // These two cases drive it both ways on inputs built here.
+    const tier0Only = certifyCarrier(
+      "tier0-only",
+      "the api key in the config was sk-liveAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA and it broke",
+      { ir: IR, supplementarySweeps: [{ id: FORMAT_SPEC_SWEEP_ID, sweep: CLEAR }] },
+    );
+    expect(tier0Only.hits.some((h) => h.sweep === "tier0-sweep")).toBe(true);
+    const only = certificationSummary([tier0Only]).circularity!;
+    expect(only.stage1Only).toEqual(["tier0-only"]);
+    expect(only.both).toEqual([]);
+    expect(only.independentOnly).toEqual([]);
+
+    // The mirror: a surface the IR names nowhere, so the IR-free sweep fires
+    // and the widened tier-0 arm does not. Without this the test above would
+    // pass on a summary that put every carrier in `stage1Only`.
+    const independentOnly = certifyCarrier("format-only", "the deduction account number is MUMB12345C.", {
+      ir: IR,
+      supplementarySweeps: [{ id: FORMAT_SPEC_SWEEP_ID, sweep: formatSpecSweep }],
+    });
+    const mirrored = certificationSummary([independentOnly]).circularity!;
+    expect(mirrored.independentOnly).toEqual(["format-only"]);
+    expect(mirrored.stage1Only).toEqual([]);
+
+    // And a carrier both sweeps catch lands in `both` and in neither list.
+    const bothSweeps = certifyCarrier("both", "the reference on the form reads ABCDE1234F next to the signature.", {
+      ir: IR,
+      supplementarySweeps: [{ id: FORMAT_SPEC_SWEEP_ID, sweep: formatSpecSweep }],
+    });
+    const b = certificationSummary([bothSweeps]).circularity!;
+    expect([b.both, b.stage1Only, b.independentOnly]).toEqual([["both"], [], []]);
   });
 
   it("counts exactly three spec stages, so a fourth sweep cannot inflate the count", () => {

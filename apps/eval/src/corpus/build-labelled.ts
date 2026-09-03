@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadPolicyIr, runTier0, segmentText, type PolicyIr } from "@sih/core";
 import { loadCorpus, type CorpusItem } from "../driver/corpus.js";
-import { loadTier2Gold, type Tier2GoldRow } from "../driver/score.js";
+import { MATCH_RULES, loadTier2Gold, spansMatch, type Tier2GoldRow } from "../driver/score.js";
 import { IR_PATH, OUT_DIR, REPO_ROOT } from "./build.js";
 import {
   V2_CORPUS_PATH,
@@ -26,6 +27,7 @@ import {
   overrideReport,
   predicateAdjudication,
   predicateVerdictFor,
+  type AnnotatorLabel,
   type CoverageReport,
   type LabelAgreementReport,
   type OverrideReport,
@@ -157,23 +159,53 @@ export function assertSourceBytesUnchanged(expected: {
  * `spans` is empty on every row here, and that is not a shortcut: a row may
  * carry spans only when it satisfies the predicate, and no row does.
  */
-export function tier2GoldRows(items: readonly CorpusItem[], policyHash: string): Tier2GoldRow[] {
+export function tier2GoldRows(
+  items: readonly CorpusItem[],
+  policyHash: string,
+  // Injectable for the same reason `predicateVerdictFor`'s is: the shipped
+  // round produced zero positives, so the branch that refuses one is
+  // unreachable from the real labels and a test over them alone cannot show it
+  // exists. Nothing in the pipeline passes anything but the defaults.
+  labels: Readonly<Record<"A" | "B", ReadonlyMap<string, AnnotatorLabel>>> = LABELS_BY_ITEM,
+  itemIds: readonly string[] = LABELLED_ITEM_IDS,
+): Tier2GoldRow[] {
   const byId = new Map(items.map((i) => [i.id, i]));
   const rows: Tier2GoldRow[] = [];
-  for (const itemId of LABELLED_ITEM_IDS) {
+  for (const itemId of itemIds) {
     const item = byId.get(itemId);
     if (item === undefined) {
       throw new Error(
         `refusing to emit: annotators labelled item "${itemId}", which is not in ${V2_CORPUS_RELPATH}`,
       );
     }
-    const a = LABELS_BY_ITEM.A.get(itemId)!;
-    const b = LABELS_BY_ITEM.B.get(itemId)!;
-    const verdict = predicateVerdictFor(itemId);
+    const a = labels.A.get(itemId)!;
+    const b = labels.B.get(itemId)!;
+    const verdict = predicateVerdictFor(itemId, labels);
     if (verdict.state === "uncovered") {
       throw new Error(`refusing to emit: item "${itemId}" is in the labelled set but has no verdict`);
     }
+    // On a DISPUTED row the two annotators disagree, so there is no single
+    // answer to record. A's is used because the schema requires a boolean and
+    // `score.ts:580` excludes disputed rows from both numerator and
+    // denominator, so the value is never scored -- but the field is named as
+    // the row's fact, so the adjudication string below says whose answer it is
+    // rather than presenting it as the row's verdict.
     const satisfies = verdict.state === "labelled" ? verdict.satisfiesPredicate === true : a.satisfiesPredicate;
+    // The builder has no path from an annotator's yes/no to an offset: the
+    // queue asked a message-scoped question and recorded no span. A positive
+    // would therefore emit `spans: []` on a satisfying row, which
+    // `Tier2GoldRowSchema` rejects with "a scored row that satisfies the
+    // predicate must name at least one span" -- a message that names the
+    // symptom and not the cause. Refuse here instead, where the cause is.
+    if (verdict.state === "labelled" && satisfies) {
+      throw new Error(
+        `refusing to emit: item "${itemId}" was adjudicated as SATISFYING ${PREDICATE_ID}, and this ` +
+          "builder cannot emit a span for it. The labelling queue asks a message-scoped yes/no and " +
+          "records no offsets, so there is nothing to put in `spans`. A round that adjudicates a " +
+          "positive must first extend the queue to ask for the span (questions.ts) and carry it " +
+          "through AnnotatorLabel into this function.",
+      );
+    }
     const borderline = a.predicateConfidence === "borderline" || b.predicateConfidence === "borderline";
     rows.push({
       itemId,
@@ -186,7 +218,22 @@ export function tier2GoldRows(items: readonly CorpusItem[], policyHash: string):
       confidence: borderline ? "borderline" : "clear",
       spans: [],
       adjudication:
-        `${verdict.state === "labelled" ? "AGREED" : "DISPUTED"} ${String(satisfies)} ` +
+        // On a DISPUTED row `satisfies` is not the row's answer, so the string
+        // must not render it as one. The two disputed causes read differently:
+        // a DISAGREEMENT has no agreed answer at all and the field carries only
+        // A's, while a both-borderline row does have an agreed answer that
+        // neither annotator would stand behind. Either way score.ts:580 leaves
+        // the row out of both numerator and denominator.
+        `${
+          verdict.state === "labelled"
+            ? `AGREED ${String(satisfies)}`
+            : a.satisfiesPredicate !== b.satisfiesPredicate
+              ? `DISPUTED, NO AGREED ANSWER (the satisfies field carries annotator A's ` +
+                `${String(a.satisfiesPredicate)}; annotator B answered ${String(b.satisfiesPredicate)}; ` +
+                "the row is excluded from scoring, so the field is a record and not a verdict)"
+              : `DISPUTED ${String(satisfies)} (both annotators answered ${String(a.satisfiesPredicate)} ` +
+                "and both called it borderline; the row is excluded from scoring)"
+        } ` +
         `(A ${a.predicateConfidence}, B ${b.predicateConfidence}). ${verdict.reason} ` +
         `ROUND: ${LABEL_ROUND_ID}; see ${LABELLED_MANIFEST_RELPATH} for the blindness audit, which ` +
         "records three told-channel breaches and two structural leaks in the artifact these two " +
@@ -319,9 +366,18 @@ export function labelledItems(items: readonly CorpusItem[]): CorpusItem[] {
           unlabelledClasses: [...new Set(stillUnlabelled)].sort(),
           why:
             "a finding of any class listed here is neither a match nor a false positive on this " +
-            "item. Every class NOT listed is now covered by the injection invariant, including the " +
-            `contested types this round resolved (${RESOLVED_CONTESTED_TYPES.join(", ") || "none"}). ` +
-            `The predicate is listed only where ${LABELLED_GOLD_RELPATH} has no scored row for this ` +
+            "item. A class NOT listed is covered by the injection invariant ONLY AS FAR AS THAT " +
+            "INVARIANT REACHES, and it reaches tier-0 entity classes: certification stages 2 and 3 " +
+            "are unrun, so the only sweeps that saw these carriers are runTier0 over a widened IR, " +
+            "an orthographic Title-Case proxy, and an IR-free format sweep. A carrier may therefore " +
+            "still hold an uninjected TIER-1 name (client-name is tier 1 in the IR) or a tier-2 " +
+            "relationship that no stage which ran can see, and a finding of one of those outside a " +
+            "gold span is not provably a false positive even though this list does not name it. " +
+            "The manifest's certification.invariantScope is the authority and says the same; an " +
+            "earlier version of this sentence claimed more than it. The contested types this round " +
+            `resolved (${RESOLVED_CONTESTED_TYPES.join(", ") || "none"}) ARE in scope, on the ` +
+            "adjudication. The predicate is listed only where " +
+            `${LABELLED_GOLD_RELPATH} has no scored row for this ` +
             "item; where it does, the row is the ground truth and a finding is scoreable against it.",
         },
       },
@@ -440,9 +496,21 @@ export function verifyLabelledOrRefuse(
   // `assertFamilyUniformity` survived the whole suite, because the only test
   // that exercised it called the function directly. A guard nothing on the emit
   // path can be shown to run is not a guard.
-  const typeOfItem = new Map<string, string>();
-  for (const item of sourceItems) for (const c of contestedSpansOf(item)) typeOfItem.set(item.id, c.type);
-  assertFamilyUniformity(typeOfItem);
+  // EVERY contested type on the item, not the last one. The previous version
+  // was `typeOfItem.set(item.id, c.type)` inside the same loop, so an item with
+  // two contested spans of different types presented only one of them and a
+  // split family could pass the guard. `assertFamilyUniformity` now refuses
+  // that item outright, because an annotator records one span answer per item
+  // and two families cannot both claim it.
+  const typesOfItem = new Map<string, string[]>();
+  for (const item of sourceItems) {
+    for (const c of contestedSpansOf(item)) {
+      const list = typesOfItem.get(item.id) ?? [];
+      list.push(c.type);
+      typesOfItem.set(item.id, list);
+    }
+  }
+  assertFamilyUniformity(typesOfItem);
 
   const typesInCorpus = new Set(emitted.flatMap((i) => contestedSpansOf(i).map((c) => c.type)));
   for (const type of Object.keys(SPAN_ADJUDICATIONS)) {
@@ -486,13 +554,92 @@ export function verifyLabelledOrRefuse(
 // What this corpus can and cannot support
 // ---------------------------------------------------------------------------
 
+/**
+ * How many of a class's gold spans the compiled arm's own tier-0 rules can
+ * produce a matching span for, per match rule.
+ *
+ * This is a property of the corpus's SPAN CONVENTION, not a detection result,
+ * and the two are indistinguishable in a published table unless it is measured.
+ * `private-key-material` is the case that forced it: gold is the whole PEM
+ * block and p-fin's only rule for the class matches the BEGIN line, so the
+ * class reads 0 of 18 under `exact` and `iou50` for every compiled arm however
+ * well it detects. A reader seeing "recall 0.000" beside a working detector has
+ * been told something false.
+ *
+ * MEASURED with `runTier0` over the emitted text -- the shipping detector, not
+ * a re-implementation of its regexes -- and restricted to findings whose
+ * `entityType` equals the gold span's, because a span matched under the wrong
+ * class is not a recall event for that class. `null` when the IR declares no
+ * tier-0 rule for the class at all: tier-1 and tier-2 classes are not tier 0's
+ * job and a zero there would say nothing about the corpus.
+ */
+export interface CompiledArmReach {
+  readonly tier0RulesInIr: number;
+  readonly exact: number;
+  readonly iou50: number;
+  readonly overlap: number;
+  /** Gold spans no same-class tier-0 finding touches at all. */
+  readonly unreachable: number;
+  readonly note: string;
+}
+
 export interface ClassCapability {
   readonly className: string;
   readonly goldPositives: number;
   readonly scoredNegatives: number | null;
   /** The smallest change in recall this class can express: 1 / goldPositives. */
   readonly recallStep: number | null;
+  readonly compiledArmReach: CompiledArmReach | null;
   readonly note: string;
+}
+
+/**
+ * Per gold span, whether ANY same-entityType tier-0 finding on the same item
+ * matches it under each rule.
+ *
+ * Not one-to-one matching: the question is "can the arm's rule set produce a
+ * span the scorer would accept for this gold span", which is a per-gold-span
+ * question. `scoreArm` does the one-to-one matching when it counts an arm; this
+ * counts what is REACHABLE, which is an upper bound on that.
+ */
+export function compiledArmReachByType(
+  items: readonly CorpusItem[],
+  ir: PolicyIr,
+): ReadonlyMap<string, CompiledArmReach> {
+  const rulesByType = new Map<string, number>();
+  for (const rule of ir.rules) rulesByType.set(rule.entityType, (rulesByType.get(rule.entityType) ?? 0) + 1);
+  const acc = new Map<string, { exact: number; iou50: number; overlap: number; unreachable: number }>();
+  for (const item of items) {
+    if (item.gold.length === 0) continue;
+    const findings = runTier0(ir, item.text, segmentText(item.text));
+    for (const gold of item.gold) {
+      const row = acc.get(gold.entityType) ?? { exact: 0, iou50: 0, overlap: 0, unreachable: 0 };
+      const sameType = findings.filter((f) => f.entityType === gold.entityType);
+      for (const rule of MATCH_RULES) {
+        if (sameType.some((f) => spansMatch(rule, f, gold))) row[rule] += 1;
+      }
+      if (!sameType.some((f) => spansMatch("overlap", f, gold))) row.unreachable += 1;
+      acc.set(gold.entityType, row);
+    }
+  }
+  const out = new Map<string, CompiledArmReach>();
+  for (const [className, row] of acc) {
+    const tier0RulesInIr = rulesByType.get(className) ?? 0;
+    if (tier0RulesInIr === 0) continue;
+    out.set(className, {
+      tier0RulesInIr,
+      exact: row.exact,
+      iou50: row.iou50,
+      overlap: row.overlap,
+      unreachable: row.unreachable,
+      note:
+        `p-fin's ${tier0RulesInIr} tier-0 rule(s) for this class can produce a matching span for ` +
+        `${row.exact} gold span(s) under exact, ${row.iou50} under iou50 and ${row.overlap} under ` +
+        `overlap; ${row.unreachable} are untouched by any same-class rule. Any shortfall here is a ` +
+        "ceiling the span convention imposes on every compiled arm, not a detection result.",
+    });
+  }
+  return out;
 }
 
 /**
@@ -542,20 +689,36 @@ export function capabilityReport(
   items: readonly CorpusItem[],
   predicate: PredicateAdjudication,
   smokeGold: readonly Tier2GoldRow[],
+  ir: PolicyIr,
 ): CapabilityReport {
   const byType = new Map<string, number>();
   for (const item of items) for (const g of item.gold) byType.set(g.entityType, (byType.get(g.entityType) ?? 0) + 1);
+  const reach = compiledArmReachByType(items, ir);
   const perEntityType = [...byType.entries()]
     .sort((x, y) => x[0].localeCompare(y[0]))
-    .map(([className, goldPositives]): ClassCapability => ({
-      className,
-      goldPositives,
-      scoredNegatives: null,
-      recallStep: 1 / goldPositives,
-      note:
-        `per-type recall moves in steps of ${(100 / goldPositives).toFixed(1)} percentage points; no ` +
-        "difference smaller than that between two arms is resolvable on this corpus.",
-    }));
+    .map(([className, goldPositives]): ClassCapability => {
+      const r = reach.get(className) ?? null;
+      const blocked =
+        r === null
+          ? []
+          : MATCH_RULES.filter((rule) => r[rule] === 0).map((rule) => rule as string);
+      return {
+        className,
+        goldPositives,
+        scoredNegatives: null,
+        recallStep: 1 / goldPositives,
+        compiledArmReach: r,
+        note:
+          `per-type recall moves in steps of ${(100 / goldPositives).toFixed(1)} percentage points; no ` +
+          "difference smaller than that between two arms is resolvable on this corpus." +
+          (blocked.length === 0
+            ? ""
+            : ` AND THE COMPILED ARM CANNOT SCORE ABOVE ZERO HERE UNDER ${blocked.join(" OR ")}: ` +
+              "no tier-0 rule for this class can produce a span that matches any of its gold spans " +
+              `under ${blocked.length === 1 ? "that rule" : "those rules"}, so a table column using ` +
+              "it reports a span convention and not a detector."),
+      };
+    });
 
   const confusableSpans = items.flatMap(
     (i) => (i.meta?.["labels"] ?? []) as readonly Record<string, unknown>[],
@@ -589,6 +752,10 @@ export function capabilityReport(
     goldPositives: predicate.positives,
     scoredNegatives: predicate.negatives,
     recallStep: predicate.positives === 0 ? null : 1 / predicate.positives,
+    // Null rather than a zero: `runTier0` has no rule for a tier-2 predicate,
+    // so "the compiled arm's rules cannot produce this span" is trivially true
+    // and says nothing about the corpus.
+    compiledArmReach: null,
     note:
       `this round contributes ${predicate.positives} positive(s) and ${predicate.negatives} scored ` +
       `negative(s). RECALL IS NOT DEFINED on this file alone -- a fraction with a zero denominator ` +
@@ -602,10 +769,29 @@ export function capabilityReport(
       `${((zeroEventUpperBound95(pooledNegatives) ?? 0) * 100).toFixed(1)}% with 95% confidence".`,
   };
 
+  const blockedRules = (c: ClassCapability): readonly string[] =>
+    c.compiledArmReach === null ? [] : MATCH_RULES.filter((rule) => c.compiledArmReach![rule] === 0);
   const canRank = perEntityType
     .filter((c) => c.goldPositives >= 15)
-    .map((c) => `${c.className} (${c.goldPositives} gold spans, ${(100 / c.goldPositives).toFixed(1)} pp steps)`);
+    .map((c) => {
+      const blocked = blockedRules(c);
+      const suffix =
+        blocked.length === 0
+          ? ""
+          : ` -- UNDER ${MATCH_RULES.filter((r) => !blocked.includes(r)).join("/")} ONLY; the ` +
+            `compiled arm reads 0 under ${blocked.join(" and ")} by span convention`;
+      return `${c.className} (${c.goldPositives} gold spans, ${(100 / c.goldPositives).toFixed(1)} pp steps)${suffix}`;
+    });
   const cannotRank = [
+    ...perEntityType.flatMap((c) =>
+      blockedRules(c).map(
+        (rule) =>
+          `${c.className} under ${rule}: p-fin's own tier-0 rules cannot produce a span matching any ` +
+          `of its ${c.goldPositives} gold spans under this rule (${c.compiledArmReach!.note}). Every ` +
+          "compiled arm reads 0 on this class in that column whatever it detects, so the column " +
+          "ranks nothing.",
+      ),
+    ),
     ...perEntityType
       .filter((c) => c.goldPositives < 15)
       .map(
@@ -716,7 +902,10 @@ export function buildLabelledArtifacts(): BuiltLabelledArtifacts {
   const corpusJsonl = serializeCorpus(items);
   const verification = verifyLabelledOrRefuse(source, sourceItems, corpusJsonl, goldJsonl);
 
-  const predicate = predicateAdjudication(sourceItems.map((i) => i.id));
+  const predicate = predicateAdjudication(
+    sourceItems.map((i) => i.id),
+    goldRows.reduce((n, r) => n + r.spans.length, 0),
+  );
   const contestedSpans = sourceItems.flatMap((i) => contestedSpansOf(i));
   const disputedSpans = contestedSpans.filter(
     (c) => (SPAN_ADJUDICATIONS[c.type]?.resolution ?? "disputed") === "disputed",
@@ -748,7 +937,7 @@ export function buildLabelledArtifacts(): BuiltLabelledArtifacts {
     },
     predicateAdjudication: predicate,
     policyGaps: POLICY_GAPS,
-    canSupport: capabilityReport(sourceItems, predicate, smokeGold),
+    canSupport: capabilityReport(sourceItems, predicate, smokeGold, loadPolicyIr(readFileSync(IR_PATH, "utf8"))),
     artifact: {
       corpusPath: LABELLED_CORPUS_RELPATH,
       corpusSha256: sha256(corpusJsonl),
@@ -757,6 +946,27 @@ export function buildLabelledArtifacts(): BuiltLabelledArtifacts {
     },
     verification,
     unvalidated: [
+      "A TRIVIAL ORTHOGRAPHIC READER IS COMPETITIVE WITH EVERY ARM MEASURED ON THIS CORPUS, and the " +
+        "shape-matched distractor that removed the old outlier leak introduced a positional one. " +
+        "Both are measured in injection-p-fin-v2.manifest.json's leakage.orthography and " +
+        "leakage.position and neither is closed. An arm's score on this file is not, on its own, " +
+        "evidence that the arm read the policy.",
+      "TWO OF THE THREE MATCH RULES ARE UNUSABLE FOR private-key-material, and canSupport now says " +
+        "so per class in perEntityType[].compiledArmReach. Gold for that class is the whole PEM " +
+        "block and p-fin's only rule for it matches the BEGIN line, so exact and iou50 read 0 of 18 " +
+        "for every compiled arm by span convention. bank-account-identifier loses 6 of 17 on exact " +
+        "for the same kind of reason. A per-class table under exact or iou50 must carry the reach " +
+        "column beside it or it reports conventions as detection.",
+      "THE CONTESTED SET WAS CHOSEN BY THE AUTHOR OF THE LABELS. A family is contested iff its own " +
+        "author wrote a contestedBy string, and 2 of 28 did, so the blind round reached 20 of 219 " +
+        "confusable spans. The org families that decide client-name precision -- neg:org-vendor " +
+        "(11 spans), neg:org-landlord (6), neg:org-cross-segment-supplier (3), " +
+        "neg:org-cross-segment-landlord (6) -- sit on exactly the client/non-client axis being " +
+        "scored and were never put to an annotator. 26 author-only labels carry that number.",
+      "neg:batch-sequence WAS NOT CONTESTED AND ITS STRUCTURAL TWIN WAS. Its 9 spans and " +
+        "neg:retrieval-reference's 7 are both minted 12 digits, lead digit 2-9, valid Verhoeff, so " +
+        "all 16 satisfy the IR's written in-aadhaar definition and tier 0 fires on every one. The 7 " +
+        "are excluded as disputed; the 9 are scored as true false positives on one author's reading.",
       "THE DELIVERABLE DID NOT ARRIVE. This round was commissioned to produce pred: gold at a scale " +
         "above the two positives in corpora/fixtures/smoke.gold-tier2.jsonl. It produced 19 scored " +
         "rows and ZERO positives, because both annotators were scoped to the 20 span-bearing queue " +
