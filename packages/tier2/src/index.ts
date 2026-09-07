@@ -27,8 +27,10 @@ export {
 // and the judge inside the package and stop at their own modules -- they are
 // how the two arms cannot drift, not API.
 export {
+  buildBaselineMessages,
   createBaselineB,
   createBaselineBPlusTier0,
+  repairMessage as baselineRepairMessage,
   type BaselineB,
   type BaselineBOptions,
   type BaselineStats,
@@ -41,8 +43,18 @@ export {
   type Tier2Engine,
   type WebLlmEngine,
 } from "./engine.js";
+// `buildMessages` and `repairMessage` are exported UNDER ALIASES, beside the
+// Approach-B pair above, for the capability-ceiling arm in
+// apps/eval/src/driver/ceiling.ts: it sends these exact two turns over a hosted
+// API instead of to WebLLM, and a second copy of either prompt would make that
+// arm's comparison a comparison of prompts rather than of models. Aliased
+// because both modules name their repair turn `repairMessage` and each arm must
+// keep using its own. Nothing else about them changed -- `prompts.test.ts` pins
+// both system turns line by line and is the check that this stayed true.
 export {
   WebLlmJudge,
+  buildMessages as buildJudgeMessages,
+  repairMessage as judgeRepairMessage,
   type JudgeCallRecord,
   type JudgeStats,
   type WebLlmJudgeOptions,

@@ -1182,7 +1182,7 @@ function shadowSeverities(
  * `messages[messages.length - 1].role` with no length guard -- so an empty list
  * surfaces as a bare TypeError from inside the library.
  */
-function buildMessages(
+export function buildMessages(
   passage: JudgedPassage,
   predicates: readonly SemanticPredicate[],
   priorFindings: readonly Finding[],
@@ -1251,7 +1251,7 @@ export function priorFindingsLine(
  * measurement of how a model answers such a prompt -- that needs a GPU and was
  * not run here.
  */
-function repairMessage(reason: string, detail: string): ChatCompletionMessageParam {
+export function repairMessage(reason: string, detail: string): ChatCompletionMessageParam {
   return {
     role: "user",
     content: [

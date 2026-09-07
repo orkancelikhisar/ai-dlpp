@@ -1,0 +1,666 @@
+# The capability-ceiling arm: six large open-weight models, thinking off
+
+**Date:** 2026-09-07 · **Branch:** `feat/tier2-judge` · **Code:** `apps/eval/src/driver/ceiling.ts`,
+`ceiling-main.ts`, `ceiling-score.ts` · **Tests:** `apps/eval/test/ceiling.test.ts`
+
+Every number in this document was read from a run artifact under gitignored `runs/` by
+`pnpm -C apps/eval ceiling:score`, or from a live API response captured during the run. None was
+recalled. Where a number is an estimate rather than a measurement it says so.
+
+---
+
+## 1. What this arm is, and what it is not
+
+Spec §4.2b asks for a capability-ceiling arm to separate two explanations of the tier-2 result:
+*is the task hard, or are 2–4B browser-runnable models too small?* The spec describes that arm as a
+**local server** (llama.cpp/Ollama), which keeps intact the cloud boundary this project exists to
+defend.
+
+**This arm does not do that.** It runs six larger open-weight models over the OpenRouter API, so
+every corpus message left the machine. That is a real deviation and it is stated here rather than
+buried:
+
+- it answers the **capability** question §4.2b poses — the models are open-weight and could be
+  served locally on adequate hardware;
+- it answers **nothing** about the privacy boundary;
+- it is **not a shippable configuration** and must never appear in a product column.
+
+What *is* preserved is the method. Both prompts, both response schemas, the span ladder and the
+parse-and-one-repair rule are **imported from `@sih/tier2`**, not reimplemented. `judge.ts` and
+`baselineB.ts` gained four aliased exports (`buildJudgeMessages`, `judgeRepairMessage`,
+`buildBaselineMessages`, `baselineRepairMessage`) so this file could reuse them; `createBaselineB`
+now goes through `buildBaselineMessages` too, so there is one composition and not two.
+`packages/tier2/test/prompts.test.ts` pins both system turns line by line and stayed green
+throughout — the prompts are byte-identical to the ones the browser arms send.
+
+### The two families
+
+| family | arm name | equivalent local arm | what the model is shown |
+|---|---|---|---|
+| judge | `ceiling-judge-<model>` | `compiled-tier2-only` | the compiled predicate + the whole message |
+| B | `ceiling-b-<model>` | `baseline-b` | the whole `p-fin.md` + every entityType id + the message |
+
+p-fin's only predicate is `scope: "message"`, so the judge family makes exactly one call per item,
+as the local compiled arm does. Neither family runs tier 0 or tier 1.
+
+### The one mechanism that genuinely differs
+
+The browser arms constrain decoding with **xgrammar**, compiled from the schema inside WebLLM.
+This arm sends the same schema as an OpenRouter
+`response_format: {type: "json_schema", strict: true}` and the **provider** constrains decoding, by
+whatever means it uses. Different mechanisms, different failure modes — so every row carries
+`outputMechanism: "provider-json-schema"`, and §7 reports parse failures and repairs per model as a
+finding about the mechanism, not only about the model.
+
+### Record shape
+
+`CeilingRecordSchema` is a **sibling** of `RunRecordSchema`, not an extension. To satisfy
+`RunRecordSchema` a row from here would have to claim a `backend` of `"wasm"` or `"webgpu"` (an
+HTTPS call to a remote GPU is neither), a `detector` of `"core-orchestrator"` or `"approach-b"`
+(neither implementation ran), a `tier2Config` naming a context window a hosted endpoint does not
+expose, and — through the refines — a stats object whose fields describe events (engine latching,
+caller aborts mid-generation) that cannot occur over HTTP. Four lies to reuse one schema.
+
+Instead the row carries the identity and scoring fields verbatim and honest transport telemetry
+beside them, and `score.ts` reads both shapes through a new structural `ScoreableRecord` type. One
+scorer, one gold, one set of floors; two record shapes, each stating what actually happened.
+
+Every ceiling row also carries **`gitSha` and `gitDirty`** — the first run artifacts in this
+repository that name the code revision that produced them. `gitDirty` is `true` for this run and is
+recorded honestly: the run was made from a working tree carrying this code before it was committed,
+and committing early to make the flag read `false` would be the intent-as-fact defect in its purest
+form.
+
+---
+
+## 2. Where the brief was wrong
+
+Briefs on this project have been wrong in every round. This one had five errors and one dead link.
+
+1. **The standing-brief path was dead.** Its scratchpad directory had been deleted. A durable copy
+   now lives at `docs/research/standing-conventions.md`.
+2. **`z-ai/glm-5.3-flash` cannot be run with thinking off — on any provider.** See §6. The brief
+   pinned it as one of six "thinking off" models; the endpoint answers HTTP 400
+   *"Reasoning is mandatory for this endpoint and cannot be disabled."*
+3. **The cheapest-first ordering was wrong.** The brief's order put GLM-Flash ahead of Qwen-Flash.
+   On the unweighted `in + out` price sum GLM (0.65) *is* dearer than Qwen-Flash (0.62) — the brief
+   had them the other way round — and on this corpus's actual prompt-heavy mix the gap is wider
+   still. Ordering is now by `estimateCostUsd` at a stated representative token mix.
+4. **`injection-p-fin-v2.gold-tier2.jsonl` cannot rank anything.** The brief says to score against
+   both golds. That gold's 20 rows carry **0 positives and 0 gold spans**, so `tp = fn = 0` for
+   every arm and recall and F1 are *undefined* for all of them under every rule. It measures
+   precision only. It is scored below, with that stated on the table.
+5. **Mistral's quantization is `unknown`, and its pin resolves to three endpoints at two prices.**
+   Recorded as unknown; cost taken from each response's own `usage.cost` rather than a price table,
+   which is what makes the ledger correct despite the ambiguity. Mistral's is the only **EU-hosted**
+   first-party endpoint on the slate; the other five pins are US providers reached through a
+   US-headquartered aggregator.
+6. **Streaming everything is not safe.** See §6: one endpoint's streaming path died mid-run while
+   its non-streaming path kept answering in 2.5s.
+
+Everything else in the brief checked out. All six model ids exist; all six pins were confirmed
+against `/api/v1/models/{id}/endpoints` before any spend; and the claim that DigitalOcean is the
+only Nemotron endpoint advertising `structured_outputs` (DeepInfra bf16 does not) is correct.
+
+---
+
+## 3. The probe — three items per family per model, before any budget was committed
+
+Read from `runs/ceiling-ceiling-01.spend.json` (`probes[]`).
+
+| model | pin | family | parsed | provider answered | pin honoured | reasoning tokens | TTFT ms | wall ms | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| deepseek-v4-flash-0731 | DeepInfra | judge | 3/3 | DeepInfra | yes | 0,0,0 | 869,905,902 | 876,2493,921 | pass |
+| deepseek-v4-flash-0731 | DeepInfra | b | 3/3 | DeepInfra | yes | 0,0,0 | 1313,1282,1281 | 2671,2724,6519 | pass |
+| qwen3.8-flash | Alibaba | judge | 3/3 | Alibaba | yes | 0,0,0 | 741,769,765 | 813,1564,835 | pass |
+| qwen3.8-flash | Alibaba | b | 3/3 | Alibaba | yes | 0,0,0 | 5689,3821,5887 | 6617,5314,8564 | pass |
+| **glm-5.3-flash** | BaseTen | judge | **0/3** | none | — | — | — | — | **skip** |
+| **glm-5.3-flash** | BaseTen | b | **0/3** | none | — | — | — | — | **skip** |
+| mistral-small-2603 | Mistral | judge | 3/3 | Mistral | yes | 0,0,0 | 451,452,562 | 452,452,584 | pass |
+| mistral-small-2603 | Mistral | b | 3/3 | Mistral | yes | 0,0,0 | 1078,432,472 | 1670,977,2003 | pass |
+| nemotron-3-super-120b-a12b | DigitalOcean | judge | 3/3 | DigitalOcean | yes | 0,0,0 | 930,795,657 | 1442,5146,1238 | pass |
+| nemotron-3-super-120b-a12b | DigitalOcean | b | 3/3 | DigitalOcean | yes | 0,0,0 | 707,834,842 | 5840,4685,19483 | pass |
+| qwen3.8-27b | Parasail | judge | 3/3 | Parasail | yes | 0,0,0 | 490,599,626 | 663,1577,675 | pass |
+| qwen3.8-27b | Parasail | b | 3/3 | Parasail | yes | 0,0,0 | 615,874,880 | 1865,2377,4113 | pass |
+
+**Every pin was honoured on every answered call.** No response named a provider other than the one
+`provider.order` asked for, in the probe or in the full run (§7). `allow_fallbacks: false` is what
+makes this checkable rather than hopeful: with fallbacks on, a busy pinned provider silently routes
+elsewhere and the latency columns become facts about routing wearing the model's name.
+
+**GLM-5.3-flash failed both probes with HTTP 400 and was skipped, not retried into the budget:**
+
+```
+{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.",
+          "code":400,"metadata":{"provider_name":null}}}
+```
+
+---
+
+## 4. How it was run
+
+```
+pnpm -C apps/eval ceiling        # SIH_CEILING_RUN_ID, _PASSES, _PROBE, _LIMIT, _MODELS, _THINKING, _PIN
+pnpm -C apps/eval ceiling:score  # every table below
+```
+
+- **Thinking off** via OpenRouter's unified `reasoning: {enabled: false}`. `{enabled: false}` and not
+  `{effort: "none"}`: OpenRouter documents `effort` as the OpenAI/Grok spelling, five of the six
+  models advertise `reasoning_effort` and `qwen/qwen3.8-flash` does not, and `enabled` is the field
+  all six accept. What was **asked** is on every row as `reasoningRequest`; what **happened** is
+  `calls[].reasoningTokens`, read back from `usage.completion_tokens_details.reasoning_tokens`. Two
+  columns, so a model that ignores the request is visible rather than assumed away.
+- **Structured output** via `response_format: {type: "json_schema", strict: true, schema}` carrying
+  `JUDGE_SCHEMA` / `BASELINE_B_SCHEMA` unchanged — `minimum`/`maximum` bounds included, which every
+  answering provider accepted.
+- **`max_tokens: 600`**, the local arms' own `DEFAULT_TIER2_CONFIG` value, so a truncation here
+  means what a truncation there means. **`temperature: 0`**, so repeat passes measure provider and
+  routing variance rather than the sampler.
+- **Provider pinned** with `provider: {order: [<name>], allow_fallbacks: false}`. A pin is a
+  request; every row records `requestedProvider` **and** the `provider` the response carried.
+- **Concurrency 3**, exponential backoff on 429/5xx, every retry recorded on the call row.
+- **Cheapest model first**, so a tripped guard leaves the most expensive arm partial.
+
+### The spend guard
+
+Two independent numbers can stop the run, and both are checked, because they can disagree and the
+pessimistic one is the one that can exhaust the key:
+
+1. the sum of every response's own `usage.cost` (obtained by sending `usage: {include: true}`),
+   added to whatever the key had spent before the run started; and
+2. the key endpoint's own `usage`, re-read from `GET /api/v1/auth/key` every 50 calls.
+
+Either reaching **$7.00** stops the run — $3 under the key's $10 cap, which covers in-flight
+concurrency at the moment of the trip and the final key read. A price-table estimate is accumulated
+alongside as a cross-check but is never the primary number: the `Mistral` pin alone resolves to
+three endpoints at two different prices, so only the response's own `cost` is knowable in advance.
+`runs/ceiling-<runId>.spend.json` is rewritten after **every** call, so a crash leaves an accurate
+ledger.
+
+### Four timing columns, and what each one is
+
+| column | meaning | transferable? |
+|---|---|---|
+| `reasoningTokens` | `usage.completion_tokens_details.reasoning_tokens` | **yes — a model property** |
+| `ttftMs` | ms to the first non-empty **content** delta | no — a provider fact |
+| `decodeTokPerSec` | `completionTokens / ((wallMs − ttftMs) / 1000)` | no — a provider fact |
+| `wallMs` | request start to final chunk | no — what a user waits through |
+
+TTFT is timed to the first *content* delta, not the first byte: OpenRouter opens every stream with
+`: OPENROUTER PROCESSING` comment frames and a role-only delta, and timing to those would measure
+the aggregator's connection handling. `decodeTokPerSec` is `null`, never `Infinity`, when the decode
+window is zero. Every usage number is `null` rather than `0` when a provider reported none — a `0`
+in the reasoning column would be the measured claim this experiment is looking for, so it must be a
+measurement and not a default.
+
+---
+
+## 5. GLM-5.3-flash: the model that refuses to stop thinking
+
+`z-ai/glm-5.3-flash` answered **HTTP 400 on every thinking-off request, on all eleven of its
+providers** — BaseTen, DeepInfra, Fireworks, Together, Parasail, CoreWeave, Modal, NextBit,
+Sail Research, Cloudflare and Z.AI:
+
+> `Reasoning is mandatory for this endpoint and cannot be disabled.`
+
+This is a **model** property, not an endpoint one, and **OpenRouter's own metadata does not
+advertise it**: the model's `reasoning_config` is `null` and its `supported_parameters` lists
+`reasoning`. Only a live call reveals it. Anyone planning a thinking-off evaluation from the
+catalogue alone would have budgeted for six models and got five.
+
+It was therefore run as a **separate, explicitly non-comparable arm** with `reasoning:
+{enabled: true}`, pinned to NextBit (its slate pin, BaseTen, was rate-limited upstream when the
+thinking-on run started). Rows carry `thinkingRequested: "on"` and the scorer labels them
+**thinking ON** so they can never be read as one of the thinking-off arms.
+
+Two results came out of it, and both are about the cost of mandatory reasoning:
+
+- **The judge family works.** 189/189 rows, 179/179 items answered — the only arm on either side of
+  this experiment with perfect coverage.
+- **The Approach-B family cannot run at all.** Its probe parsed **0 of 3**, and the reason is exact:
+  the model spent **596–599 of its 600 completion tokens on reasoning** and emitted no answer.
+  `ttftMs` is `null` on all six of those calls because *no content delta ever arrived* — reasoning
+  deltas are not content. The arm was skipped rather than retried into the budget.
+
+That second result is the local Approach-B failure repeated at the ceiling **for an entirely
+different reason**. Locally B blew the 5,000 ms latency budget because its prompt is 1,410 tokens.
+Here latency was never the constraint; the *completion* budget was, and mandatory reasoning consumed
+it before the task began.
+
+## 6. What each family actually emits
+
+Counted from `runs/ceiling-01.ceiling-{judge,b}-deepseek-v4-flash-0731.jsonl`:
+
+| | judge family | Approach-B family |
+|---|---|---|
+| findings emitted | 30, **all** `pred:client-relationship-disclosure` | 204, spread over **all nine** entityTypes |
+| of which at the predicate | 30 | **7** |
+| unresolved quotes / mentions | 0 / 0 | 0 / 0 |
+| whole-clause mentions | 0 | — |
+
+This is the mechanism behind the family gap in §7. Approach B is asked about nine classes at once
+and spends its findings on identifiers, naming the relationship predicate **7 times in 189
+messages**; the compiled judge is asked about one predicate and names it 30 times.
+
+**The span ladder placed every single finding on both arms** — 0 unresolved quotes and 0 unresolved
+mentions across 234 findings. The local arms do not manage this, and it is worth stating plainly:
+at this model size, quoting a clause verbatim and pointing at a shorter span inside it is a solved
+problem. Whatever is going wrong is not span extraction.
+
+---
+
+## 7. Three measurement defects found in this arm's own instrumentation
+
+Recorded here rather than quietly fixed, because each one changes how a number below reads.
+
+### 7.1 The completion budget was NOT matched to the local arms (88 tokens, favouring this arm)
+
+A docblock in `ceiling-main.ts` asserted *"The local arms run at 600 (`DEFAULT_TIER2_CONFIG`)"*.
+**They do not.** `packages/tier2/src/manifest.ts:116` is `maxTokens: 512`, and its own docblock at
+:81 says it is *"UNCHANGED at 512 through the two-span schema change"*. Nobody had read the
+constant. So the hosted arms ran with **600** completion tokens against the browser arms' **512** —
+an 88-token asymmetry introduced by a comment. Standing-conventions §1, exactly.
+
+**Which way it cuts:** it favours the ceiling arms. That is the *conservative* direction for this
+document's headline — the ceiling arms had the larger budget and still did not beat the trivial
+floor — and the *flattering* direction for any local-vs-ceiling gap.
+
+**How much it actually bit, counted over the finished slate.** An earlier draft of this section,
+written when only the two DeepSeek arms existed, said *"not one thinking-off call reached 512"*.
+**That is false on the completed run** and is corrected here rather than quietly amended: three
+calls did.
+
+| population | calls | completions ≥ 512 | truncated at 600 |
+|---|---|---|---|
+| all ten thinking-off arms | 1,854 | **3 (0.162%)** | **0** |
+| — `ceiling-b-mistral-small-2603` | 189 | 1 (544 tokens) | 0 |
+| — `ceiling-b-qwen3.8-flash` | 176 | 2 (534, 581 tokens) | 0 |
+| `ceiling-judge-glm-5.3-flash` **thinking ON** | 216 | **55** | **48 (22.2%)** |
+
+So the asymmetry is **not** perfectly inert: **3 of 1,854 thinking-off calls (0.162%)** produced
+completions the browser arms' 512-token cap would have cut short, both in Approach-B arms, all three
+in the 512–581 range. None of the ten thinking-off arms truncated at 600, so no thinking-off result
+is a truncation artefact *at the cap that was used* — but three answers would have been at 512.
+Whether those three change a finding is not knowable without re-running at 512, which was not done.
+The effect is bounded and small; it is not zero, and the honest statement is the percentage, not the
+word "inert". It remains large only for the thinking-on arm. `ceiling-score.ts` prints the `calls >=512` column so this
+stays checkable rather than asserted, and the record now carries `maxTokens` and
+`localArmMaxTokens` on every row written from here on. It was **not** changed mid-experiment: the
+paid run was in flight, and a slate half-measured at each value is worse than one measured at a
+documented 600.
+
+### 7.2 The thinking-on arm cannot be measured at this cap — its F1 is not a clean number
+
+GLM-5.3-flash's finish reasons over 216 calls are **168 `stop` / 48 `length`**: **22.2% of its
+answers were cut off**, with reasoning p50 228 and max **exactly 600, the cap**. Its
+**F1 0.571 is therefore "GLM under a 600-token cap with 22% of its answers truncated"**, not a
+measurement of GLM. It is reported that way everywhere below and must not be quoted bare.
+
+The Approach-B probe's 0/3 is the same defect at 100%: 596–599 reasoning tokens of 600, on both the
+initial call *and* the repair turn.
+
+**The general finding: a thinking-on phase cannot be run at the local arms' budget at all.** Any
+future thinking-on comparison needs a uniformly larger `max_tokens` — 8,192 is the obvious value —
+applied to **every** model, with `finish_reason: "length"` counted per arm. The thinking-off arms
+are unaffected: DeepSeek is clean at **0 truncations and 0 reasoning tokens across all 355 calls**.
+
+### 7.3 Two different wall clocks, and which column is which
+
+DeepInfra rate-limited **45–50% of the DeepSeek calls** — 154 429s on the judge arm, 161 on B, some
+items needing four retries. A latency column that silently absorbed those backoff sleeps would be a
+fact about the aggregator wearing the model's name (standing-conventions §3).
+
+It does not, and that is **proved by a test rather than assumed**: `callChat` re-initialises its
+clock *inside* the retry loop, so `calls[].ttftMs`, `calls[].decodeTokPerSec` and `calls[].wallMs`
+time **the successful attempt only** — every failed attempt and every backoff sleep excluded. The
+record's **top-level `wallMs`** is the end-to-end figure that *does* include them. Both are carried;
+the transport table prints both, plus the 429 count that explains the gap:
+
+| arm | call wall p50 (attempt) | item wall p50 (end to end) | 429s |
+|---|---|---|---|
+| `ceiling-judge-deepseek-v4-flash-0731` | 1,325 ms | 2,127 ms | 154 |
+| `ceiling-b-deepseek-v4-flash-0731` | 2,000 ms | 4,089 ms | 161 |
+| `ceiling-judge-glm-5.3-flash` (thinking ON) | 5,444 ms | 4,885 ms | 0 |
+
+So DeepSeek's TTFT p95 of 4,828 ms is **not** a backoff artefact — it is that provider's own
+first-token latency under load. Still a provider fact, but a different one than throttling.
+
+**Concurrency was deliberately NOT lowered for DeepInfra mid-run.** DeepSeek is the only
+DeepInfra-pinned model and both its pass-1 arms were already complete; dropping to concurrency 2 for
+passes 2–3 would make the repeat passes non-comparable with pass 1, which is the one thing repeat
+passes exist to measure. The 429 counts are reported per arm instead.
+
+---
+
+## 8. How the run actually went, including the interruption
+
+Pass 1 was launched with `SIH_CEILING_PASSES=3`. It was **stopped externally after seven of its ten
+arms**, with the spend guard nowhere near tripping — **$0.138 spent against a $7.00 hard stop and a
+$10 key limit**. The constraint on this experiment was wall-clock time, not money, and saying so
+matters: none of the guard's stop paths fired, so nothing below is a partial-arm artefact of the
+budget.
+
+The three unfinished arms (`ceiling-b-nemotron`, `ceiling-judge-qwen3.8-27b`,
+`ceiling-b-qwen3.8-27b`) were then re-run to completion under the same `runId`, same code, same
+pins. `ceiling-judge-nemotron` was re-run alongside them and its file overwritten, so all four of
+those arms come from one contiguous window rather than straddling the interruption. The first
+window's ledger is preserved as `runs/ceiling-ceiling-01.part1.spend.json`; the final
+`runs/ceiling-ceiling-01.spend.json` covers the second.
+
+**Passes 2 and 3 were launched separately, after pass 1 was analysed.** The `$2.50` gate that guards
+them was never reached — pass 1 cost $0.39 in total — so they were run as
+`SIH_CEILING_PASS_START=2 SIH_CEILING_PASSES=2`, writing `ceiling-02` and `ceiling-03`.
+
+That flag exists because launching them the obvious way **would have destroyed pass 1**. The inline
+run-id arithmetic stripped a trailing `-\d+` and re-appended the *pass* number, so
+`runId=ceiling-02, passes=1` resolved to `ceiling-01` and would have silently overwritten all ten
+pass-1 arm files. It was caught by printing the mapping before launching rather than trusting it,
+extracted into a tested `passRunIdFor`, and the driver now announces
+`will write passes: ceiling-02, ceiling-03` before it starts. A mutant that restores the old
+arithmetic is killed by the suite.
+
+What repeats can and cannot show here: every call is made at `temperature: 0`, so a repeat measures
+**provider and routing variance, not sampler variance**. The accuracy columns should be near-stable;
+the latency columns will not be, and the 429 counts in §7.3 show why. With **19 positives**, one
+item changing hands moves F1 by roughly 0.05 — which is larger than the 0.006 gap between the best
+thinking-off arm and the floor, so §12 is what says whether that gap is real or noise.
+
+### 8.1 What stopped the first window: unknown, and not a deliberate kill
+
+**I did not kill it.** The one `pkill -f ceiling-main.ts` issued in this session was minutes
+earlier and targeted a *different* process — the standalone probe run (`runId=probe`), killed
+deliberately while isolating the Alibaba streaming hang, before the `ceiling-01` driver was
+launched at all.
+
+What was observed of the `ceiling-01` process, and nothing more: the harness reported the
+background task as stopped; `run.log` ends after the Nemotron-judge arm line with **no `[stop]`,
+no error and no `[ceiling] done`**; the ledger's `tripped` is `false` and its last write is
+08:52:24Z; no ceiling process was alive afterwards. **The cause is unknown.** It was not the spend
+guard, which had $6.86 of headroom, and it was not an unhandled error, which would have been
+written. Recording it as unknown rather than guessing, per standing-conventions §3 — an
+interruption with no stated cause is a gap a reader fills with the worst assumption.
+
+### 8.2 Whether the code differed between the two windows: it did, and none of it reaches a call
+
+Both windows stamp `gitSha bbdbfb1` with `gitDirty: true`, so **the stamps cannot distinguish the
+two** — the dirty flag is honest but not discriminating. What changed between the launches, in full:
+
+| file | change | reaches a call? |
+|---|---|---|
+| `ceiling.ts` | added `REASONING_ON`, `ThinkingRequest`, `reasoningRequestFor`, `ChatCall.thinking`; `reasoning: REASONING_OFF` → `reasoning: reasoningRequestFor(call.thinking ?? "off")` | **no** — see below |
+| `ceiling.ts` | `thinkingRequested` widened from `literal("off")` to `enum(["off","on"])` | no — record field |
+| `ceiling.ts` | added `applyPinOverrides` | **no** — window 2 passed no override |
+| `ceiling.ts` | added optional `maxTokens` / `localArmMaxTokens` record fields | no — written, never sent |
+| `ceiling.ts` | docblock edits (`wallMs` clocks) | no |
+| `ceiling-main.ts` | `SIH_CEILING_THINKING`, `SIH_CEILING_PIN` wiring; `LOCAL_ARM_MAX_TOKENS`; corrected `MAX_TOKENS` comment; one log line | no — `MAX_TOKENS` stayed **600** |
+| `ceiling-score.ts` | reporting only | no — not loaded by the driver |
+
+**Untouched between the launches:** `callChat`, `consumeStream`, `consumeWhole`, `collectJudge`,
+`collectBaseline`, the `parseJudgeResponse`/`parseBaselineResponse` calls, the span-ladder calls and
+every timing statement.
+
+Three tests now **pin** the equivalence rather than leaving it argued:
+
+- `buildRequestBody(CALL)` deep-equals a literal of exactly what window 1 sent, `max_tokens: 600`
+  and `reasoning: {enabled: false}` included;
+- `reasoningRequestFor("off") === REASONING_OFF` — identity on the same frozen object, so the one
+  changed line in the request path is a no-op for every thinking-off call;
+- `applyPinOverrides(models, undefined)` returns the slate unchanged.
+
+And the **records agree**. Across all 1,512 thinking-off rows from both windows, `reasoningRequest`
+is `{"enabled":false}`, `thinkingRequested` is `off` and `outputMechanism` is
+`provider-json-schema`, without exception. The **only** difference on disk is that window-2 rows
+carry `maxTokens: 600` and window-1 rows omit the field — which is why it is optional in the schema:
+back-filling it would be inventing provenance.
+
+**Conclusion: behaviourally one run; a record-shape difference in the arms produced after the
+edits.** The doc presents them as one run on that basis, and this table is the evidence for it.
+
+### 8.3 Both ledgers are on disk, and joined
+
+The completion run reused `runId=ceiling-01` and therefore overwrote
+`runs/ceiling-ceiling-01.spend.json`. Window 1 was copied to
+`runs/ceiling-ceiling-01.part1.spend.json` **before** the relaunch, so nothing was lost.
+`pnpm -C apps/eval ceiling:ledger` joins all four segments into
+`runs/ceiling-combined.spend.json` and reconciles the total against `GET /auth/key`.
+
+The residual between the ledgers and the key is reported **with its sign and without a story**. It
+has two known contributors pulling opposite ways — diagnostic curls made outside the driver (which
+push the key *above* the ledgers) and the key endpoint's accounting trailing the per-response
+`usage.cost` (which pushes it *below*) — and the script cannot attribute it. An earlier draft of
+this file asserted the residual was diagnostic spend; the measured sign was negative, which
+contradicts that, so the claim was withdrawn rather than kept.
+
+---
+
+## 9. The table — every arm, both levels, with the floors in it
+
+Generated by `pnpm -C apps/eval ceiling:score`. **All 11 ceiling arms honoured their provider pin on
+every answered call.**
+
+### 9.1 Predicate level — `pred:client-relationship-disclosure`
+
+189 gold rows, 179 scored, 10 disputed, **19 positives**. Identical under all three match rules for
+every ceiling arm (each emits one span per finding, and the gold span is that span), so one column
+suffices; the local arms' three-rule spread is in the generated output.
+
+| arm | kind | P | R | **F1** | findings |
+|---|---|---|---|---|---|
+| `ceiling-judge-glm-5.3-flash` **thinking ON, 22% truncated** | ceiling | 0.625 | 0.526 | **0.571** | 16 |
+| **FLOOR — `first-capitalised-multiword`** | floor | 0.467 | 0.737 | **0.571** | 30 |
+| `ceiling-judge-deepseek-v4-flash-0731` | ceiling | 0.481 | 0.684 | 0.565 | 27 |
+| `ceiling-judge-qwen3.8-27b` | ceiling | 0.421 | 0.842 | 0.561 | 38 |
+| **FLOOR — `capitalised-multiword`** | floor | 0.380 | 1.000 | 0.551 | 50 |
+| `ceiling-judge-nemotron-3-super-120b-a12b` | ceiling | 0.545 | 0.316 | 0.400 | 11 |
+| `ceiling-judge-qwen3.8-flash` | ceiling | 0.213 | 0.842 | 0.340 | 75 |
+| `ceiling-b-mistral-small-2603` | ceiling | 0.200 | 0.263 | 0.227 | 25 |
+| **`tier2-Qwen3-4B` — best LOCAL arm** | local | 0.143 | 0.316 | 0.197 | 42 |
+| **FLOOR — `whole-message`** (overlap only) | floor | 0.106 | 1.000 | 0.192 | 179 |
+| `ceiling-b-qwen3.8-flash` | ceiling | 0.500 | 0.105 | 0.174 | 4 |
+| `tier2only-Qwen3-4B` | local | 0.115 | 0.316 | 0.169 | 52 |
+| `tier2-Phi-4-mini` | local | 0.070 | 0.474 | 0.122 | 129 |
+| `ceiling-b-deepseek`, `ceiling-b-qwen3.8-27b`, `ceiling-judge-mistral` | ceiling | 0.000 | 0.000 | 0.000 | 4/3/1 |
+| `ceiling-b-nemotron` | ceiling | — | 0.000 | — | **0** |
+| all 6 local `baselineB*` arms on 3 of 4 models | local | — | 0.000 | — | 0 |
+
+**Under every rule — exact, overlap, iou50 — the scorer's own verdict is `arms beating it: NONE`.**
+
+### 9.2 Span level — entity gold (108 spans over 189 items), MODEL-ONLY arms
+
+Only Approach-B-shaped arms emit entity spans; the judge family emits the shadow predicate alone by
+construction and has no span score. **The eight local `tier2-*` and `baselineB+tier0-*` arms are
+excluded from this table entirely** — they run tier 0, so their spans are the compiled regex layer's
+and not their model's, which is why they cluster at P≈0.36 whatever model they name. `ceiling-score.ts`
+prints them in a separate "NOT model-only" block below the table for completeness.
+
+| arm | kind | findings | tp | fp | fn | P | R | **F1** |
+|---|---|---|---|---|---|---|---|---|
+| **FLOOR — orthographic oracle, budget-matched** | floor | — | — | — | — | 0.705 | 0.685 | **0.695** |
+| `ceiling-b-nemotron-3-super-120b-a12b` | ceiling | 123 | 78 | 45 | 30 | 0.634 | 0.722 | **0.675** |
+| `ceiling-b-qwen3.8-27b` | ceiling | 241 | 102 | 139 | 6 | 0.423 | 0.944 | 0.585 |
+| `ceiling-b-deepseek-v4-flash-0731` | ceiling | 197 | 87 | 110 | 21 | 0.442 | 0.806 | 0.570 |
+| `ceiling-b-mistral-small-2603` | ceiling | 196 | 80 | 116 | 28 | 0.408 | 0.741 | 0.526 |
+| `ceiling-b-qwen3.8-flash` | ceiling | 261 | 96 | 165 | 12 | 0.368 | 0.889 | 0.520 |
+| **FLOOR — orthographic oracle, unbudgeted** | floor | — | — | — | — | 0.307 | 0.870 | 0.454 |
+| `baselineB-Qwen3.5-2B` — best model-only LOCAL arm | local | 43 | 25 | 18 | 83 | 0.581 | 0.231 | **0.331** |
+
+Best model-only span arm **0.675** against a budget-matched oracle floor of **0.695**: still below,
+by 0.020. Every ceiling B arm beats the *unbudgeted* oracle (0.454) and the best local model-only arm
+(0.331); none beats the budget-matched one.
+
+---
+
+## 10. The six questions
+
+### 1. Does ANY model — local or ceiling — beat the trivial floors? By how much?
+
+**No. Not one, at either level, under any match rule.** The scorer's own verdict line reads
+`arms beating it: NONE` for exact, overlap and iou50.
+
+| level | best arm | best floor | gap |
+|---|---|---|---|
+| predicate | `ceiling-judge-glm` **0.571** (thinking on, 22% truncated) | `first-capitalised-multiword` **0.571** | **0.000 — a tie, not a win** |
+| predicate, thinking-off only | `ceiling-judge-deepseek` **0.565** | **0.571** | **−0.006** |
+| span | `ceiling-b-nemotron` **0.675** | oracle budget-matched **0.695** | **−0.020** |
+
+The ceiling arms are a large improvement **over the local arms** — 0.565 against 0.197 at the
+predicate level is **2.87×**, and 0.675 against 0.331 at the span level is **2.04×** — and that
+improvement takes them to *level with a regular expression* and no further. Two independent gold
+sets and two independent floors agree.
+
+This is the answer §4.2b was built to get, and it is the unwelcome one: **the browser constraint is
+not what is costing accuracy.** Making the model 30–60× larger and giving it a datacentre GPU moves
+the numbers up to the floor and stops. On this corpus and this policy, the task itself is not being
+solved by any of these methods.
+
+### 2. Compiled (judge) or prompting (B) at the ceiling — and does it differ from the local result?
+
+**At the predicate level the compiled family wins, decisively — but the margin is model-dependent,
+not structural.**
+
+| model | judge F1 | B F1 |
+|---|---|---|
+| deepseek-v4-flash | **0.565** | 0.000 |
+| qwen3.8-27b | **0.561** | 0.000 |
+| nemotron-3-super-120b | **0.400** | — (0 findings) |
+| qwen3.8-flash | **0.340** | 0.174 |
+| mistral-small-2603 | 0.000 | **0.227** |
+
+Four of five models are better compiled; **Mistral inverts it completely**, and the mechanism is
+visible in the emissions: asked about one predicate, Mistral says almost nothing (1 finding in 189
+messages); asked about nine entity classes, it names the predicate 29 times. DeepSeek does the
+opposite — 30 predicate findings as a judge, 7 as B. So "compiled beats prompting" is a claim about
+four of these five models, not about the two methods.
+
+**Yes, the answer differs from the local result, and the reason differs more than the answer does.**
+Locally Approach B *could not finish inside the budget at all* — on three of four models it answered
+**zero** calls, budget-exhausted 13 of 13, because its 1,410-token prompt blew the 5,000 ms message
+budget. Here B finishes everywhere: **five of five models, 179/179 items answered on three of them,
+zero parse failures.** It is not a latency failure any more. It is a *task* failure — B spreads 204
+findings across nine entity classes and names the relationship predicate 7 times. Removing the
+budget constraint revealed that B's problem was never only the budget.
+
+And at the **span** level, B is the only family with numbers at all, and its best is the best
+ceiling result in this whole experiment (0.675). The two families are good at different things.
+
+### 3. Reasoning tokens with thinking off: zero everywhere, or not?
+
+**Zero everywhere it could be asked — and one model would not be asked.**
+
+- **Ten of ten thinking-off arms reported `reasoning_tokens` p50 0 and max 0**, across **1,854
+  calls**, on five models and five providers. **No model leaked a single reasoning token.**
+  `reasoning: {enabled: false}` was honoured exactly.
+- **`z-ai/glm-5.3-flash` cannot be asked.** It returns HTTP 400 *"Reasoning is mandatory for this
+  endpoint and cannot be disabled"* on **all eleven of its providers** (§5). Not a leak — a refusal.
+  OpenRouter's metadata does not advertise it: `reasoning_config` is `null` and
+  `supported_parameters` lists `reasoning`. **Only a live call reveals it**, which is the
+  transferable lesson for anyone planning a thinking-off slate from the catalogue.
+
+Run thinking-**on**, GLM emitted reasoning p50 **228** and max **600** — the cap — on 216 calls.
+
+### 4. Latency, and what it implies for a DGX Spark
+
+**State plainly: TTFT and decode rate are PROVIDER facts.** They describe whose GPU answered, under
+what load, behind a US aggregator. They do not transfer. `reasoningTokens` and `completionTokens`
+do — they are properties of the model and the task.
+
+| arm | TTFT p50/p95 ms | decode tok/s p50 | **call** wall p50 ms | **item** wall p50 ms | 429s |
+|---|---|---|---|---|---|
+| `judge-mistral-small-2603` | 345 / 639 | 170.6 | **385** | 386 | 0 |
+| `judge-qwen3.8-27b` | 545 / 908 | 112.9 | 650 | 651 | 0 |
+| `b-mistral-small-2603` | 331 / 603 | 208.2 | 772 | 774 | 0 |
+| `judge-qwen3.8-flash` | 718 / 5697 | 82.6 | 1044 | 1190 | 5 |
+| `judge-nemotron-3-super-120b` | 755 / 1180 | 14.3 | 1262 | 1263 | 0 |
+| `judge-deepseek-v4-flash` | 1198 / 4828 | 726.7 | 1325 | 2127 | 154 |
+| `b-qwen3.8-27b` | 604 / 894 | 109.9 | 1404 | 1405 | 0 |
+| `b-deepseek-v4-flash` | 890 / 2297 | 89.3 | 2000 | 4089 | 161 |
+| `b-qwen3.8-flash` | 880 / 8591 | 113.3 | 2600 | 4249 | 25 |
+| `b-nemotron-3-super-120b` | 745 / 1208 | 13.7 | 5056 | 18724 | 0 |
+| `judge-glm-5.3-flash` **thinking ON** | 4476 / 10891 | 1017.4 | 5444 | 4885 | 0 |
+
+**The transferable number.** `reasoningTokens ÷ 60 tok/s` — a DGX Spark-class decode budget for a
+model this size — is **0.00 s for every one of the ten thinking-off arms**, because every one
+reported zero reasoning tokens. Reasoning is simply not a cost in the thinking-off condition.
+
+The cost that *is* real is total decode. At 60 tok/s the **median completion** implies:
+
+- **judge family: 0.08–0.12 s** (5–7 tokens — these models answer this predicate in one short JSON
+  object);
+- **Approach-B family: 0.95–1.80 s** (57–108 tokens — nine classes to report on);
+- **GLM thinking-on: 3.92 s** (235 tokens, of which **228 are reasoning**) — and its *max* is 600
+  tokens, **10.0 s of pure decode**, 22% of the time producing nothing usable because the cap cut it
+  off.
+
+So on a DGX Spark the compiled judge is roughly a **tenth of a second of decode per message** and
+mandatory reasoning is **~33× that**, for a score that ties rather than beats it.
+
+### 5. Structured-output compliance
+
+**Perfect, on every thinking-off arm.**
+
+| population | calls | parse failures | repairs | truncated |
+|---|---|---|---|---|
+| all ten thinking-off arms | **1,854** | **0** | **0** | **0** |
+| `judge-glm-5.3-flash` thinking ON | 216 | **48 (22.2%)** | 27 | 48 |
+
+`response_format: {type: "json_schema", strict: true}` — carrying `JUDGE_SCHEMA` / `BASELINE_B_SCHEMA`
+unchanged, `minimum`/`maximum` bounds included — was accepted by **all five** answering providers and
+produced **zero** malformed or schema-invalid bodies in 1,854 calls. The one repair turn was never
+needed. This is a genuinely different result from the local arms, where Phi-4-mini failed to parse 3
+of 6 calls in a probe.
+
+**Every one of GLM's 48 failures is `finish_reason: "length"` — truncation, not malformation.** That
+is a finding about the *token budget* meeting mandatory reasoning, not about the mechanism. The
+provider-side json_schema mechanism itself did not fail once in this experiment.
+
+The span ladder was equally clean: **0 unresolved quotes and 0 unresolved mentions** across every
+ceiling arm. At this model size, quoting a clause verbatim and pointing at a shorter span inside it
+is a solved problem. Whatever is failing, it is not span extraction — which restates the local
+finding that *the binding constraint is classification, not span extraction*, now at 30–120B.
+
+### 6. Spend
+
+**$0.386 total against a $10 key limit and a $7.00 hard stop. The guard never tripped.**
+
+| segment | calls | cost |
+|---|---|---|
+| probe | 11 | $0.00121 |
+| `ceiling-01` window 1 (arms 1–7) | 1,457 | $0.13645 |
+| `glmon-01` (GLM thinking on) | 225 | $0.05572 |
+| `ceiling-01` window 2 (arms 8–10) | 768 | $0.19269 |
+| **ledger total** | **2,461** | **$0.38607** |
+
+Per model (thinking-off arms, both families): qwen3.8-27b $0.116, nemotron $0.072, qwen3.8-flash
+$0.032, mistral $0.025, deepseek **$0.013**. Per family: judge $0.074, B $0.184 — **B costs 2.5×
+the judge**, which is its 1,410-token prompt on every call.
+
+**Final `GET /api/v1/auth/key`: `usage` $0.37858, `limit` $10.** Residual against the ledger is
+**−$0.00749** (ledgers exceed the key). Reported with its sign and no story attached: diagnostic
+curls outside the driver push the key *above* the ledgers, the key endpoint's accounting trailing
+per-response `usage.cost` pushes it *below*, and this cannot attribute between them.
+
+**The experiment was bounded by wall-clock time, not by budget** — it used 3.9% of the key.
+
+---
+
+## 11. What this arm did NOT fix, and one green test that is luck
+
+Recorded so a reader does not credit this work with more than it did.
+
+**`apps/eval/test/page-webgpu-floor.test.ts` passes, and that is install-state luck, not a fix.**
+It calls `require.resolve("@mlc-ai/web-llm")` at line 51, and **`@mlc-ai/web-llm` is not declared in
+`apps/eval/package.json`** — neither a dependency nor a devDependency. It resolves only because the
+package happens to be reachable through the `@sih/tier2` workspace link in this particular pnpm
+install. The only manifest change this work made was adding `vite-node`; the undeclared dependency
+is untouched and remains a latent break under a clean or differently-hoisted install. It is being
+declared separately in a cleanup commit and is **not** part of this change.
+
+**Also not addressed here:**
+
+- The ledger filename doubles its prefix (`runs/ceiling-ceiling-01.spend.json`) because `runId`
+  already begins with `ceiling`. Left alone deliberately: renaming it mid-experiment would make the
+  artifacts disagree with the code that produced them.
+- `p-med` and `p-corp` still have no compiled IR, so this arm — like every other — is p-fin only.
+- The corpus's known open leak (12 fragments in `families.v2.ts` decide every label) is unchanged
+  and bears on these numbers exactly as it bears on the local arms'.
+

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RunRecordSchema, type RunRecord } from "./record.js";
+import { RunRecordSchema, type RecordFinding, type RunRecord } from "./record.js";
 
 /**
  * Span-level precision, recall and F1 for tier-2 predicate findings against a
@@ -757,7 +757,7 @@ export interface ScoredArm {
  */
 export function assertGoldMatchesRecords(
   gold: readonly Tier2GoldRow[],
-  records: readonly RunRecord[],
+  records: readonly ScoreableRecord[],
 ): void {
   const goldHashes = new Set(gold.map((g) => g.policyHash));
   if (goldHashes.size > 1) {
@@ -781,9 +781,44 @@ export function assertGoldMatchesRecords(
   }
 }
 
+/**
+ * The fields a scorer actually reads off a row, as a STRUCTURAL type.
+ *
+ * Two record shapes reach this module and neither is a subtype of the other:
+ * `RunRecord` (apps/eval/src/driver/record.ts), written by the in-browser arms,
+ * and `CeilingRecord` (apps/eval/src/driver/ceiling.ts), written by the hosted
+ * capability-ceiling arm. They differ in the transport telemetry they carry --
+ * one has `backend` and `tier2Stats`, the other has `provider` and per-call
+ * TTFT -- and agree on everything a SCORE depends on.
+ *
+ * Widening the signature to this interface, rather than making the ceiling arm
+ * emit `RunRecord`s, is the choice `ceiling.ts`'s header argues for at length:
+ * a ceiling row cannot honestly claim a `backend` of "wasm" or "webgpu", nor a
+ * `detector` of "core-orchestrator" or "approach-b". So the scorer names what
+ * it needs and both shapes satisfy it -- one gold, one matcher, one set of
+ * floors, and no row asserting a configuration that did not run.
+ *
+ * `calls` is the ceiling arm's own answered-call list and is how
+ * `itemsJudgeAnswered` stays meaningful across both shapes. A `RunRecord` has
+ * no such top-level field, so it contributes nothing there and the two
+ * tier-specific stats objects still carry it, exactly as before.
+ */
+export interface ScoreableRecord {
+  readonly arm: string;
+  readonly itemId: string;
+  readonly policyHash: string;
+  readonly text: string;
+  readonly findings: readonly RecordFinding[];
+  readonly error: string | null;
+  readonly degraded?: readonly { readonly tier: number; readonly reason: string }[] | undefined;
+  readonly tier2Stats?: { readonly calls: readonly unknown[] } | undefined;
+  readonly baselineStats?: { readonly calls: readonly unknown[] } | undefined;
+  readonly calls?: readonly unknown[] | undefined;
+}
+
 export interface ScoreArmInput {
   /** One arm's records. Every record must name the same `arm`. */
-  readonly records: readonly RunRecord[];
+  readonly records: readonly ScoreableRecord[];
   /** Gold rows for ONE predicate; see `groupGoldByPredicate`. */
   readonly gold: readonly Tier2GoldRow[];
 }
@@ -816,7 +851,7 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
 
   assertGoldMatchesRecords(gold, records);
 
-  const recordsById = new Map<string, RunRecord>();
+  const recordsById = new Map<string, ScoreableRecord>();
   for (const record of records) {
     if (recordsById.has(record.itemId)) {
       throw new Error(`arm "${arm}" has two records for item "${record.itemId}"; one of them would be silently dropped`);
@@ -876,7 +911,13 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
       tier2DegradedReasons[notice.reason] = (tier2DegradedReasons[notice.reason] ?? 0) + 1;
     }
 
-    const answered = (record.tier2Stats?.calls.length ?? 0) + (record.baselineStats?.calls.length ?? 0);
+    // Across both record shapes: the two in-browser stats objects, and the
+    // ceiling arm's own per-call list. A row with none of them is an arm that
+    // never got an answer, which is exactly what `itemsJudgeUnanswered` means.
+    const answered =
+      (record.tier2Stats?.calls.length ?? 0) +
+      (record.baselineStats?.calls.length ?? 0) +
+      (record.calls?.length ?? 0);
     if (answered > 0) itemsJudgeAnswered += 1;
 
     pairs.push({
@@ -993,8 +1034,11 @@ export function scoreArm(input: ScoreArmInput): ScoredArm {
 }
 
 /** Splits a multi-arm run into one `ScoredArm` per arm, sorted by arm name. */
-export function scoreArms(records: readonly RunRecord[], gold: readonly Tier2GoldRow[]): ScoredArm[] {
-  const byArm = new Map<string, RunRecord[]>();
+export function scoreArms(
+  records: readonly ScoreableRecord[],
+  gold: readonly Tier2GoldRow[],
+): ScoredArm[] {
+  const byArm = new Map<string, ScoreableRecord[]>();
   for (const record of records) {
     const bucket = byArm.get(record.arm);
     if (bucket) bucket.push(record);

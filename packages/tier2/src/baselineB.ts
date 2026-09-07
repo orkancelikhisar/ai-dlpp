@@ -623,13 +623,11 @@ function createArm(options: BaselineBOptions, withTier0: boolean): BaselineB {
     degraded.push(absent(1));
 
     const priors = withTier0 ? priorFindingsLine(wholeMessage(text), raw) : undefined;
-    let messages = messagesFor(
-      userTurn(
-        policyText,
-        ir.entityTypes.map((e) => e.id),
-        text,
-        priors,
-      ),
+    let messages = buildBaselineMessages(
+      policyText,
+      ir.entityTypes.map((e) => e.id),
+      text,
+      priors,
     );
     // Re-checked per message, because the message is part of what has to fit
     // and the construction probe could only see the policy.
@@ -911,6 +909,24 @@ function messagesFor(userContent: string): ChatCompletionMessageParam[] {
 }
 
 /**
+ * The two turns B sends for one message, composed once.
+ *
+ * Extracted from `createArm`'s own call site rather than written beside it, and
+ * `createArm` now goes through here -- so the capability-ceiling arm
+ * (apps/eval/src/driver/ceiling.ts), which sends B's prompt over a hosted API
+ * instead of to WebLLM, cannot drift from the arm this package ships. A second
+ * composition would make the ceiling comparison a comparison of two prompts.
+ */
+export function buildBaselineMessages(
+  policyText: string,
+  entityTypeIds: readonly string[],
+  text: string,
+  priorLine: string | undefined,
+): ChatCompletionMessageParam[] {
+  return messagesFor(userTurn(policyText, entityTypeIds, text, priorLine));
+}
+
+/**
  * The one repair turn, appended after the original user turn -- the judge's
  * rule and the judge's reasoning.
  *
@@ -920,7 +936,7 @@ function messagesFor(userContent: string): ChatCompletionMessageParam[] {
  * argument is sharper for B than for the judge, since B has one completion
  * budget for a whole message.
  */
-function repairMessage(reason: string, detail: string): ChatCompletionMessageParam {
+export function repairMessage(reason: string, detail: string): ChatCompletionMessageParam {
   return {
     role: "user",
     content: [
