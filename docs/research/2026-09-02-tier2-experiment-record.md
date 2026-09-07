@@ -1549,11 +1549,14 @@ artifact**. None of them is used anywhere above.
 3. **"139 of 160 scored negatives carry no org name."** MEASURED HERE: **152** of 160.
 4. **"On the 14 discriminating negatives the bound is ≤ 19.3 %."** The arithmetic
    1 − 0.05^(1/14) = 19.3 % is correct for n = 14, but n is 8 here, giving **≤ 31.2 %**.
-5. **"First round: 13/13 agreement."** The round-1 artifact records `spanLabelCorrect`
-   **13 agreements out of 20** (raw 0.65) with κ degenerate at 0, and `satisfiesPredicate`
-   20/20 with κ undefined. A separate "13/13" figure exists nowhere I could find. (13 is
-   also the count of `neg:sftp-endpoint` spans the round affirmed, which may be the
-   source of the confusion.)
+5. **"First round: 13/13 agreement."** — *Resolved after this document was first
+   written.* The figure is real and belongs to a DIFFERENT round from the one this item
+   originally examined. `corpora/fixtures/smoke.gold-tier2.jsonl` (the 13-item smoke
+   round, two blind annotators, adjudicated against p-fin §3.1) records both annotators
+   agreeing on `satisfies` for **13 of 13** rows (recomputed from the artifact's
+   `annotators.a/b.satisfies` fields). The 20-row figures quoted here — `spanLabelCorrect`
+   13 of 20 (raw 0.65, κ degenerate at 0) and `satisfiesPredicate` 20/20 (κ undefined) —
+   belong to the v2 corpus's contested-SPAN round. Both are correct; they are two rounds.
 6. **"smoke.jsonl has 7 gold spans, 5 at tier 0, 2 at tier 1."** The file has 7 gold
    spans, but the harness's own `goldSpansByTier` is `{0: 3, 1: 2, 2: 0}` — three at tier
    0, not five; the remaining two (`aws-key`, `generic-secret`) are not declared by the IR
@@ -1576,10 +1579,14 @@ artifact**. None of them is used anywhere above.
     is nothing to run it against. The **after** half (0 of 28) *is* stored in the
     manifest and is used above.
 11. **The standing brief at
-    `/private/tmp/.../d5f3dd55-.../scratchpad/p5/standing-brief.md`.** The file does not
-    exist; the directory contains only `tasks/`. I could not read the project conventions
-    it holds, so this document follows the two rules I was given in prose — records state
-    fact rather than intent, and comments must be accurate — without having seen the rest.
+    `/private/tmp/.../d5f3dd55-.../scratchpad/p5/standing-brief.md`.** The file did not
+    exist when this document was written: the session scratchpad it lived in had been
+    deleted underneath four running agents. It has since been reconstructed from its
+    earlier reads and committed as `docs/research/standing-conventions.md` (commit
+    `80a9c5e`), which is where every future brief points. This document was written
+    following two of its rules in prose — records state fact rather than intent (§3
+    there) and comments must be accurate (§1) — and has been checked against the rest
+    after the fact. The disappearance is itself recorded in that file's preamble.
 
 ---
 
