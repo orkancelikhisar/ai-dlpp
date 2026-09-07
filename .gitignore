@@ -6,3 +6,8 @@ playwright-report/
 # Bake-off output: one JSONL per arm plus a gates file, written by
 # `pnpm -C apps/eval bakeoff`. Measurements, not sources.
 runs/
+
+# API keys and local env -- never commit
+.env
+.env.*
+*.key
