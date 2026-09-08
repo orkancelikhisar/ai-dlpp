@@ -308,6 +308,27 @@ future thinking-on comparison needs a uniformly larger `max_tokens` — 8,192 is
 applied to **every** model, with `finish_reason: "length"` counted per arm. The thinking-off arms
 are unaffected: DeepSeek is clean at **0 truncations and 0 reasoning tokens across all 355 calls**.
 
+**How much of GLM's score the cap is eating, counted directly.** Taking the 19 gold positives and
+splitting them by whether that item's call was truncated:
+
+| | detected | missed |
+|---|---|---|
+| call finished cleanly | **9** | **0** |
+| call truncated (`finish_reason: length`) | 2 | **8** |
+
+**Every single miss is on a truncated call, and there are no clean misses.** P(detect │ clean) =
+**9/9 = 1.000**; P(detect │ truncated) = **2/10 = 0.200**. Combined with its precision — GLM
+thinking-on emits **zero false positives** on this gold, the only arm in the experiment that does —
+the shape of the result is unambiguous: **its recall loss is the token cap, not the model.**
+
+That makes its published 0.571 the most misleading number in this document if quoted bare, and it
+is the strongest single argument for running the thinking-ON phase properly. An arm with perfect
+precision whose only failure mode is being cut off mid-reasoning is the one arm here whose ceiling
+has genuinely not been measured. **This is a prediction the thinking-ON phase will test, and it can
+fail:** truncation may be correlated with item difficulty rather than causing the misses — a harder
+item plausibly induces both longer reasoning and a wrong answer — and the 2 truncated-but-detected
+calls show truncation is not automatically fatal. The 8,192-token run settles it.
+
 ### 7.3 Two different wall clocks, and which column is which
 
 DeepInfra rate-limited **45–50% of the DeepSeek calls** — 154 429s on the judge arm, 161 on B, some
