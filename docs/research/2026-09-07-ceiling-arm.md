@@ -1389,6 +1389,13 @@ being applied to the subset; the arm figures use the **overlap** rule, verified 
    thinking-off experiment's $0.900** for two arms out of eleven.
 4. **8,192 is not a resolved ceiling either** — it was hit. A truly cap-free measurement has not
    been made.
+5. **The other five models were not run thinking-ON, by decision.** A full-slate launch was started
+   and stopped after 9 calls (§10.6): its probe showed Approach-B calls running 46–54 s and aborting
+   even at a 180 s timeout, putting the full slate near ten hours of wall-clock with the arm this
+   phase exists to measure scheduled last. GLM was run alone instead. The remaining arms were then
+   left unmeasured on 2026-09-08 with $8.71 of the key unspent — the constraint was time, not
+   budget — so the thinking-ON phase is **one model, one pass**, and every claim in this section is
+   scoped to that.
 
 **What it changes.** §10.1's answer was already "yes, with conditions" at the predicate level. This
 adds the span level: with mandatory reasoning given room to finish, one 30 B-class open-weight model
