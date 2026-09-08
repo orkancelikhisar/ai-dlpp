@@ -1406,9 +1406,14 @@ Recorded so a reader does not credit this work with more than it did.
 It calls `require.resolve("@mlc-ai/web-llm")` at line 51, and **`@mlc-ai/web-llm` is not declared in
 `apps/eval/package.json`** — neither a dependency nor a devDependency. It resolves only because the
 package happens to be reachable through the `@sih/tier2` workspace link in this particular pnpm
-install. The only manifest change this work made was adding `vite-node`; the undeclared dependency
-is untouched and remains a latent break under a clean or differently-hoisted install. It is being
-declared separately in a cleanup commit and is **not** part of this change.
+install. The only manifest change that work made was adding `vite-node`.
+
+**RESOLVED.** `@mlc-ai/web-llm@0.2.84` is now declared in `apps/eval/package.json` — an exact pin
+matching `packages/tier2` — the lockfile is updated, and `require.resolve` from `apps/eval` returns
+a real link rather than a hoisting accident. The exact pin matters more here than usual: this
+document and the tier-2 record both state behaviours specific to this version —
+`context_window_size` belonging to `CreateMLCEngine`'s **third** argument, `enable_thinking: false`
+being the dangerous value rather than `true`, and `structural_tag` **hanging** rather than erroring.
 
 **Also not addressed here:**
 

@@ -1504,9 +1504,21 @@ statistic.**
    is essentially solved at this size (2 unresolved quotes and 8 unresolved mentions on
    1,243 findings).
 
-   Cost: **$0.386 over 2,461 calls**, reconciled against the key endpoint. What the arm did
-   *not* settle, and what is still untested in its own instrumentation, is
-   `2026-09-07-ceiling-arm.md` §11.
+   **A thinking-ON phase was then run** (`2026-09-07-ceiling-arm.md` §10.7) and it changes
+   the picture again. At `max_tokens: 8192` instead of 600, GLM-5.3-flash's truncation
+   collapses (27 of 189 rows to 1), its recall goes **0.579 → 1.000** with the
+   missed-positive list going from eight items to empty, and it moves from 0.042 *below*
+   the message-level floor to **0.186 above** it. Its Approach-B arm — which could not be
+   measured at all at 600, failing its probe 0 of 3 — becomes the **only arm in the
+   experiment to beat the budget-matched oracle** at the span level (0.697 vs 0.695 over
+   all rows; 0.809 vs 0.633 over the rows it answered). **So the ceiling the thinking-off
+   slate measures is a ceiling on thinking-off inference, not on these models.** Bounded
+   by four limits, the largest being that 31% of that run's rows were lost to provider
+   rate limiting, and that it is a single pass against measured spreads up to 0.344.
+
+   Cost: **$1.219 over 6,502 calls** across seven reconciled segments ($0.900 thinking-off,
+   $0.319 thinking-ON) against a $10 key. What the arm did *not* settle, and what remains
+   untested in its own instrumentation, is `2026-09-07-ceiling-arm.md` §11.
 2. **A regenerated corpus that closes the 12-fragment leak, followed by a re-run blind
    round.** Also on that list: randomising distractor position (which closes §7.15 but
    moves every offset, so the labels must be re-collected), and handing annotators
