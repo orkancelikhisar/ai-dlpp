@@ -381,6 +381,28 @@ Holding precision fixed and removing only that unattempted positive from pass 1'
 So a meaningful part of pass 1's "just below the floor" result is **a provider's rate limiter, not
 the model**. This compounds the §10.1 correction rather than replacing it.
 
+**The same rows also inflate the latency columns, and only at the tail.** `ceiling-score.ts` builds
+its TTFT, decode-rate and per-call wall percentiles from `calls`, so a row with `calls: []`
+contributes nothing to any of them — those three columns are clean. The **item wall** column is
+different by design: it is the record's top-level `wallMs`, documented in the scorer as *"end to
+end, backoff included"*. That is accurate, but a reader will picture backoff around a call that
+eventually succeeded, not a row where no call ever succeeded. Measured both ways:
+
+| arm | dead rows | item wall p50 (all / answered) | item wall p95 (all / answered) |
+|---|---|---|---|
+| `ceiling-02 judge-nemotron` | 25 | 1,309 / 1,221 ms | **17,631 / 7,000 ms** |
+| `ceiling-01 b-deepseek` | 19 | 4,089 / 3,465 ms | 17,451 / 17,712 ms |
+| `ceiling-01 b-qwen3.8-flash` | 13 | 4,249 / 3,815 ms | 95,539 / 78,287 ms |
+| `ceiling-01 judge-deepseek` | 4 | 2,127 / 2,102 ms | 16,484 / 12,423 ms |
+| `ceiling-02 b-deepseek` | 4 | 2,896 / 2,793 ms | 16,088 / 13,588 ms |
+
+**p50 moves by 2–16%; p95 moves by up to 2.5×.** The worst case is an arm whose published tail
+latency is `17,631 ms` and whose tail latency *for work actually done* is `7,000 ms`. For a project
+whose deliverable includes a latency budget, the median is safe to read as published and **the p95
+item-wall figures are not** — they are a statement about the provider's rate limiter as much as
+about the model. The per-call wall p50/p95 columns beside them are unaffected and are the ones to
+quote for model latency.
+
 **What this table is not.** The floor is a deterministic function of the text and would also be
 evaluated on a different subset if the arm's subset were used; these attempted-only figures compare
 an adjusted arm against an **unadjusted** 0.571 floor and are therefore **not yet like-for-like**.
