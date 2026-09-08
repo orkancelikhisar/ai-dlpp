@@ -253,7 +253,7 @@ problem. Whatever is going wrong is not span extraction.
 
 ---
 
-## 7. Three measurement defects found in this arm's own instrumentation
+## 7. Four measurement defects found in this arm's own instrumentation
 
 Recorded here rather than quietly fixed, because each one changes how a number below reads.
 
@@ -333,6 +333,62 @@ first-token latency under load. Still a provider fact, but a different one than 
 DeepInfra-pinned model and both its pass-1 arms were already complete; dropping to concurrency 2 for
 passes 2–3 would make the repeat passes non-comparable with pass 1, which is the one thing repeat
 passes exist to measure. The 429 counts are reported per arm instead.
+
+---
+
+### 7.4 Arms are scored on items the provider never let them attempt
+
+**This one was found while checking a different claim, and it moves the headline.**
+
+68 of the 3,780 rows across passes 1–2 (**1.8%**) carry `calls: []`, `provider: null` and an
+`error` of the form *"OpenRouter returned 429"* — the call exhausted its retries against a rate
+limit and no answer was ever produced. A representative row spent **16.6 s** in backoff before
+giving up. These are not parse failures and not refusals; the model never saw the item.
+
+`ceiling-score.ts:122` computes `positives` **once over the whole gold**, independent of what any
+given arm was able to attempt:
+
+```ts
+const positives = gold.filter((g) => g.status === "scored" && g.satisfies).length;
+```
+
+So the recall denominator is 19 for every arm, and **an item the provider refused to serve is
+scored identically to an item the model read and missed.** The scorer prints an `answered/scored`
+column, so the information is on the page — but it is never applied.
+
+Where the losses fell, and how unevenly:
+
+| arm | unanswered | of those, gold-**positive** |
+|---|---|---|
+| `ceiling-01 b-deepseek` | 19 | 2 |
+| `ceiling-01 b-qwen3.8-flash` | 13 | 1 |
+| `ceiling-01 judge-deepseek` | 4 | **1** |
+| `ceiling-02 b-deepseek` | 4 | 0 |
+| `ceiling-02 b-nemotron` | 2 | 0 |
+| `ceiling-02 judge-deepseek` | 1 | **0** |
+| `ceiling-02 judge-nemotron` | 25 | 1 |
+| all other 13 arms | 0 | 0 |
+
+**Why it matters to §10.1.** The two arms in the floor comparison are the last two rows of the
+DeepSeek judge pair. Pass 1 was rate-limited off `inj-o02-0`, a gold positive; pass 2 lost none.
+Holding precision fixed and removing only that unattempted positive from pass 1's denominator:
+
+| pass | as published | attempted-only |
+|---|---|---|
+| `ceiling-01` judge-deepseek | 0.565 (−0.006 vs floor) | **0.577** |
+| `ceiling-02` judge-deepseek | 0.615 (+0.044 vs floor) | 0.615 |
+
+So a meaningful part of pass 1's "just below the floor" result is **a provider's rate limiter, not
+the model**. This compounds the §10.1 correction rather than replacing it.
+
+**What this table is not.** The floor is a deterministic function of the text and would also be
+evaluated on a different subset if the arm's subset were used; these attempted-only figures compare
+an adjusted arm against an **unadjusted** 0.571 floor and are therefore **not yet like-for-like**.
+The correct fix is to score each arm, and every floor, over the intersection of items that arm
+actually answered — reported *beside* the whole-gold numbers, never instead of them, since the
+unanswered rows are a real cost of running against a rate-limited hosted provider and should not be
+defined away. That change is not in this document's numbers; it is queued with the other scorer
+work in §11.2, and every figure above is the as-published scoring unless the row says otherwise.
 
 ---
 
