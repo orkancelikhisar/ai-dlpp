@@ -321,6 +321,33 @@ splitting them by whether that item's call was truncated:
 thinking-on emits **zero false positives** on this gold, the only arm in the experiment that does —
 the shape of the result is unambiguous: **its recall loss is the token cap, not the model.**
 
+**The probe already confirms half of it.** A thinking-ON probe at `max_tokens: 8192` (run
+2026-09-08, `runId=thinkon-01`, 28 calls, $0.02832) gives:
+
+| model | judge | Approach B |
+|---|---|---|
+| `glm-5.3-flash` | 3/3, reasoning 114–528 | **3/3, reasoning 632–8,192** |
+| `mistral-small-2603` | 3/3, reasoning 211–391 | 3/3, reasoning 659–920 |
+| `qwen3.8-27b` | 3/3, reasoning 67–1,375 | 2/3, reasoning 1,448–1,796 |
+| `deepseek-v4-flash` | 3/3, reasoning 84–860 | 1/3, reasoning 2,089 |
+| `qwen3.8-flash` | 3/3, reasoning 351–801 | 1/3, reasoning 1,767 |
+| `nemotron-3-super-120b` | 2/3, reasoning 58–321 | **0/3 — skip** |
+
+**GLM's Approach-B arm parses 3 of 3 where it parsed 0 of 3 at 600 tokens.** That is the §7.2
+diagnosis confirmed directly: its B-side failure was the cap, not the model. **11 of 12 arms now
+pass the probe**, against 10 of 12 before.
+
+Two things the probe also settles, and neither is good news for the cap:
+
+- **8,192 is not always enough either.** One GLM B probe call reported **exactly 8,192 reasoning
+  tokens** — the new ceiling, hit. The truncation problem is pushed back, not eliminated.
+- **The binding constraint at thinking-ON is wall time, not tokens.** Approach-B calls ran
+  **46–54 s**, against `callChat`'s 60 s default, and aborted: `deepseek` B 2 of 3, `qwen3.8-flash`
+  B 2 of 3, `nemotron` B **3 of 3**. Those aborts are why `nemotron` B skipped, and an abort
+  produces a row with no calls — which §7.4 shows is then charged against recall. The full
+  thinking-ON run therefore uses `SIH_CEILING_TIMEOUT_MS=180000`, recorded as an asymmetry against
+  the thinking-off arms' 60 s exactly as §7.1 records the 600/512 one.
+
 That makes its published 0.571 the most misleading number in this document if quoted bare, and it
 is the strongest single argument for running the thinking-ON phase properly. An arm with perfect
 precision whose only failure mode is being cut off mid-reasoning is the one arm here whose ceiling
