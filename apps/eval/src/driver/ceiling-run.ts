@@ -283,6 +283,11 @@ export interface RunPlan {
    * model. Every row records the value it actually ran at.
    */
   readonly maxTokens: number;
+  /**
+   * Per-attempt wall ceiling, or `undefined` for `callChat`'s own 60 s default,
+   * which is what every thinking-OFF arm ran at. See `RunItemOptions.timeoutMs`.
+   */
+  readonly timeoutMs: number | undefined;
 }
 
 /**
@@ -301,6 +306,11 @@ export function resolveRunPlan(bag: Record<string, string | undefined>): RunPlan
   const only = readEnv(bag, "SIH_CEILING_MODELS")?.split(",").map((s) => s.trim());
   const thinking: ThinkingRequest = readEnv(bag, "SIH_CEILING_THINKING") === "on" ? "on" : "off";
   const passStart = Number(readEnv(bag, "SIH_CEILING_PASS_START") ?? "1");
+  const rawTimeoutMs = readEnv(bag, "SIH_CEILING_TIMEOUT_MS");
+  const timeoutMs = rawTimeoutMs === undefined ? undefined : Number(rawTimeoutMs);
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs <= 0)) {
+    throw new Error(`SIH_CEILING_TIMEOUT_MS must be a positive integer; got ${JSON.stringify(rawTimeoutMs)}`);
+  }
   const rawMaxTokens = readEnv(bag, "SIH_CEILING_MAX_TOKENS");
   const maxTokens = rawMaxTokens === undefined ? MAX_TOKENS : Number(rawMaxTokens);
   // Rejected rather than coerced: a typo silently becoming NaN would be sent as
@@ -322,6 +332,7 @@ export function resolveRunPlan(bag: Record<string, string | undefined>): RunPlan
     passStart,
     slate,
     maxTokens,
+    timeoutMs,
     ledgerFile: spendLedgerFileFor(runId, passStart),
     passRunIds: Array.from({ length: passes }, (_, i) => passRunIdFor(runId, i + 1, passStart)),
   };
@@ -495,7 +506,7 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
     throw new Error("OPENROUTER_API_KEY is not set; the ceiling arm reads its key from the environment only");
   }
   const plan = resolveRunPlan(deps.env);
-  const { runId, passes, probeOnly, limit, thinking, passStart, slate, ledgerFile, maxTokens } = plan;
+  const { runId, passes, probeOnly, limit, thinking, passStart, slate, ledgerFile, maxTokens, timeoutMs } = plan;
 
   const { gitSha, gitDirty } = deps.gitProvenance();
   const { ir, irHash } = deps.loadIr();
@@ -524,6 +535,7 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
   deps.log(
     `[ceiling] max_tokens=${maxTokens} (local arms run at ${LOCAL_ARM_MAX_TOKENS}; ` +
       `+${maxTokens - LOCAL_ARM_MAX_TOKENS} favouring this arm)\n` +
+      `[ceiling] per-attempt timeout=${timeoutMs === undefined ? "60000 (default)" : String(timeoutMs)}ms\n` +
       `[ceiling] key usage=$${keyAtStart.usage.toFixed(4)} limit=${keyAtStart.limit === null ? "none" : `$${keyAtStart.limit}`} ` +
       `hard stop=$${SPEND_HARD_STOP_USD}`,
   );
@@ -572,6 +584,7 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
       item,
       runId: thisRunId,
       maxTokens,
+      timeoutMs,
       localArmMaxTokens: LOCAL_ARM_MAX_TOKENS,
       // The bake-off's own default destination provider, so an action resolved
       // here matches an action resolved in the browser arms.

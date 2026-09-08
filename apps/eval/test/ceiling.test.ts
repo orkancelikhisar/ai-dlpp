@@ -263,6 +263,50 @@ describe("callChat over a mocked stream", () => {
     expect(outcome.wallMs).toBe(60);
   });
 
+  it("hands runCeilingItem's timeoutMs THROUGH to callChat, where the abort actually fires", async () => {
+    // Asserted by OBSERVING the abort, not by reading back the option: a mutant
+    // that accepts options.timeoutMs and then calls callChat without it is the
+    // shape that survived three fixes of the ledger defect. See
+    // standing-conventions Sec 10.
+    //
+    // A real (short) timer, because the abort uses a real setTimeout that the
+    // fake clock cannot advance.
+    const seenSignals: (AbortSignal | undefined)[] = [];
+    const neverResolves: typeof fetch = (_url, init) => {
+      const signal = (init as RequestInit | undefined)?.signal ?? undefined;
+      seenSignals.push(signal ?? undefined);
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+        });
+      });
+    };
+    const clock = { t: 0 };
+    const record = await runCeilingItem({
+      deps: deps(neverResolves, clock),
+      model: MODEL,
+      family: "judge",
+      ir: IR,
+      irHash: "b".repeat(64),
+      policyText: "policy",
+      item: { id: "i1", text: TEXT, policy: "p-fin", gold: [] },
+      runId: "t",
+      maxTokens: 600,
+      // 25ms, not 60_000: if this value were dropped on the way to callChat the
+      // test would hang for a minute per attempt instead of failing.
+      timeoutMs: 25,
+      destinationProvider: "claude",
+      thinking: "off",
+      gitSha: "0".repeat(40),
+      gitDirty: true,
+    });
+    expect(seenSignals.length).toBeGreaterThan(0);
+    expect(record.error).toMatch(/abort/i);
+    expect(record.calls).toHaveLength(0);
+    // Sec 7.4: this is exactly the row shape that gets charged against recall.
+    expect(record.findings).toEqual([]);
+  }, 20_000);
+
   it("computes decode rate over the DECODE window (wall minus TTFT), and over n-1 tokens", async () => {
     const clock = { t: 0 };
     const frames = [contentChunk("a"), contentChunk("b"), finalChunk(USAGE), "data: [DONE]\n\n"];

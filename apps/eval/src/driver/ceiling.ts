@@ -1317,6 +1317,17 @@ export interface RunItemOptions {
   readonly item: ItemInput;
   readonly runId: string;
   readonly maxTokens: number;
+  /**
+   * Per-attempt wall ceiling handed to `callChat`. Omitted means
+   * `DEFAULT_TIMEOUT_MS` (60 s), which is what every thinking-OFF arm ran at.
+   *
+   * It has to be reachable from the driver because a thinking-ON run cannot use
+   * the same value: MEASURED in the thinking-ON probe, Approach-B calls ran
+   * 46-54 s of wall against that 60 s ceiling and aborted repeatedly, and
+   * `nemotron` B aborted 3 of 3. An abort is not a model result -- it produces a
+   * row with no calls, which Sec 7.4 shows is then charged against recall.
+   */
+  readonly timeoutMs?: number;
   /** `DEFAULT_TIER2_CONFIG.maxTokens`, recorded beside `maxTokens`. See the record field. */
   readonly localArmMaxTokens?: number;
   /**
@@ -1378,7 +1389,7 @@ export async function runCeilingItem(options: RunItemOptions): Promise<CeilingRe
         schemaName,
         schema,
         maxTokens: options.maxTokens,
-      });
+      }, { timeoutMs: options.timeoutMs });
       options.onCall?.({
         costUsd: outcome.costUsd,
         estimateUsd: estimateCostUsd(model, outcome.promptTokens, outcome.completionTokens),

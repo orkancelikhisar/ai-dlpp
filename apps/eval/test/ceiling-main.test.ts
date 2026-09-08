@@ -674,6 +674,25 @@ describe("runCeiling wiring", () => {
     expect(h.seen.logs.some((l) => l.includes("max_tokens=8192"))).toBe(true);
   });
 
+  it("hands every call the OVERRIDDEN per-attempt timeout, and undefined when unset", async () => {
+    // MEASURED in the thinking-ON probe: Approach-B calls ran 46-54s of wall
+    // against callChat's 60s default and aborted, nemotron B 3 of 3. An abort is
+    // not a model result -- Sec 7.4 shows it becomes a row with no calls that is
+    // then charged against recall.
+    const on = ceilingHarness({ SIH_CEILING_MODELS: ONE_MODEL, SIH_CEILING_TIMEOUT_MS: "180000" });
+    await runCeiling(on.deps);
+    expect(on.seen.runItem.length).toBeGreaterThan(0);
+    expect(on.seen.runItem.every((o) => o.timeoutMs === 180_000)).toBe(true);
+    expect(on.seen.logs.some((l) => l.includes("per-attempt timeout=180000ms"))).toBe(true);
+
+    // Unset must stay UNDEFINED, not 60000: the default belongs to callChat, and
+    // duplicating it here is how two defaults drift apart.
+    const off = ceilingHarness({ SIH_CEILING_MODELS: ONE_MODEL });
+    await runCeiling(off.deps);
+    expect(off.seen.runItem.every((o) => o.timeoutMs === undefined)).toBe(true);
+    expect(off.seen.logs.some((l) => l.includes("per-attempt timeout=60000 (default)ms"))).toBe(true);
+  });
+
   it("REFUSES a malformed token ceiling rather than sending max_tokens: null", async () => {
     // Number("8k") is NaN, which serialises to null and makes every arm run at
     // whatever default its provider happens to use -- unrecorded, and different
