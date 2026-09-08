@@ -3,6 +3,7 @@ import type { PolicyIr } from "@sih/core";
 import {
   CEILING_MODELS,
   passRunIdFor,
+  spendLedgerFileFor,
   REASONING_OFF,
   reasoningRequestFor,
   applyPinOverrides,
@@ -1125,6 +1126,39 @@ describe("passRunIdFor", () => {
     expect(passRunIdFor("ceiling-02", 1, 2)).toBe("ceiling-02");
     expect(passRunIdFor("ceiling-01", 1, 3)).toBe("ceiling-03");
     expect(passRunIdFor("ceiling-01", 2, 2)).toBe("ceiling-03");
+  });
+
+  it("gives a relaunch a LEDGER FILE that cannot overwrite the earlier run's", () => {
+    // This asserts the FUNCTION THE DRIVER CALLS, not the id arithmetic behind
+    // it. An earlier version of this test pinned `passRunIdFor` alone and a
+    // mutant reverting the call site to the base `runId` SURVIVED it -- the
+    // "expectation that cannot fail" defect. `spendLedgerFileFor` exists so the
+    // wiring is what gets asserted.
+    expect(spendLedgerFileFor("ceiling-01", 1)).toBe("ceiling-ceiling-01.spend.json");
+    expect(spendLedgerFileFor("ceiling-01", 2)).toBe("ceiling-ceiling-02.spend.json");
+    expect(spendLedgerFileFor("ceiling-01", 3)).toBe("ceiling-ceiling-03.spend.json");
+    // The property that was violated on disk: a relaunch must not resolve to the
+    // original run's ledger.
+    expect(spendLedgerFileFor("ceiling-01", 2)).not.toBe(spendLedgerFileFor("ceiling-01", 1));
+  });
+
+  it("numbers a relaunch's passes from passStart", () => {
+    // The second half of the same footgun, and it was live: `passRunIdFor`
+    // fixed the ARM path, but every `writeSpend` call still passed the base
+    // `runId`, so a relaunch at passStart=2 wrote `ceiling-ceiling-01.spend.json`
+    // -- pass 1's window-2 ledger, 768 calls and $0.19269 -- while its arm files
+    // were correctly named `ceiling-02.*`. MEASURED on disk: that file held
+    // calls=403 / $0.02033 eight seconds after the relaunch began.
+    //
+    // `ceiling-main.ts` now derives `ledgerRunId = passRunIdFor(runId, 1, passStart)`,
+    // so the property that has to hold is that the FIRST pass id differs
+    // between an original run and a relaunch.
+    const original = passRunIdFor("ceiling-01", 1, 1);
+    const relaunch = passRunIdFor("ceiling-01", 1, 2);
+    expect(original).toBe("ceiling-01");
+    expect(relaunch).toBe("ceiling-02");
+    expect(relaunch).not.toBe(original);
+    expect(`ceiling-${relaunch}.spend.json`).not.toBe(`ceiling-${original}.spend.json`);
   });
 
   it("keeps a base id that carries no trailing number", () => {

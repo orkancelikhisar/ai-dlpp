@@ -48,6 +48,7 @@ import {
   estimateCostUsd,
   mapWithConcurrency,
   passRunIdFor,
+  spendLedgerFileFor,
   runCeilingItem,
   toJsonl,
   type ThinkingRequest,
@@ -168,10 +169,25 @@ function loadItems(): ItemInput[] {
 
 const RUNS = join(REPO, "runs");
 
-function writeSpend(runId: string, guard: SpendGuard, extra: Record<string, unknown>): void {
+/**
+ * The ledger filename is keyed by the FIRST pass this process writes, not by the
+ * base `runId`.
+ *
+ * MEASURED, and the reason this function takes `ledgerRunId` rather than
+ * `runId`: a relaunch at `passStart=2` names its arm files `ceiling-02.*`
+ * correctly (see `passRunIdFor`) but every `writeSpend` call used the base id,
+ * so its ledger overwrote `ceiling-ceiling-01.spend.json` -- the pass-1 window-2
+ * ledger, 768 calls and $0.19269, replaced mid-run by pass 2's running total.
+ * The arm-path fix and the ledger-path fix are the same footgun one layer
+ * apart; `passRunIdFor` closed only the first.
+ *
+ * One ledger per PROCESS is correct -- the guard accumulates across the passes
+ * it runs -- so the name carries the first pass rather than every pass.
+ */
+function writeSpend(ledgerFile: string, guard: SpendGuard, extra: Record<string, unknown>): void {
   mkdirSync(RUNS, { recursive: true });
   writeFileSync(
-    join(RUNS, `ceiling-${runId}.spend.json`),
+    join(RUNS, ledgerFile),
     `${JSON.stringify({ ...guard.snapshot(), ...extra }, null, 2)}\n`,
   );
 }
@@ -289,6 +305,10 @@ async function main(): Promise<void> {
   console.log(
     `[ceiling] will write passes: ${Array.from({ length: passes }, (_, i) => passRunIdFor(runId, i + 1, passStart)).join(", ")}`,
   );
+  const ledgerFile = spendLedgerFileFor(runId, passStart);
+  console.log(
+    `[ceiling] ledger: runs/${ledgerFile}`,
+  );
 
   const families: CeilingFamily[] = ["judge", "b"];
   const probes: ProbeResult[] = [];
@@ -326,7 +346,7 @@ async function main(): Promise<void> {
             .then((s) => guard.noteCheckpoint(s.usage))
             .catch(() => undefined);
         }
-        writeSpend(runId, guard, { runId, passes, probes, stopNotes });
+        writeSpend(ledgerFile, guard, { runId, passes, probes, stopNotes });
       },
     });
 
@@ -354,7 +374,7 @@ async function main(): Promise<void> {
       );
     }
   }
-  writeSpend(runId, guard, { runId, passes, probes, stopNotes });
+  writeSpend(ledgerFile, guard, { runId, passes, probes, stopNotes });
   if (probeOnly) {
     console.log(`[ceiling] probe only; spent $${guard.totalUsd.toFixed(5)} so far`);
     return;
@@ -404,7 +424,7 @@ async function main(): Promise<void> {
           `[arm] ${passRunId} ${armName(family, model)}: ${records.length} rows in ` +
             `${Math.round(performance.now() - started)}ms, spend so far $${guard.totalUsd.toFixed(5)}`,
         );
-        writeSpend(runId, guard, { runId, passes, probes, stopNotes });
+        writeSpend(ledgerFile, guard, { runId, passes, probes, stopNotes });
       }
     }
     // Passes 2 and 3 only when pass 1 left room, so a repeat can never be the
@@ -419,7 +439,7 @@ async function main(): Promise<void> {
 
   const keyAtEnd = await readKeyState(apiKey);
   guard.noteCheckpoint(keyAtEnd.usage);
-  writeSpend(runId, guard, { runId, passes, probes, stopNotes, keyAtEnd });
+  writeSpend(ledgerFile, guard, { runId, passes, probes, stopNotes, keyAtEnd });
   console.log(
     `[ceiling] done. calls=${guard.calls} summed=$${guard.totalUsd.toFixed(5)} ` +
       `estimate=$${guard.estimatedUsd.toFixed(5)} key usage=$${keyAtEnd.usage.toFixed(5)} ` +

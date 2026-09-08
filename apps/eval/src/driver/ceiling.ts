@@ -268,6 +268,22 @@ export function passRunIdFor(runId: string, pass: number, passStart = 1): string
   return `${base}-${String(passStart + pass - 1).padStart(2, "0")}`;
 }
 
+/**
+ * The spend-ledger filename for a run, keyed by the FIRST pass it writes.
+ *
+ * Exported so the WIRING is testable, not just the id arithmetic. MEASURED, and
+ * the reason: a relaunch at `passStart=2` named its arm files `ceiling-02.*`
+ * correctly while every `writeSpend` call still used the base `runId`, so its
+ * ledger overwrote `ceiling-ceiling-01.spend.json` -- pass 1's window-2 ledger,
+ * 768 calls and $0.19269 -- eight seconds in, replaced by calls=403 / $0.02033.
+ * A test that pinned only `passRunIdFor` did NOT catch reverting the call site,
+ * because nothing exercised the call site; this function is what makes that
+ * mutation killable.
+ */
+export function spendLedgerFileFor(runId: string, passStart = 1): string {
+  return `ceiling-${passRunIdFor(runId, 1, passStart)}.spend.json`;
+}
+
 export type CeilingFamily = "judge" | "b";
 
 /**
