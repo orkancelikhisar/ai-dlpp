@@ -727,7 +727,11 @@ suffices; the local arms' three-rule spread is in the generated output.
 | `ceiling-b-nemotron` | ceiling | — | 0.000 | — | **0** |
 | all 6 local `baselineB*` arms on 3 of 4 models | local | — | 0.000 | — | 0 |
 
-**Under every rule — exact, overlap, iou50 — the scorer's own verdict is `arms beating it: NONE`.**
+> **STALE — this table and this line are pass 1 only.** They were generated before the repeat
+> passes existed. With all three passes present the scorer's verdict is **not** `NONE`: it names
+> `ceiling-judge-deepseek-v4-flash-0731` at `[ceiling-02]` and `[ceiling-03]`, under all three
+> rules. §10.1 carries the three-pass figures. **This table is regenerated wholesale once pass 3
+> finishes; until then read §10.1, not this section, for the floor comparison.**
 
 ### 9.2 Span level — entity gold (108 spans over 189 items), MODEL-ONLY arms
 
@@ -758,60 +762,80 @@ by 0.020. Every ceiling B arm beats the *unbudgeted* oracle (0.454) and the best
 
 ### 1. Does ANY model — local or ceiling — beat the trivial floors? By how much?
 
-**No. Not one, at either level, under any match rule.** The scorer's own verdict line reads
-`arms beating it: NONE` for exact, overlap and iou50.
+**It depends on which floor and which metric, and for the best arm the answer is now yes.**
+This section originally read *"No. Not one, at either level, under any match rule"*, quoting the
+scorer's `arms beating it: NONE`. With all three passes present, the scorer's own verdict line reads:
 
-| level | best arm | best floor | gap |
-|---|---|---|---|
-| predicate | `ceiling-judge-glm` **0.571** (thinking on, 22% truncated) | `first-capitalised-multiword` **0.571** | **0.000 — a tie, not a win** |
-| predicate, thinking-off only | `ceiling-judge-deepseek` **0.565** | **0.571** | **−0.006** |
-| span | `ceiling-b-nemotron` **0.675** | oracle budget-matched **0.695** | **−0.020** |
+```
+under exact:  best floor F1 0.571; arms beating it: ceiling-judge-deepseek-v4-flash-0731 [ceiling-03],
+                                                    ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]
+```
 
-The ceiling arms are a large improvement **over the local arms** — 0.565 against 0.197 at the
-predicate level is **2.87×**, and 0.675 against 0.331 at the span level is **2.04×** — and that
-improvement takes them to *level with a regular expression* and no further. Two independent gold
-sets and two independent floors agree.
+— identically under `overlap` and `iou50`. The original answer was written from pass 1 alone, and
+the repeat passes it commissioned have overturned it.
 
-This is the answer §4.2b was built to get, and it is the unwelcome one: **the browser constraint is
-not what is costing accuracy.** Making the model 30–60× larger and giving it a datacentre GPU moves
-the numbers up to roughly the floor. On this corpus and this policy, the task itself is not being
-solved decisively by any of these methods.
+**The predicate, span-wise (the metric §9.1 publishes)** — `ceiling-judge-deepseek` against the
+`first-capitalised-multiword` floor of **0.571**:
 
-> **Correction (pass 2). An earlier draft of this paragraph ended "moves the numbers up to the floor
-> and stops." The repeat pass this document commissioned to settle that has settled it the other
-> way, and the word "stops" is withdrawn.**
->
-> Re-scoring with pass 2 present, `ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]` scores
-> **P 0.485 / R 0.842 / F1 0.615** at the predicate level, and `ceiling:score` names it under all
-> three matching rules: *"best floor F1 0.571; arms beating it: ceiling-judge-deepseek-v4-flash-0731
-> [ceiling-02]"*. That is **+0.044 over the floor**, where pass 1 was −0.006.
->
-> | pass | predicted | tp | fp | fn | F1 | vs floor 0.571 |
-> |---|---|---|---|---|---|---|
-> | `ceiling-01` | 27 | 13 | 14 | 6 | 0.565 | −0.006 |
-> | `ceiling-02` | 33 | 16 | 17 | 3 | **0.615** | **+0.044** |
->
-> Both passes are `temperature: 0`; the difference is provider and routing variance, not the
-> sampler. **Three items changed hands** on a 19-positive gold — and §8 computes that one item is
-> worth ≈0.05 F1 here, so the whole pass-to-pass swing is three items and the original "gap" it was
-> compared against was one-eighth of a single item. A tie and a −0.006 gap were never enough to
-> support "stops"; the defensible claim on this sample is that **the ceiling arms land in the
-> neighbourhood of the floor, with pass-to-pass variance larger than their distance from it.**
->
-> Pass 3 was in flight when this correction was written and is not in these figures. §9 carries the
-> per-pass table once all three land; this paragraph is rewritten against the full variance then,
-> not before.
->
-> **Two further corrections bear on this paragraph and pull the same way.** §7.4: pass 1 was
-> rate-limited off a gold positive it never got to attempt, and the scorer charges that as a miss —
-> removing it moves pass 1 to 0.577. §7.5, larger: the predicate gold is a **message-level** label
-> scored span-wise here, and on the judgment the gold actually records, **both** DeepSeek judge
-> passes beat the floor — 0.905 and 0.811 against 0.776. The span-wise tie is real and so is the
-> message-level separation; they say different things about the same rows, and "the task itself is
-> not being solved by any of these methods" is not supportable as written. §7.5 goes further: with
-> the local arms recomputed on the same 179 rows, the message-level ordering is **local 0.275 <
-> floor 0.776 < ceiling 0.905**, which *inverts* this section's answer to spec §4.2b — on that
-> reading the gap **is** substantially the price of the in-browser constraint.
+| pass | P | R | F1 | vs floor |
+|---|---|---|---|---|
+| `ceiling-01` | 0.481 | 0.684 | 0.565 | −0.006 |
+| `ceiling-02` | 0.485 | 0.842 | 0.615 | **+0.044** |
+| `ceiling-03` | 0.500 | 0.842 | **0.627** | **+0.056** |
+| **mean** | | | **0.602** | **+0.031** |
+
+Two of three passes clear it — and **pass 1, the only one that does not, is precisely the pass §7.4
+shows was rate-limited off a gold positive it never got to attempt.**
+
+**The predicate, message-wise (the judgment the gold actually records, §7.5)** — against the **0.776**
+floor:
+
+| pass | P | R | F1 | vs floor |
+|---|---|---|---|---|
+| `ceiling-01` | 0.833 | 0.789 | 0.811 | **+0.035** |
+| `ceiling-02` | 0.826 | 1.000 | 0.905 | **+0.129** |
+| `ceiling-03` | 0.864 | 1.000 | **0.927** | **+0.151** |
+| **mean** | | | **0.881** | **+0.105** |
+
+**All three clear it**, the last two with perfect recall and 3–4 false positives across 179 messages.
+
+**At the span level, the number quoted as "the floor" was not a floor.** §9.2 compares against the
+orthographic oracle *budget-matched* — handed **N = the item's own gold count** and allowed only its
+first N hits. That is label information no deployable system has. The scorer prints the unbudgeted
+variant on the very next line, and it says something different:
+
+| span-level reference | P | R | F1 | vs best arm `ceiling-b-nemotron` **0.675** |
+|---|---|---|---|---|
+| orthographic oracle, **budget-matched** (told N) | 0.705 | 0.685 | 0.695 | **−0.020** |
+| orthographic oracle, **unbudgeted** (no label access) | 0.307 | 0.870 | 0.454 | **+0.221** |
+
+Both are worth knowing, and they answer different questions. *Given the same number of guesses, is
+the model better at choosing?* — no, narrowly. *Against a reader with no access to the labels, is
+the model better?* — yes, decisively. Printing only the first and calling it "the floor" made an
+oracle read as a baseline.
+
+**The answer to spec §4.2b, stated with its conditions:**
+
+- Against **budget-matched oracles and span-wise predicate matching**, the ceiling arms sit at or
+  just above the floor, and their improvement over the local arms (2.87× predicate, 2.04× span)
+  takes them roughly level with a regular expression. That is this document's original finding and
+  it survives as a statement *about those comparisons*.
+- Against the **message-level judgment the gold records**, and against **floors with no label
+  access**, the best ceiling arm separates clearly and repeatably — **+0.105** mean over three
+  passes at the predicate, **+0.221** at the span level — while the local arms (0.275) stay far
+  below the same floor (0.776). On that reading the gap **is** substantially the price of the
+  in-browser constraint, the opposite of what this section originally concluded.
+
+**What has not changed:** *the binding constraint is classification, not span extraction.* Both
+readings agree, and it is §5d's local result confirmed at 30–120 B.
+
+> **History, kept rather than overwritten.** The first draft ended *"moves the numbers up to the
+> floor and stops"* — from pass 1, on a −0.006 gap that §8 itself computes to be one-eighth of a
+> single item. Three findings moved it: the repeat passes above, the rate-limit accounting in §7.4,
+> and the metric-granularity problem in §7.5. Standing-conventions §9 was written from this. The
+> lesson is not that the original number was miscomputed — it reproduces exactly — but that **a
+> conclusion was drawn from one pass, one metric and one floor, each of which happened to be the
+> least favourable of the available choices, and none of which was presented as a choice.**
 
 ### 2. Compiled (judge) or prompting (B) at the ceiling — and does it differ from the local result?
 
