@@ -1283,9 +1283,34 @@ named pair provably cannot distinguish the two orderings, and the test that cite
 cannot make the distinction it claims. Mutation confirms it: changing the representative token mix
 from 1700/200 to 200/1700 survives.
 
-The weighting is still the right choice — nemotron (0.30/0.65) and qwen-27b (0.24/2.20) genuinely
-flip at a prompt/completion ratio near 25.8, and *that* pair is what the test is actually sensitive
-to — but the stated justification names the one pair where it cannot hold. Standing-conventions §1.
+**It is worse than "the wrong pair was named."** Sorting the whole slate by the unweighted sum gives
+0.24 < 0.62 < 0.65 < 0.75 < 0.95 < 2.44 — **the shipped order exactly, all six models.** There is no
+pair anywhere on this slate under which the two rules disagree, so the premise is false at the slate
+level, not merely miscast onto one pair.
+
+**And my own correction to it was wrong in direction.** I wrote that nemotron (0.30/0.65) versus
+qwen-27b (0.24/2.20) is "the pair the test is actually sensitive to". They are the only *flippable*
+pair — the crossover is exactly `1.55/0.06 = 25.833` — but the shipped mix is `1700/200 = 8.5`, far
+**below** it, and both of the obvious mutants (`1700→200`, `200→1700`) give ratio 1.0, also below.
+Measured: `p=200,c=200` and `p=1700,c=1700` **both leave the slate correctly ordered**, so a
+side-of-crossover assertion kills neither mutant. The premise is now pinned as a magnitude assertion
+with the crossover asserted separately in both directions.
+
+**The measurement that came out of chasing this, and it belongs in the record.** Over
+`runs/ceiling-01.*` (first call per item; 941 judge, 913 B): median prompt **433** judge / **1,560**
+B, median completion **7** / **71**. One item across both families is therefore **1,993 prompt and
+78 completion tokens — a ratio of 25.55**, not the estimated 8.5. That is **1.1% below the
+nemotron/qwen-27b crossover of 25.833**:
+
+| workload | nemotron | qwen-27b | cheaper first | margin |
+|---|---|---|---|---|
+| shipped estimate (1700/200) | 640.00 | 848.00 | nemotron | 24.53% |
+| **as actually run (1993/78)** | **648.60** | **649.92** | nemotron | **0.20%** |
+
+**The slate order was right, by 0.20%.** At 77 completion tokens per item instead of 78 it would
+have been wrong at position 5 of 6. The constants are deliberately **left unchanged** — they are
+what the slate was ordered by at the time, and editing them now would rewrite the run's provenance —
+but the docblock no longer claims a justification the numbers do not support. Standing-conventions §1.
 
 ### 11.4 Provenance of passes 2 and 3
 
