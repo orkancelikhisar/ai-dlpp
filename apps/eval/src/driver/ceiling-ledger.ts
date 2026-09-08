@@ -20,42 +20,25 @@
  *     flight when the key was read.
  *
  * Do not read the sign as evidence for either on its own.
+ *
+ * THIS FILE IS I/O ONLY. Every decision -- the totals, the residual and its
+ * sign, the guard flag -- lives in `ceiling-ledger-lib.ts` so that a test can
+ * import it without a key, a network or a write into `runs/`. Keep it that way:
+ * anything moved back up here becomes uncovered again the moment it arrives.
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  LEDGER_SEGMENTS,
+  buildCombinedLedger,
+  formatLedgerSummary,
+  joinSegment,
+  type JoinedSegment,
+} from "./ceiling-ledger-lib.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const RUNS = join(REPO, "runs");
-
-interface Segment {
-  readonly file: string;
-  readonly name: string;
-  readonly note: string;
-}
-
-const SEGMENTS: readonly Segment[] = [
-  {
-    file: "ceiling-probe.spend.json",
-    name: "probe",
-    note: "The 6-model x 2-family probe. Its process was killed deliberately while diagnosing the Alibaba streaming hang; the probe was re-run inside each later launch.",
-  },
-  {
-    file: "ceiling-ceiling-01.part1.spend.json",
-    name: "ceiling-01 window 1",
-    note: "Arms 1-7: deepseek judge+b, qwen-flash judge+b, mistral judge+b, nemotron judge. The process stopped after the nemotron judge arm with no [stop] line, no error and no done line; the spend guard did not trip and the cause is unknown.",
-  },
-  {
-    file: "ceiling-glmon-01.spend.json",
-    name: "glmon-01",
-    note: "GLM-5.3-flash with thinking ON, judge arm only; its B arm was skipped after a 0/3 probe. Ran concurrently with window 1, against a different provider.",
-  },
-  {
-    file: "ceiling-ceiling-01.spend.json",
-    name: "ceiling-01 window 2",
-    note: "Arms 8-10 plus a re-run of the nemotron judge arm, under the same runId, pins and request body as window 1.",
-  },
-];
 
 async function keyUsage(): Promise<number | null> {
   const apiKey = process.env["OPENROUTER_API_KEY"];
@@ -68,41 +51,11 @@ async function keyUsage(): Promise<number | null> {
   return typeof b.data?.usage === "number" ? b.data.usage : null;
 }
 
-const segments: Record<string, unknown>[] = SEGMENTS.filter((s) => existsSync(join(RUNS, s.file))).map((s) => {
-  const d = JSON.parse(readFileSync(join(RUNS, s.file), "utf8")) as Record<string, unknown>;
-  return { segment: s.name, ledger: `runs/${s.file}`, note: s.note, ...d };
-});
+const segments: JoinedSegment[] = LEDGER_SEGMENTS.filter((s) => existsSync(join(RUNS, s.file))).map((s) =>
+  joinSegment(s, JSON.parse(readFileSync(join(RUNS, s.file), "utf8")) as Record<string, unknown>),
+);
 
-const ledgerTotalUsd = segments.reduce((n, s) => n + Number(s["costUsd"] ?? 0), 0);
-const ledgerTotalCalls = segments.reduce((n, s) => n + Number(s["calls"] ?? 0), 0);
-const key = await keyUsage();
-const residual = key === null ? null : Number((key - ledgerTotalUsd).toFixed(6));
-
-const out = {
-  what: "Every spend segment of the capability-ceiling arm, joined and reconciled against the key endpoint.",
-  regenerateWith: "OPENROUTER_API_KEY=... pnpm -C apps/eval ceiling:ledger",
-  segments,
-  ledgerTotalUsd: Number(ledgerTotalUsd.toFixed(6)),
-  ledgerTotalCalls,
-  keyUsageFinalUsd: key,
-  residualUsd: residual,
-  residualNote:
-    "key usage minus the ledger total. POSITIVE means spend the driver never saw (diagnostic curls made " +
-    "outside it). NEGATIVE means the key endpoint's accounting trailing the per-response usage.cost " +
-    "figures, or a segment still in flight when the key was read. The sign alone does not settle which.",
-  keyLimitUsd: 10,
-  hardStopUsd: 7,
-  guardEverTripped: segments.some((s) => s["tripped"] === true),
-  guardNote:
-    "No stop path fired in any segment. This experiment was bounded by wall-clock time, not by budget.",
-};
+const out = buildCombinedLedger({ segments, keyUsageUsd: await keyUsage() });
 
 writeFileSync(join(RUNS, "ceiling-combined.spend.json"), `${JSON.stringify(out, null, 2)}\n`);
-console.log(
-  `ledger total $${out.ledgerTotalUsd.toFixed(5)} over ${ledgerTotalCalls} calls; ` +
-    `key $${key === null ? "unread" : key.toFixed(5)}; residual ` +
-    `${residual === null ? "unknown" : `$${residual.toFixed(5)}`}; guard tripped: ${out.guardEverTripped}`,
-);
-for (const s of segments) {
-  console.log(`  ${String(s["segment"]).padEnd(22)} calls ${String(s["calls"]).padStart(5)}  $${Number(s["costUsd"]).toFixed(5)}`);
-}
+for (const line of formatLedgerSummary(out)) console.log(line);

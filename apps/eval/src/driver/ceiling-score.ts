@@ -22,60 +22,39 @@
  * for one item on one arm -- rightly, since one would be silently dropped -- and
  * pooling three repeats of the same arm is exactly that. Variance across passes
  * is reported as the spread of the per-pass numbers.
+ *
+ * THIS FILE RENDERS; it decides nothing. Every count, ratio, threshold and
+ * pairing lives in `ceiling-score-lib.ts`, which is importable and tested. It
+ * was not always so: this file inlined all of it and ended in a bare `main()`,
+ * exporting nothing, so a mutation review found the whole file uncovered.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { measureOrthography } from "../corpus/leakage.js";
 import { loadCorpus } from "./corpus.js";
-import { CeilingRecordSchema, type CeilingRecord } from "./ceiling.js";
+import { MATCH_RULES, groupGoldByPredicate, loadRunRecords, loadTier2Gold, type MatchRule } from "./score.js";
 import {
-  MATCH_RULES,
+  CEILING_ARM_MAX_TOKENS,
+  LOCAL_ARM_MAX_TOKENS,
+  MIN_DECODE_WINDOW_MS,
+  attemptedOnlyTable,
   bestFloorF1,
-  groupGoldByPredicate,
-  loadRunRecords,
-  loadTier2Gold,
-  scoreArms,
-  spansMatch,
-  type MatchRule,
-  type ScoreableRecord,
-  type ScoredArm,
-} from "./score.js";
+  ceilingArmKey,
+  ceilingArmLabel,
+  fmt,
+  isTierAssisted,
+  loadCeilingRecords,
+  measureOrthography,
+  scorePredicate,
+  scoreSpanArm,
+  summarizeGold,
+  transportRow,
+  type ArmRows,
+} from "./ceiling-score-lib.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../../..");
 const RUNS = join(REPO, "runs");
-
-/**
- * `DEFAULT_TIER2_CONFIG.maxTokens` (packages/tier2/src/manifest.ts:116).
- *
- * The ceiling arms ran at 600, the browser arms at 512. The `calls >=512`
- * column below is how a reader checks whether that 88-token asymmetry could
- * have changed anything for a given arm: a 0 there means running at 512 would
- * have produced identical output.
- */
-const LOCAL_ARM_MAX_TOKENS = 512;
-
-function fmt(n: number | undefined, digits = 3): string {
-  return n === undefined ? "—" : n.toFixed(digits);
-}
-
-function loadCeilingRecords(jsonl: string): CeilingRecord[] {
-  const out: CeilingRecord[] = [];
-  for (const line of jsonl.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(CeilingRecordSchema.parse(JSON.parse(trimmed)));
-  }
-  return out;
-}
-
-interface ArmRows {
-  readonly label: string;
-  readonly kind: "local" | "ceiling";
-  readonly records: ScoreableRecord[];
-  readonly ceiling: CeilingRecord[];
-}
 
 function collect(): Map<string, ArmRows> {
   const byKey = new Map<string, ArmRows>();
@@ -93,16 +72,9 @@ function collect(): Map<string, ArmRows> {
       // Matched on the ARM name inside the filename rather than on a run-id
       // prefix, so a run under any id (`ceiling-01`, `glmon-01`) is picked up.
       for (const r of loadCeilingRecords(jsonl)) {
-        // Keyed on runId as well as arm, so three passes are three columns and
-        // never one silently-deduplicated column.
-        const key = `ceiling::${r.runId}::${r.arm}`;
+        const key = ceilingArmKey(r);
         const bucket = byKey.get(key) ?? {
-          label:
-            // A thinking-ON row is a DIFFERENT CONDITION from every other row
-            // in these tables and is labelled so it can never be read as one of
-            // them. Taken from the RECORD, not from the filename: the filename
-            // is a naming choice, the field is what was asked of the model.
-            `${r.arm} [${r.runId}]${r.thinkingRequested === "on" ? " **thinking ON**" : ""}`,
+          label: ceilingArmLabel(r),
           kind: "ceiling" as const,
           records: [],
           ceiling: [],
@@ -119,14 +91,13 @@ function collect(): Map<string, ArmRows> {
 function predicateTable(title: string, goldPath: string, arms: Map<string, ArmRows>): void {
   const gold = loadTier2Gold(readFileSync(goldPath, "utf8"));
   const groups = groupGoldByPredicate(gold);
-  const positives = gold.filter((g) => g.status === "scored" && g.satisfies).length;
-  const scored = gold.filter((g) => g.status === "scored").length;
+  const summary = summarizeGold(gold);
   console.log(`\n## ${title}`);
   console.log(
-    `${gold.length} gold rows, ${scored} scored, ${gold.length - scored} disputed, ${positives} positives, ` +
-      `${gold.reduce((n, g) => n + (g.status === "scored" ? g.spans.length : 0), 0)} gold spans`,
+    `${summary.rows} gold rows, ${summary.scored} scored, ${summary.disputed} disputed, ` +
+      `${summary.positives} positives, ${summary.goldSpans} gold spans`,
   );
-  if (positives === 0) {
+  if (summary.positives === 0) {
     console.log(
       "NOTE: this gold carries ZERO positives and ZERO gold spans, so tp = fn = 0 for every arm and " +
         "RECALL AND F1 ARE UNDEFINED for all of them under every rule. It can only measure precision " +
@@ -142,28 +113,18 @@ function predicateTable(title: string, goldPath: string, arms: Map<string, ArmRo
         " | inVocab | answered/scored |",
     );
     console.log(`|${"---|".repeat(4 + MATCH_RULES.length * 3)}`);
-    let floors: ScoredArm["floors"] | undefined;
-    const lines: { label: string; kind: string; f1: number | undefined; line: string }[] = [];
-    for (const arm of arms.values()) {
-      const scoredArm = scoreArms(arm.records, rows)[0];
-      if (scoredArm === undefined) continue;
-      floors ??= scoredArm.floors;
+    const { lines, floors } = scorePredicate(arms.values(), rows);
+    for (const l of lines) {
       const cells = MATCH_RULES.flatMap((rule) => {
-        const s = scoredArm.byRule[rule];
+        const s = l.scored.byRule[rule];
         return [fmt(s.precision), fmt(s.recall), fmt(s.f1)];
       });
-      lines.push({
-        label: arm.label,
-        kind: arm.kind,
-        f1: scoredArm.byRule.overlap.f1,
-        line:
-          `| ${arm.label} | ${arm.kind} | ${cells.join(" | ")} | ` +
-          `${scoredArm.coverage.findingsInVocabulary} | ` +
-          `${scoredArm.coverage.itemsJudgeAnswered}/${scoredArm.coverage.recordsScored} |`,
-      });
+      console.log(
+        `| ${l.label} | ${l.kind} | ${cells.join(" | ")} | ` +
+          `${l.scored.coverage.findingsInVocabulary} | ` +
+          `${l.scored.coverage.itemsJudgeAnswered}/${l.scored.coverage.recordsScored} |`,
+      );
     }
-    lines.sort((a, b) => (b.f1 ?? -1) - (a.f1 ?? -1) || a.label.localeCompare(b.label));
-    for (const l of lines) console.log(l.line);
     if (floors !== undefined) {
       for (const floor of floors) {
         const cells = MATCH_RULES.flatMap((rule) => {
@@ -180,7 +141,69 @@ function predicateTable(title: string, goldPath: string, arms: Map<string, ArmRo
         );
       }
     }
+    attemptedOnlySection(arms, rows, predicateId);
   }
+}
+
+/**
+ * The attempted-only table, printed BESIDE the whole-gold one above and never
+ * instead of it.
+ *
+ * 68 of the 3,780 rows across passes 1-2 carry `calls: []`, `provider: null`
+ * and a 429: the provider's rate limiter refused the item and the model never
+ * saw it. Scored against the whole gold, such a row is indistinguishable from
+ * an item the model read and missed, and the losses are very uneven across arms
+ * -- 25 on one, 0 on thirteen.
+ *
+ * The floor moves with the arm here. Each row's `attempted floor` is
+ * `scoreTrivialFloors` re-run over exactly the subset that arm answered, so the
+ * comparison is like-for-like; `docs/research/2026-09-07-ceiling-arm.md` Sec
+ * 7.4 gives quick figures that adjust the arm against an UNADJUSTED floor and
+ * says so. These are the corrected ones.
+ */
+function attemptedOnlySection(arms: Map<string, ArmRows>, rows: Parameters<typeof attemptedOnlyTable>[1], predicateId: string): void {
+  const rule: MatchRule = "overlap";
+  const table = attemptedOnlyTable(arms.values(), rows, rule);
+  const affected = table.filter((r) => r.unanswered > 0);
+  console.log(
+    `\n### ATTEMPTED-ONLY — ${predicateId}, ${rule} rule. Beside the table above, never instead of it.`,
+  );
+  console.log(
+    `An item the provider rate-limited away scores identically to one the model read and missed. Here ` +
+      `each arm AND every floor is re-scored over the intersection of items that arm answered, so the ` +
+      `comparison is like-for-like. The unanswered rows are a real cost of a rate-limited hosted ` +
+      `provider and are counted, not defined away.`,
+  );
+  if (affected.length === 0) {
+    console.log(`\nevery arm answered every scored gold row under this predicate; the two scorings coincide.`);
+    return;
+  }
+  console.log(
+    "\n| arm | kind | unanswered | of those, gold-positive | whole-gold F1 | whole-gold best floor | " +
+      "attempted-only F1 | attempted-only best floor | F1 delta |",
+  );
+  console.log(`|${"---|".repeat(9)}`);
+  for (const r of affected) {
+    const delta =
+      r.attemptedF1 === undefined || r.wholeGoldF1 === undefined ? undefined : r.attemptedF1 - r.wholeGoldF1;
+    console.log(
+      `| ${r.label} | ${r.kind} | ${r.unanswered} | ${r.unansweredPositives} | ${fmt(r.wholeGoldF1)} | ` +
+        `${fmt(r.wholeGoldBestFloorF1)} | ${fmt(r.attemptedF1)} | ${fmt(r.attemptedBestFloorF1)} | ` +
+        `${delta === undefined ? "—" : `${delta >= 0 ? "+" : ""}${delta.toFixed(3)}`} |`,
+    );
+  }
+  const flips = affected.filter(
+    (r) =>
+      r.wholeGoldF1 !== undefined &&
+      r.attemptedF1 !== undefined &&
+      r.wholeGoldBestFloorF1 !== undefined &&
+      r.attemptedBestFloorF1 !== undefined &&
+      r.wholeGoldF1 > r.wholeGoldBestFloorF1 !== r.attemptedF1 > r.attemptedBestFloorF1,
+  );
+  console.log(
+    `\narms whose verdict against the floor CHANGES under attempted-only scoring: ` +
+      `${flips.length === 0 ? "NONE" : flips.map((f) => f.label).join(", ")}`,
+  );
 }
 
 /**
@@ -235,45 +258,16 @@ function spanTable(arms: Map<string, ArmRows>): void {
 
   const rows: { label: string; f1: number | undefined; line: string }[] = [];
   for (const arm of arms.values()) {
-    let tp = 0;
-    let fp = 0;
-    let fn = 0;
-    let found = 0;
-    let sawAny = false;
-    for (const record of arm.records) {
-      const gold = goldById.get(record.itemId);
-      if (gold === undefined) continue;
-      const mine = record.findings.filter((f) => entityTypes.has(f.entityType));
-      if (mine.length > 0) sawAny = true;
-      found += mine.length;
-      // Greedy one-to-one, using `score.ts`'s OWN `spansMatch` rather than a
-      // second inequality written here. The two tables must not be able to
-      // disagree about what a match is, and an inlined `a.start < b.end &&
-      // b.start < a.end` is precisely how they would come to.
-      const takenGold = new Set<number>();
-      let matched = 0;
-      for (const f of mine) {
-        for (let g = 0; g < gold.length; g++) {
-          if (takenGold.has(g)) continue;
-          if (spansMatch("overlap", f, gold[g]!)) {
-            takenGold.add(g);
-            matched += 1;
-            break;
-          }
-        }
-      }
-      tp += matched;
-      fp += mine.length - matched;
-      fn += gold.length - matched;
-    }
-    if (!sawAny) continue;
-    const p = tp + fp === 0 ? undefined : tp / (tp + fp);
-    const r = tp + fn === 0 ? undefined : tp / (tp + fn);
-    const f1 = p === undefined || r === undefined || p + r === 0 ? undefined : (2 * p * r) / (p + r);
+    const row = scoreSpanArm(arm, goldById, entityTypes);
+    if (row === undefined) continue;
+    const { tp, fp, fn } = row.counts;
+    const { precision, recall, f1 } = row.scores;
     rows.push({
-      label: arm.label,
+      label: row.label,
       f1,
-      line: `| ${arm.label} | ${arm.kind} | ${found} | ${tp} | ${fp} | ${fn} | ${fmt(p)} | ${fmt(r)} | ${fmt(f1)} |`,
+      line:
+        `| ${row.label} | ${row.kind} | ${row.findings} | ${tp} | ${fp} | ${fn} | ` +
+        `${fmt(precision)} | ${fmt(recall)} | ${fmt(f1)} |`,
     });
   }
   rows.sort((a, b) => (b.f1 ?? -1) - (a.f1 ?? -1) || a.label.localeCompare(b.label));
@@ -282,8 +276,8 @@ function spanTable(arms: Map<string, ArmRows>): void {
   // eight of them cluster at P~0.36 whatever model they name. Printed in the
   // same table they invite exactly one misreading: that a 2B browser model is
   // within 0.05 of a 120B hosted one at span finding. It is not; tier 0 is.
-  const modelOnly = rows.filter((r) => !/^tier2-|\+tier0-/.test(r.label));
-  const tierAssisted = rows.filter((r) => /^tier2-|\+tier0-/.test(r.label));
+  const modelOnly = rows.filter((r) => !isTierAssisted(r.label));
+  const tierAssisted = rows.filter((r) => isTierAssisted(r.label));
   for (const row of modelOnly) console.log(row.line);
   if (modelOnly.length === 0) console.log("| (no arm emitted an entity finding) | | | | | | | | |");
   if (tierAssisted.length > 0) {
@@ -314,7 +308,7 @@ function transportTable(arms: Map<string, ArmRows>): void {
   );
   console.log(
     `\nTRUNCATION FIRST: an arm with a nonzero \`finish=length\` count was cut off by the ` +
-      `${600}-token \`max_tokens\` and its accuracy row reads "this model with that many answers ` +
+      `${CEILING_ARM_MAX_TOKENS}-token \`max_tokens\` and its accuracy row reads "this model with that many answers ` +
       `truncated", not "this model". \`calls >=${LOCAL_ARM_MAX_TOKENS}\` counts calls that would ` +
       `ALSO have been cut at the browser arms' ${LOCAL_ARM_MAX_TOKENS}; a 0 there means the ` +
       `88-token budget asymmetry between the two experiments was inert for this arm.`,
@@ -328,67 +322,51 @@ function transportTable(arms: Map<string, ArmRows>): void {
       "over a measured token count, NOT a measurement, and it is labelled so.",
   );
   console.log(
+    `\nDECODE RATE, AND WHEN IT IS NOT ONE: the \`decode window p50\` column beside the rate is the ` +
+      `median of \`wallMs - ttftMs\`, the interval the rate is measured over. Where that median is ` +
+      `under ${MIN_DECODE_WINDOW_MS} ms the rate is SUPPRESSED and the cell reads \`not measured\`: at ` +
+      `that scale the figure describes when a server-sent-event frame happened to arrive, not how fast ` +
+      `the model decodes. Measured, not assumed -- \`judge-deepseek-v4-flash-0731 [ceiling-01]\` has a ` +
+      `median window of 9.6 ms, 145 of its 185 streaming calls under 20 ms, a shortest window of ` +
+      `0.174 ms and a largest computed rate of 40,327 tok/s for a seven-token answer. A \`(bias N%)\` ` +
+      `marker is SEPARATE and means something else: a rate over n completion tokens rests on n-1 token ` +
+      `intervals, so one mis-timed interval moves it by 1/(n-1) -- and on every row now in \`runs/\`, ` +
+      `written before \`ceiling.ts\` was corrected on 2026-09-08, that is also the exact amount the old ` +
+      `n/window formula overstated it by. The two guards are ` +
+      `independent -- \`judge-nemotron\` has a sound window and a 16.7% bias, \`judge-glm-5.3-flash\` a ` +
+      `181.5 ms window and a 0.5% one -- so neither substitutes for the other.`,
+  );
+  console.log(
     "| arm | provider (response) | pin honoured | calls | reasoning tok (p50/max) | " +
       "completion tok p50/max | **truncated (finish=length)** | calls >=512 | s @60tok/s | " +
-      "TTFT p50/p95 ms | **non-stream (no TTFT)** | decode tok/s p50 | wall p50/p95 ms | " +
-      "parse fail | repairs | **429s** | other retries | item wall p50 ms | cost $ |",
+      "TTFT p50/p95 ms | **non-stream (no TTFT)** | decode tok/s p50 | **decode window p50 ms** | " +
+      "wall p50/p95 ms | parse fail | repairs | **429s** | other retries | item wall p50 ms | cost $ |",
   );
-  console.log(`|${"---|".repeat(19)}`);
+  console.log(`|${"---|".repeat(20)}`);
   for (const arm of arms.values()) {
-    if (arm.kind !== "ceiling" || arm.ceiling.length === 0) continue;
-    const calls = arm.ceiling.flatMap((r) => r.calls);
-    if (calls.length === 0) continue;
-    const providers = [...new Set(calls.map((c) => c.provider).filter((p): p is string => p !== null))];
-    const pin = arm.ceiling[0]!.requestedProvider;
-    const reasoning = calls.map((c) => c.reasoningTokens).filter((n): n is number => n !== null);
-    const pct = (xs: number[], q: number): number | undefined => {
-      if (xs.length === 0) return undefined;
-      const s = [...xs].sort((a, b) => a - b);
-      return s[Math.min(s.length - 1, Math.floor(q * s.length))];
-    };
-    const ttft = calls.map((c) => c.ttftMs).filter((n): n is number => n !== null);
-    const decode = calls.map((c) => c.decodeTokPerSec).filter((n): n is number => n !== null);
-    const wall = calls.map((c) => c.wallMs);
-    const cost = calls.reduce((n, c) => n + (c.costUsd ?? 0), 0);
-    const completion = calls.map((c) => c.completionTokens).filter((n): n is number => n !== null);
-    const medianCompletion = pct(completion, 0.5);
-    // `finish_reason: "length"` is the provider stating that IT cut the answer
-    // off. An arm with a nonzero count here is not measured cleanly at this
-    // cap, and its F1 is "this model with N% of its answers truncated".
-    const truncated = calls.filter((c) => c.finishReason === "length").length;
-    // How many calls would have been cut short at the LOCAL arms' 512 but were
-    // not here. Zero means the 88-token budget asymmetry was inert for this arm
-    // -- the strongest available statement that the two caps are comparable.
-    const atLocalCap = completion.filter((n) => n >= LOCAL_ARM_MAX_TOKENS).length;
-    // 429s are broken out from other retries because they are the ones that
-    // contaminate a naive latency reading: they are the provider throttling,
-    // not the model thinking. They cost nothing (a 429 is unbilled) and they
-    // change no finding, so they belong beside the latency columns and not in
-    // the accuracy discussion.
-    const allRetries = calls.flatMap((c) => c.retries);
-    const rateLimited = allRetries.filter((r) => r.status === 429).length;
-    const otherRetries = allRetries.length - rateLimited;
-    // The record's own top-level wallMs: end to end, backoff included. Printed
-    // beside the per-attempt figures so the gap between them is visible.
-    const itemWall = arm.ceiling.map((r) => r.wallMs);
-    // Calls that fell back to the non-streaming path after a stream timeout.
-    // They carry NO ttft and NO decode rate by construction, so they are absent
-    // from those two percentiles above -- stating how many were excluded is the
-    // difference between a percentile over 155 calls and one silently over 189.
-    const fellBack = calls.filter((c) => c.transport === "non-stream-fallback").length;
+    if (arm.kind !== "ceiling") continue;
+    const t = transportRow(arm);
+    if (t === undefined) continue;
+    const d = t.decode;
+    const decodeCell = d.suppressed
+      ? `**not measured**`
+      : `${fmt(d.tokPerSecP50, 1)}${d.biased ? ` (bias ${(100 * d.biasAtMedianN!).toFixed(1)}%)` : ""}`;
+    const windowCell =
+      d.windowMsP50 === undefined
+        ? "—"
+        : `${d.windowMsP50.toFixed(1)}${d.shortWindowCalls > 0 ? ` (${d.shortWindowCalls}/${d.streamingCalls} <${MIN_DECODE_WINDOW_MS / 5}ms)` : ""}`;
     console.log(
-      `| ${arm.label} | ${providers.join("|") || "—"} | ${providers.every((p) => p === pin) ? "yes" : "**NO**"} | ` +
-        `${calls.length} | ${fmt(pct(reasoning, 0.5), 0)}/${reasoning.length ? Math.max(...reasoning) : "—"} | ` +
-        `${fmt(medianCompletion, 0)}/${completion.length ? Math.max(...completion) : "—"} | ` +
-        `${truncated}${truncated > 0 ? ` (**${((100 * truncated) / calls.length).toFixed(1)}%**)` : ""} | ` +
-        `${atLocalCap} | ` +
-        `${fmt(medianCompletion === undefined ? undefined : medianCompletion / 60, 2)} | ` +
-        `${fmt(pct(ttft, 0.5), 0)}/${fmt(pct(ttft, 0.95), 0)} | ${fellBack}${fellBack > 0 ? ` (${((100 * fellBack) / calls.length).toFixed(0)}%)` : ""} | ` +
-        `${fmt(pct(decode, 0.5), 1)} | ` +
-        `${fmt(pct(wall, 0.5), 0)}/${fmt(pct(wall, 0.95), 0)} | ` +
-        `${arm.ceiling.reduce((n, r) => n + r.parseFailures, 0)} | ` +
-        `${arm.ceiling.reduce((n, r) => n + r.repairs, 0)} | ` +
-        `${rateLimited} | ${otherRetries} | ${fmt(pct(itemWall, 0.5), 0)} | ${cost.toFixed(5)} |`,
+      `| ${t.label} | ${t.providers.join("|") || "—"} | ${t.pinHonoured ? "yes" : "**NO**"} | ` +
+        `${t.calls} | ${fmt(t.reasoningP50, 0)}/${t.reasoningMax ?? "—"} | ` +
+        `${fmt(t.completionP50, 0)}/${t.completionMax ?? "—"} | ` +
+        `${t.truncated}${t.truncated > 0 ? ` (**${((100 * t.truncated) / t.calls).toFixed(1)}%**)` : ""} | ` +
+        `${t.atLocalCap} | ` +
+        `${fmt(t.completionP50 === undefined ? undefined : t.completionP50 / 60, 2)} | ` +
+        `${fmt(t.ttftP50, 0)}/${fmt(t.ttftP95, 0)} | ${t.fellBack}${t.fellBack > 0 ? ` (${((100 * t.fellBack) / t.calls).toFixed(0)}%)` : ""} | ` +
+        `${decodeCell} | ${windowCell} | ` +
+        `${fmt(t.wallP50, 0)}/${fmt(t.wallP95, 0)} | ` +
+        `${t.parseFailures} | ${t.repairs} | ${t.rateLimited} | ${t.otherRetries} | ` +
+        `${fmt(t.itemWallP50, 0)} | ${t.costUsd.toFixed(5)} |`,
     );
   }
 }
