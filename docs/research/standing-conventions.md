@@ -168,3 +168,35 @@ The rules that follow:
   `iou50` all gave 0.571 here. That is not robustness; it means the rules carry no information on
   this data (gold predicate spans *are* capitalised organisation names, so a reader either hits one
   exactly or misses entirely). Identical columns are a signal to ask what the columns are doing.
+
+## 10. Assert the value that gets USED, not the value a function returns
+
+The same defect escaped three fixes in this project, on 2026-09-06/08, and each fix was a
+reasonable-looking response to the previous failure:
+
+1. A ledger filename was built inline from the base run id. It overwrote a completed run's ledger —
+   768 calls and $0.19269 replaced by a 403-call partial, eight seconds into a relaunch.
+2. Fix 1 pinned the id-arithmetic helper (`passRunIdFor`) with a test. **The call site survived a
+   mutant.**
+3. Fix 2 extracted `spendLedgerFileFor` so "the wiring is what gets asserted". **The call site
+   survived again** — the wiring lived in a script file that ends in `await main()` and exports
+   nothing, so no test could import it. All 29 mutants planted in the three such files survived.
+4. The obvious fix — extract a pure `resolveRunPlan` from `main()` — **would have failed the same
+   way a third time.** It kills a mutant that changes the derivation, but not one that *ignores the
+   returned value* and rebuilds the wrong string at the point of use. `resolveRunPlan` keeps
+   returning the right answer and nothing consumes it.
+
+What finally worked: make the **consumer** an injected dependency, so the test observes the value
+that actually arrived at the write.
+
+The rule: **when the defect is "nobody uses the return value", no test of the returning function can
+catch it.** Ask what the wrong behaviour would look like from the outside — a file written under the
+wrong name — and assert *that*, not the string a helper hands back.
+
+Two structural corollaries:
+
+- **A module that exports nothing is a module with no tests.** A script ending in a top-level
+  `main()` is untestable by construction, however clean the functions inside it are. Split it into
+  an importable module plus a thin shim before writing the first test.
+- **Extraction moves the boundary; it does not close it.** After extracting, plant the mutant at the
+  new call site and confirm it dies. If it survives, the extraction bought nothing.

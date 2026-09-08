@@ -1220,7 +1220,7 @@ declared separately in a cleanup commit and is **not** part of this change.
 - The corpus's known open leak (12 fragments in `families.v2.ts` decide every label) is unchanged
   and bears on these numbers exactly as it bears on the local arms'.
 
-### 11.1 The ledger fix is still not tested at the site that broke
+### 11.1 The ledger fix was not tested at the site that broke — now it is, and the fix took three tries
 
 `fd2087a` extracted `spendLedgerFileFor` so the ledger filename would be pinned by a test. **The
 function is pinned; the call site is not.** Reverting `ceiling-main.ts:308` from
@@ -1233,7 +1233,41 @@ path with md5 confirmed returned.
 are now killed." That is wrong.** Only the second is. The extraction moved the boundary up one
 layer and did not close it.
 
-The cause is structural: `ceiling-main.ts`, `ceiling-score.ts` and `ceiling-ledger.ts` each end in a
+**RESOLVED.** `ceiling-main.ts` is now a 17-line shim; `main()` moved to `ceiling-run.ts`, which
+exports its decisions and takes an injectable deps bag. A new `ceiling-main.test.ts` adds 48 tests
+(suite 804 → 852). Both mutants now exit 1, verified independently after the patch landed, with the
+file restoring byte-identical.
+
+**It took three attempts, and the third one is the lesson.**
+
+1. `fd2087a` pinned `passRunIdFor`. The call site survived.
+2. `fd2087a`'s follow-up extracted `spendLedgerFileFor` so "the WIRING is what gets asserted". The
+   call site *still* survived, because the wiring lives in a file no test can import — the finding
+   that opened this section.
+3. Extracting a pure `resolveRunPlan` from `main()` was the obvious next move and **would have
+   failed the same way again.** It kills the mutant as literally written, but not the one that
+   *ignores the returned value* and rebuilds `` `ceiling-${runId}.spend.json` `` at the point of
+   use — which is the live defect's actual shape. That mutant is invisible to every test of
+   `resolveRunPlan`, because `resolveRunPlan` keeps returning the right string and **nothing
+   consumes it.**
+
+What finally kills it is `writeSpend` being an **injected dependency**, so a test reads the filename
+each write actually received. Three iterations of the same error: *asserting the value a function
+returns, when the defect is that nobody uses the return value.* Standing-conventions §2 now carries
+this explicitly.
+
+Behaviour is unchanged and that was measured, not asserted: the HEAD driver and the refactored
+driver were run end to end against an identical fake OpenRouter, fake clock and fake `Date` across
+**7 scenarios** — multi-pass with `PASS_START`, probe-only, probe-parses-zero, guard trip during the
+probe, the later-pass gate, mid-arm trip plus the between-arms `break`, and pin + thinking + custom
+run id. Every console line, every `runs/` file and the chat-call count are **byte-identical**.
+
+One live operator footgun was found and pinned in passing: a `SIH_CEILING_RUN_ID` that already
+carries a pass suffix has its number discarded, so relaunching as `ceiling-02` **without**
+`SIH_CEILING_PASS_START=2` still writes `ceiling-01.*` and the original destructive ledger path.
+Documented as intended at `ceiling.ts:255-265`; there was no test, and now there is.
+
+The cause was structural: `ceiling-main.ts`, `ceiling-score.ts` and `ceiling-ledger.ts` each end in a
 top-level `main()` and **export nothing**, and `apps/eval/test/ceiling.test.ts` imports only
 `../src/driver/ceiling.js`. Nothing in the workspace imports the three scripts; they are reachable
 only through their `pnpm` aliases. **All 29 mutants planted across those three files survived**,
