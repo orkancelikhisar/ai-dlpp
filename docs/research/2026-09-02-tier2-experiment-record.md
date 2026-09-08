@@ -1481,8 +1481,20 @@ statistic.**
    stricter one.** Scored span-wise (as §9 there does), the ceiling arms land in the
    neighbourhood of the trivial capitalisation floor (0.571) and do not clearly separate
    from it. Scored on the **message-level boolean the predicate gold actually records**,
-   the best compiled judge does separate: **0.905 and 0.811 against a 0.776 floor**, with
-   perfect recall and 4 false positives on 179 messages. See that document's §7.5. Pass 1's best thinking-off
+   the best compiled judge does separate, and so does the whole ordering. On the same 179
+   rows: **best local (in-browser 2–4 B) 0.275 < trivial floor 0.776 < best ceiling
+   (hosted 30–120 B) 0.905**, the ceiling arm holding perfect recall with 4 false
+   positives. The mechanism is precision — local arms over-fire badly (no local arm
+   exceeds precision 0.25; `Phi-4-mini` reaches recall 0.895 with 108 false positives),
+   which is §5d's "right region, wrong label" and is what disappears at scale.
+
+   **The two metrics answer spec §4.2b oppositely, and this is the open question.**
+   Span-wise the ceiling arms stop at the floor, so the browser constraint looks like it
+   is not what costs accuracy; message-wise they clear it while the local arms do not, so
+   the gap **is** substantially the price of the in-browser constraint. Both are computed
+   from the same rows and the same gold. See that document's §7.5, including the caveat
+   that the floor's perfect message-level recall is partly the corpus's known
+   12-fragment leak. Pass 1's best thinking-off
    arm scored 0.565 (−0.006); pass 2's same arm scored 0.615 (+0.044) at `temperature: 0`,
    with three items changing hands on a 19-positive gold. Pass-to-pass variance exceeds the
    distance to the floor, so this sample does not separate them. Against the *local* arms

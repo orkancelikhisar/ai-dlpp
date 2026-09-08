@@ -464,9 +464,47 @@ nine entity classes and rarely names the predicate at all.
   (12 fragments in `families.v2.ts`). The floor cannot miss. That inflates the floor and makes the
   best arm's margin *harder* to achieve, not easier — but it also means neither number transfers to
   a corpus without that property.
-- The local bake-off's predicate figure (0.197, used for the "2.87×" claim) was computed span-wise
-  too. **It has not been recomputed at message level**, so the local-vs-ceiling ratio in §10.1 is
-  not comparable to this table and no ratio is quoted from it here.
+**The local arms, recomputed at message level on the same rows.** The 32 in-browser arms that ran
+against the v2 corpus (`slate-corpus-01*`, `slate-rebuild-01*`) all cover the full 179 scored items,
+so they are directly comparable. Best eight:
+
+| local arm | P | R | F1 | tp / fp / fn |
+|---|---|---|---|---|
+| `tier2-Qwen3-4B` (corpus-01c) | 0.169 | 0.737 | **0.275** | 14 / 69 / 5 |
+| `tier2only-Qwen3-4B` (corpus-01c) | 0.161 | 0.737 | 0.264 | 14 / 73 / 5 |
+| `tier2-Qwen3-4B` (rebuild-01c) | 0.190 | 0.421 | 0.262 | 8 / 34 / 11 |
+| `tier2-Phi-4-mini` (rebuild-01c) | 0.136 | 0.895 | 0.236 | 17 / 108 / 2 |
+| `tier2-Ministral-3-3B` (rebuild-01) | 0.250 | 0.211 | 0.229 | 4 / 12 / 15 |
+| `tier2only-Qwen3-4B` (rebuild-01c) | 0.154 | 0.421 | 0.225 | 8 / 44 / 11 |
+| `tier2only-Phi-4-mini` (rebuild-01c) | 0.124 | 0.895 | 0.218 | 17 / 120 / 2 |
+| `tier2-Qwen3.5-2B` (corpus-01) | 0.140 | 0.421 | 0.211 | 8 / 49 / 11 |
+
+**The three-way comparison, all on the same 179 items:**
+
+| | message-level F1 |
+|---|---|
+| best **local**, in-browser 2–4 B | **0.275** |
+| trivial **floor**, `capitalised-multiword` | **0.776** |
+| best **ceiling**, hosted 30–120 B | **0.905** |
+
+**This inverts §10.1's answer.** Span-wise, the local arms are far below the floor and the ceiling
+arms sit level with it, which is what produced *"the browser constraint is not what is costing
+accuracy."* Message-wise, the local arms are still far below the floor — **and the ceiling arms are
+clearly above it.** On the question spec §4.2b was written to settle, the message-level reading says
+the gap **is** substantially the price of the in-browser constraint.
+
+The mechanism is precision, not recall. The local arms **over-fire**: `Phi-4-mini` reaches recall
+0.895 with **108 false positives** on 179 messages, and no local arm exceeds precision 0.25. The
+floor gets 0.633. The best ceiling arm gets **0.826 with perfect recall**. That is the same "right
+region, wrong label" failure §5d found locally, and it is what disappears at 30–120 B.
+
+**Caveats that bound this, and they are real.** The floor's perfect message-level recall is partly
+the corpus's known 12-fragment leak — every positive contains a capitalised organisation name, so
+the floor cannot miss, and none of these numbers transfers to a corpus without that property. The
+local arms ran in a different harness (Playwright + WebLLM) from the hosted arms, though against the
+same corpus, the same gold and the same `pred:`-emitted decision rule. And 0.905 is one arm on one
+pass of a 19-positive gold; §10.1's variance warning applies to it exactly as it applies to the
+span-wise figures.
 
 **What follows.** §9.1 should report both metrics side by side, and §10.1's answer differs by which
 one is asked: span-wise, the ceiling arms sit in the floor's neighbourhood; message-wise, the best
@@ -707,7 +745,10 @@ solved decisively by any of these methods.
 > scored span-wise here, and on the judgment the gold actually records, **both** DeepSeek judge
 > passes beat the floor — 0.905 and 0.811 against 0.776. The span-wise tie is real and so is the
 > message-level separation; they say different things about the same rows, and "the task itself is
-> not being solved by any of these methods" is not supportable as written.
+> not being solved by any of these methods" is not supportable as written. §7.5 goes further: with
+> the local arms recomputed on the same 179 rows, the message-level ordering is **local 0.275 <
+> floor 0.776 < ceiling 0.905**, which *inverts* this section's answer to spec §4.2b — on that
+> reading the gap **is** substantially the price of the in-browser constraint.
 
 ### 2. Compiled (judge) or prompting (B) at the ceiling — and does it differ from the local result?
 
