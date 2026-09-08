@@ -424,14 +424,36 @@ item-wall figures are not** — they are a statement about the provider's rate l
 about the model. The per-call wall p50/p95 columns beside them are unaffected and are the ones to
 quote for model latency.
 
-**What this table is not.** The floor is a deterministic function of the text and would also be
-evaluated on a different subset if the arm's subset were used; these attempted-only figures compare
-an adjusted arm against an **unadjusted** 0.571 floor and are therefore **not yet like-for-like**.
-The correct fix is to score each arm, and every floor, over the intersection of items that arm
-actually answered — reported *beside* the whole-gold numbers, never instead of them, since the
-unanswered rows are a real cost of running against a rate-limited hosted provider and should not be
-defined away. That change is not in this document's numbers; it is queued with the other scorer
-work in §11.2, and every figure above is the as-published scoring unless the row says otherwise.
+**IMPLEMENTED — and the correct figures are not the ones above.** The two rows above adjust the arm
+against an **unadjusted** 0.571 floor, which is not like-for-like: the floor is a deterministic
+function of the text and moves when the item subset moves. `ceiling-score.ts` now re-scores **each
+arm and every floor** over the intersection of items that arm answered, printed beside the whole-gold
+columns and never instead of them. Measured:
+
+| arm | unanswered | of those positive | whole-gold F1 / floor | attempted-only F1 / floor | Δ |
+|---|---|---|---|---|---|
+| `judge-deepseek [ceiling-01]` | 4 | **1** | 0.565 / 0.571 — **below** | **0.578 / 0.565 — above** | +0.013 |
+| `judge-deepseek [ceiling-02]` | 1 | 0 | 0.615 / 0.571 | 0.615 / 0.571 | +0.000 |
+| `judge-deepseek [ceiling-03]` | 1 | 0 | 0.627 / 0.571 | 0.627 / 0.571 | +0.000 |
+| `judge-nemotron [ceiling-02]` | 21 | 1 | 0.357 / 0.571 | 0.370 / 0.578 | +0.013 |
+| `judge-nemotron [ceiling-03]` | 19 | 2 | 0.222 / 0.571 | 0.240 / 0.548 | +0.018 |
+
+The scorer prints, in its own words: *"arms whose verdict against the floor CHANGES under
+attempted-only scoring: `ceiling-judge-deepseek-v4-flash-0731 [ceiling-01]`"*.
+
+**So all three passes clear the floor** once arms stop being charged for items the provider never
+served — and the honest gap for pass 1 is **+0.013**, not the **+0.006** the not-like-for-like
+estimate above implies. The estimate was wrong in the *conservative* direction: the correct floor
+over those 175 rows is **0.565**, lower than 0.571, because removing four items removes floor
+findings too.
+
+**The local arms are affected far more than the ceiling arms, and that matters to every
+local-vs-ceiling ratio in this document.** `tier2-Qwen3-4B` has **70 unanswered rows, 10 of them
+gold positives** — against the ceiling arms' 1 to 21 — because the local bake-off exhausted its
+5,000 ms per-message budget rather than hitting a rate limit. Under attempted-only scoring it moves
+0.197 → 0.235. Both causes are real costs of their respective deployments and neither is defined
+away; but a comparison that charges one side for 4 unattempted items and the other for 70 is not
+measuring only capability.
 
 ---
 
