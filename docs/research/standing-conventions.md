@@ -131,3 +131,40 @@ builder throw on divergence.
 - A trivial orthographic reader is competitive with every local arm. **No arm figure is quoted
   without the floor beside it.** The overlap figure is definition-sensitive (78–89% pooled
   depending on the rule; the judge-only arms range 14–80%); state the definition.
+
+## 9. Score at the granularity the gold actually records
+
+Found on 2026-09-08, while re-deriving a floor to check it. It changed the ceiling arm's
+central conclusion, and nothing in the test suite could have surfaced it.
+
+The tier-2 predicate gold carries **179 message-level booleans and 19 spans**: the blind round
+asked annotators one question per message, and the spans are supplementary. The scorer's table,
+labelled "predicate level", paired a finding's **span** against a gold **span** — so an arm that
+correctly identified a disclosing message but pointed at the wrong phrase took a false positive
+*and* a false negative. Both metrics are legitimate. Only one of them is the judgment the
+annotators were actually asked for, and the document presented the other as though it were.
+
+The two disagree about the experiment's headline question. Span-wise: local 0.197 < floor 0.571 ≈
+ceiling 0.565, so scale does not get you past a regex. Message-wise, same rows and same gold:
+local 0.275 < floor 0.776 < **ceiling 0.905**, so scale clearly does. One of those says the
+in-browser constraint is not what costs accuracy; the other says it substantially is.
+
+The rules that follow:
+
+- **Identify the gold's native unit before choosing a metric.** Count the annotations. If there are
+  179 of one kind and 19 of another, the first one is the primary label and the second is
+  supplementary.
+- **A stricter metric is not automatically the honest one.** Requiring a span match on a
+  message-level label is a real and defensible requirement — pseudonymisation needs the span — but
+  it is a *different question*, and reporting it alone silently answers the easier question with
+  the harder one's number.
+- **When both are meaningful, report both, side by side, and say which one each conclusion rests
+  on.** If they disagree, that disagreement is a finding, not a problem to resolve by picking one.
+- **Re-derive a floor independently before building a conclusion on it.** The 0.571 floor
+  reproduced exactly (tp 14, fp 16, fn 5) — the check that confirmed it was sound is the same check
+  that exposed the metric mismatch, because the message-level reimplementation scored 0.776 on
+  identical inputs and the gap demanded an explanation.
+- **Be suspicious when several matching rules return identical numbers.** `exact`, `overlap` and
+  `iou50` all gave 0.571 here. That is not robustness; it means the rules carry no information on
+  this data (gold predicate spans *are* capitalised organisation names, so a reader either hits one
+  exactly or misses entirely). Identical columns are a signal to ask what the columns are doing.
