@@ -1296,6 +1296,13 @@ residual, and it is the reason the residual is larger here than in §8.3.
 which $0.02832 is the destroyed probe ledger and the rest is diagnostic `curl` traffic plus the
 inter-run gaps. Positive, as §8.3's corrected sign predicts.
 
+**That reading is the last one there will ever be.** The key was revoked on 2026-09-08 after the
+experiment closed, and the local copy was destroyed. Re-running `ceiling:ledger` now re-derives
+`ledgerTotalUsd` from the seven files exactly as before, and reports `keyUsageFinalUsd: null` with
+`keyReadIsPointInTime: false` — a **null, never a zero** — which is the documented and tested
+behaviour for a key that cannot be read. The $1.29213 above is therefore a recorded fact, not a
+reproducible measurement, and the join's file-derived half is the only half that still reproduces.
+
 Per model, all passes and both families: qwen3.8-27b **$0.357**, nemotron $0.275, qwen3.8-flash
 $0.101, mistral $0.071, glm $0.056, deepseek **$0.041**. The spread is **8.8×** between the cheapest
 and dearest model for identical work.
