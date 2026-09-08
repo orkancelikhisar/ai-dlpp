@@ -1326,6 +1326,40 @@ re-derived and the accuracy, span, transport, token-budget and ledger tables all
 evidence that **the tests would not have caught it if they were**, which is a different and weaker
 guarantee than the 35/35 figure implied.
 
+**RESOLVED, and here is what it cost to resolve.** Three separate campaigns, each with its own
+harness proved honest in both directions (controls run first and last, md5 confirmed changed on
+apply and returned on restore, exit codes read from the process rather than through a pipe):
+
+| file | now | new tests | mutants killed | controls survived |
+|---|---|---|---|---|
+| `ceiling-main.ts` → `ceiling-run.ts` | 17-line shim + importable module | 48 | 23 | 2 |
+| `ceiling-score.ts` / `ceiling-ledger.ts` → `*-lib.ts` | render/I-O shims + libs | 52 | 20 | 3 |
+| `ceiling.ts` (`runCeilingItem`) | fixtures widened | 13 | 27 of 32 | 4 + 1 equivalent |
+
+**Suite 791 → 906.** Every mutant this section named as surviving is now killed, including the
+`provider`-as-fact mutant that made §9's pin claim unfalsifiable, the `?? null → ?? 0` mutants the
+thinking-off claim rests on, and the wire-body mutants that let `thinking` be dropped while the row
+still reported it.
+
+**What is still not covered, stated rather than glossed.** Two shim-level mutants survive — mislabelling
+every ledger segment as `probe`, and inverting the scorer's decode-cell render — because nothing
+imports the shims. Every *decision* was moved out of them, so what remains is small, but small is not
+none. The `ceiling-main.ts` shim itself is likewise uncovered; it is 17 lines that call one function.
+
+**Three of the briefed defects turned out not to be defects**, and that is worth recording as
+plainly as the real ones:
+
+- **K01/K03 were never code defects.** `ceiling-ledger.ts` computed `key − ledger` correctly and
+  derived `guardEverTripped` from the segments all along. **Both sign errors were in this document**
+  (§6 and §8.3), which is a sharper lesson than the one this section originally drew: the code was
+  right and the prose was wrong, and no test could have caught that because prose is not tested.
+- **V01** (floors recomputed per-arm) is a **provably equivalent** mutant on these artifacts — every
+  arm carries a record for all 179 scored rows, so the floor input is identical whichever arm
+  supplies it. It only becomes distinguishable under attempted-only scoring.
+- **Q16** (the wrong family's repair turn) is equivalent too: `judgeRepairTurn` and
+  `baselineRepairTurn` return byte-identical objects. Pinned as an explicit equivalence assertion
+  rather than counted as a kill.
+
 ### 11.3 A docblock that justifies the cost model is arithmetically false
 
 `ceiling.ts:138-141` justifies ordering the slate by a prompt-weighted cost with: *"the unweighted
