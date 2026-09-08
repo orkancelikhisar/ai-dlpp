@@ -1257,7 +1257,7 @@ and dearest model for identical work.
 
 Per family: judge **$0.295**, B **$0.605** — **B costs 2.05× the judge**, which is its 1,410-token
 prompt on every call. Note this is the *cost* ratio; §10.4 shows the *latency* ratio is larger
-(2.1–3.7× on the same model) because B also emits 8–16× more completion tokens.
+(**2.05–3.71×** on the same model) because B also emits **8.3–22.6×** more completion tokens.
 
 **The price-table estimate overshoots the billed figure by 64%** ($1.475 estimated against $0.900
 billed) across all five segments. It feeds the spend guard, where overshooting is the safe
