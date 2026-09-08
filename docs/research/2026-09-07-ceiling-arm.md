@@ -498,6 +498,24 @@ The mechanism is precision, not recall. The local arms **over-fire**: `Phi-4-min
 floor gets 0.633. The best ceiling arm gets **0.826 with perfect recall**. That is the same "right
 region, wrong label" failure §5d found locally, and it is what disappears at 30–120 B.
 
+**The entity path, same treatment.** The other half of what the product decides is *"does this
+message contain a sensitive entity at all"* — the flag-for-action decision, as opposed to which span
+to pseudonymise. 108 of the 189 items carry at least one entity gold span (57.1%), so the trivial
+floors here are strong and must be stated:
+
+| | P | R | F1 |
+|---|---|---|---|
+| FLOOR always-fire | 0.571 | 1.000 | 0.727 |
+| FLOOR any 6+-digit run | 0.740 | 0.343 | 0.468 |
+| FLOOR capitalised-multiword | 0.725 | 0.269 | 0.392 |
+| **best arm** — `ceiling-02 b-deepseek` | **0.832** | **0.870** | **0.851** |
+
+**+0.124 over the strongest floor**, and unlike the predicate table this is the *Approach-B* family
+winning, not the compiled judge. So the two families are **complementary rather than ranked**: B is
+a usable entity detector and a poor predicate detector (§7.5 above); the compiled judge is the
+reverse. That is an argument for the tiered design running both, and it is not visible in either
+span-level table.
+
 **Caveats that bound this, and they are real.** The floor's perfect message-level recall is partly
 the corpus's known 12-fragment leak — every positive contains a capitalised organisation name, so
 the floor cannot miss, and none of these numbers transfers to a corpus without that property. The
