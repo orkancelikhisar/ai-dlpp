@@ -244,9 +244,9 @@ messages**; the compiled judge is asked about one predicate and names it 30 time
 
 **The span ladder placed every finding on both arms of this pair** — 0 unresolved quotes and 0
 unresolved mentions across these 234 findings. It is not clean across the whole slate: pooled over
-all ten pass-1 arms the counts are **2 unresolved quotes** (all in `b-mistral`) and **8 unresolved
-mentions** (`judge-nemotron` 3, `judge-qwen3.8-27b` 2, `judge-qwen3.8-flash` 2, `b-mistral` 1), on
-**1,243 findings**. Approach B also resolves to the whole clause far more often than the judge does
+**all ten arms and all three passes** the counts are **6 unresolved quotes** (all in `b-mistral`)
+and **25 unresolved mentions** (`b-mistral` 9, `judge-nemotron` 7, `judge-qwen3.8-flash` 4,
+`judge-qwen3.8-27b` 4, `b-qwen3.8-flash` 1), on **3,799 findings**. Approach B also resolves to the whole clause far more often than the judge does
 — 157 of the 158 pooled whole-clause mentions are B-family. The local arms do not manage this, and it is worth stating plainly:
 at this model size, quoting a clause verbatim and pointing at a shorter span inside it is a solved
 problem. Whatever is going wrong is not span extraction.
@@ -771,8 +771,9 @@ destroying its own input. Window 2 was rebuilt from the segment preserved inside
 `runs/ceiling-combined.spend.json` (a ledger segment carries every field of the ledger file it came
 from, plus three the joiner adds), and the killed partial was moved to
 `runs/orphaned/killed-pass2-launch.ceiling-ceiling-01.spend.json` rather than deleted. The four
-files on disk now re-derive **2,461 calls / $0.386071** — the committed total — so the documented
-command reproduces the documented number again. The code defect behind the collision is fixed in
+files on disk again re-derive **2,461 calls / $0.386071**, the committed pass-1 total at the time,
+so the documented command reproduces the documented number. (The joiner has since gained a fifth
+segment for passes 2–3; the current total is **6,217 calls / $0.899876** — §10.6.) The code defect behind the collision is fixed in
 `fd2087a`; §11 records what is still untested about that fix.
 
 ### 8.4 Passes 2 and 3: launched detached, finished clean
@@ -1239,8 +1240,9 @@ to be longer.
 is a finding about the *token budget* meeting mandatory reasoning, not about the mechanism. The
 provider-side json_schema mechanism itself did not fail once in this experiment.
 
-The span ladder was nearly clean: pooled over all ten pass-1 arms, **2 unresolved quotes and 8
-unresolved mentions on 1,243 findings** — 0.8 per 100. (An earlier draft of this line said 0 and 0
+The span ladder was nearly clean: pooled over all ten arms and all three passes, **6 unresolved
+quotes and 25 unresolved mentions on 3,799 findings** — **0.8 per 100**, the same rate pass 1 alone
+gave. (An earlier draft of this line said 0 and 0
 "across every ceiling arm"; that was the DeepSeek pair's figure generalised to the slate.) At this
 model size, quoting a clause verbatim and pointing at a shorter span inside it
 is a solved problem. Whatever is failing, it is not span extraction — which restates the local
