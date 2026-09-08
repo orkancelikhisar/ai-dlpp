@@ -1599,10 +1599,21 @@ artifact**. None of them is used anywhere above.
 8. **`+0.4352` as the before-corpus own-type contextBoost delta** (published in the
    manifest verdict and in `3300b93`'s message). Re-computed value: **0.39815**; 0.43519
    is that corpus's own-type *rate*. See §8.9.
-9. **Which commit produced any given run.** No run record names a code revision, and the
-   `slate-p-fin-02` mtime precedes the commit that introduced a field its records carry
-   (§3.6). The ~81-token prompt shift between `slate-p-fin-02` and `slate-p-fin-03` is
-   unexplained by any commit in the interval.
+9. **Which commit produced any given run.** No *local* run record names a code revision,
+   and the `slate-p-fin-02` mtime precedes the commit that introduced a field its records
+   carry (§3.6). The ~81-token prompt shift between `slate-p-fin-02` and `slate-p-fin-03`
+   is unexplained by any commit in the interval. **Still unresolved for every local run,
+   and unresolvable — the information was never recorded.**
+
+   **Fixed going forward, and the ceiling arm is the first run that has it.** Every
+   `CeilingRecord` carries `gitSha` and `gitDirty`, captured once at launch by
+   `gitProvenance()` and stamped on every row, so each of the 5,580 thinking-off rows
+   names the revision that produced it (`8c4fc8b` for passes 2–3, `bbdbfb1` for pass 1).
+   Two limits, stated because a reader will otherwise over-trust the field: it records the
+   state **at launch**, not throughout — a tree edited mid-run still reports the launch
+   value — and `gitDirty: false` means only that `git status --porcelain` was empty then.
+   The driver has no dynamic imports, so every module is read and cached at startup and
+   the sha is genuinely the code that ran. See `2026-09-07-ceiling-arm.md` §11.4.
 10. **"13 of 24 confusable families in the v1 corpus were 1:1 with an IR counterExample
     surface."** Stated in the docblocks of `apps/eval/src/corpus/families.v2.ts:65` and
     `apps/eval/src/corpus/leakage.ts:776`. The check is a comparison of hand-written
