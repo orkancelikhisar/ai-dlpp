@@ -52,7 +52,12 @@ export const LEDGER_SEGMENTS: readonly LedgerSegmentSpec[] = [
   {
     file: "ceiling-ceiling-01.spend.json",
     name: "ceiling-01 window 2",
-    note: "Arms 8-10 plus a re-run of the nemotron judge arm, under the same runId, pins and request body as window 1.",
+    note: "Arms 8-10 plus a re-run of the nemotron judge arm, under the same runId, pins and request body as window 1. DESTROYED and restored: the pass-2 launch overwrote this file before the ledger-path fix landed, replacing 768 calls / $0.19269 with a 489-call partial. Rebuilt from the segment preserved inside the joined file; the partial is kept at runs/orphaned/killed-pass2-launch.ceiling-ceiling-01.spend.json.",
+  },
+  {
+    file: "ceiling-ceiling-02.spend.json",
+    name: "ceiling-02 + ceiling-03",
+    note: "Passes 2 and 3, one launch at passStart=2, relaunched detached after a session crash killed pass 1's supervising agents. Same pins, request body and thinking-off condition as pass 1; 10 of 10 arms written in each pass, guard never tripped, clean finish. This is the launch whose ledger filename proves the fd2087a fix: it wrote ceiling-ceiling-02.spend.json and left pass 1's file alone.",
   },
 ];
 

@@ -1238,7 +1238,9 @@ finding that *the binding constraint is classification, not span extraction*, no
 
 ### 6. Spend
 
-**$0.386 total against a $10 key limit and a $7.00 hard stop. The guard never tripped.**
+**$0.900 total for the whole thinking-off experiment against a $10 key limit and a $7.00 hard stop.
+The guard never tripped.** An earlier draft of this section totalled $0.386 — that was pass 1 alone,
+before passes 2–3 existed and before their segment was added to the joiner.
 
 | segment | calls | cost |
 |---|---|---|
@@ -1246,11 +1248,21 @@ finding that *the binding constraint is classification, not span extraction*, no
 | `ceiling-01` window 1 (arms 1–7) | 1,457 | $0.13645 |
 | `glmon-01` (GLM thinking on) | 225 | $0.05572 |
 | `ceiling-01` window 2 (arms 8–10) | 768 | $0.19269 |
-| **ledger total** | **2,461** | **$0.38607** |
+| `ceiling-02` + `ceiling-03` (passes 2–3, 20 arms) | 3,756 | $0.51381 |
+| **ledger total** | **6,217** | **$0.89988** |
 
-Per model (thinking-off arms, both families): qwen3.8-27b $0.116, nemotron $0.072, qwen3.8-flash
-$0.032, mistral $0.025, deepseek **$0.013**. Per family: judge $0.074, B $0.184 — **B costs 2.5×
-the judge**, which is its 1,410-token prompt on every call.
+Per model, all passes and both families: qwen3.8-27b **$0.357**, nemotron $0.275, qwen3.8-flash
+$0.101, mistral $0.071, glm $0.056, deepseek **$0.041**. The spread is **8.8×** between the cheapest
+and dearest model for identical work.
+
+Per family: judge **$0.295**, B **$0.605** — **B costs 2.05× the judge**, which is its 1,410-token
+prompt on every call. Note this is the *cost* ratio; §10.4 shows the *latency* ratio is larger
+(2.1–3.7× on the same model) because B also emits 8–16× more completion tokens.
+
+**The price-table estimate overshoots the billed figure by 64%** ($1.475 estimated against $0.900
+billed) across all five segments. It feeds the spend guard, where overshooting is the safe
+direction, and it is useless for budgeting — a run planned from it would reserve nearly twice what
+it needs.
 
 **Final `GET /api/v1/auth/key`: `usage` $0.388698, `limit` $10.** Residual against the ledger is
 **+$0.002626** (the key exceeds the ledgers). Reported with its sign and no story attached:

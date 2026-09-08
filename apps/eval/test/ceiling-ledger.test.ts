@@ -149,9 +149,18 @@ describe("segments are joined once each", () => {
   it("names four distinct files and four distinct segment names", () => {
     // A duplicated entry double-counts its cost and its calls into the total
     // with no visible error. Uniqueness of both keys is the cheapest guard.
-    expect(LEDGER_SEGMENTS).toHaveLength(4);
-    expect(new Set(LEDGER_SEGMENTS.map((s) => s.file)).size).toBe(4);
-    expect(new Set(LEDGER_SEGMENTS.map((s) => s.name)).size).toBe(4);
+    // Uniqueness is derived from the list's own length so a new segment does not
+    // require editing this test -- but the FILE LIST is spelled out, so silently
+    // dropping a segment (which would understate the total with no error) fails.
+    expect(new Set(LEDGER_SEGMENTS.map((s) => s.file)).size).toBe(LEDGER_SEGMENTS.length);
+    expect(new Set(LEDGER_SEGMENTS.map((s) => s.name)).size).toBe(LEDGER_SEGMENTS.length);
+    expect(LEDGER_SEGMENTS.map((s) => s.file)).toEqual([
+      "ceiling-probe.spend.json",
+      "ceiling-ceiling-01.part1.spend.json",
+      "ceiling-glmon-01.spend.json",
+      "ceiling-ceiling-01.spend.json",
+      "ceiling-ceiling-02.spend.json",
+    ]);
   });
 
   it("sums each segment exactly once", () => {
