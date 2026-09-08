@@ -273,6 +273,16 @@ export interface RunPlan {
   readonly ledgerFile: string;
   /** One id per pass this process will write, in order. */
   readonly passRunIds: string[];
+  /**
+   * The completion ceiling every call in this run is made under.
+   *
+   * Overridable because a thinking-ON phase CANNOT be measured at the
+   * thinking-off value: GLM-5.3-flash truncated 22% of its answers at 600, and
+   * every one of its eight missed gold positives was on a truncated call. The
+   * doc's Sec 7.2 asks for a uniformly larger ceiling (8,192) applied to every
+   * model. Every row records the value it actually ran at.
+   */
+  readonly maxTokens: number;
 }
 
 /**
@@ -291,6 +301,14 @@ export function resolveRunPlan(bag: Record<string, string | undefined>): RunPlan
   const only = readEnv(bag, "SIH_CEILING_MODELS")?.split(",").map((s) => s.trim());
   const thinking: ThinkingRequest = readEnv(bag, "SIH_CEILING_THINKING") === "on" ? "on" : "off";
   const passStart = Number(readEnv(bag, "SIH_CEILING_PASS_START") ?? "1");
+  const rawMaxTokens = readEnv(bag, "SIH_CEILING_MAX_TOKENS");
+  const maxTokens = rawMaxTokens === undefined ? MAX_TOKENS : Number(rawMaxTokens);
+  // Rejected rather than coerced: a typo silently becoming NaN would be sent as
+  // `max_tokens: null` and every arm would run at the provider's own default,
+  // which differs per provider and is not recorded anywhere.
+  if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
+    throw new Error(`SIH_CEILING_MAX_TOKENS must be a positive integer; got ${JSON.stringify(rawMaxTokens)}`);
+  }
   const repinned = applyPinOverrides(CEILING_MODELS, readEnv(bag, "SIH_CEILING_PIN"));
   const slate = only === undefined ? repinned : repinned.filter((m) => only.includes(m.id));
   if (slate.length === 0) throw new Error(`SIH_CEILING_MODELS matched no model on the slate`);
@@ -303,6 +321,7 @@ export function resolveRunPlan(bag: Record<string, string | undefined>): RunPlan
     thinking,
     passStart,
     slate,
+    maxTokens,
     ledgerFile: spendLedgerFileFor(runId, passStart),
     passRunIds: Array.from({ length: passes }, (_, i) => passRunIdFor(runId, i + 1, passStart)),
   };
@@ -476,7 +495,7 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
     throw new Error("OPENROUTER_API_KEY is not set; the ceiling arm reads its key from the environment only");
   }
   const plan = resolveRunPlan(deps.env);
-  const { runId, passes, probeOnly, limit, thinking, passStart, slate, ledgerFile } = plan;
+  const { runId, passes, probeOnly, limit, thinking, passStart, slate, ledgerFile, maxTokens } = plan;
 
   const { gitSha, gitDirty } = deps.gitProvenance();
   const { ir, irHash } = deps.loadIr();
@@ -503,8 +522,8 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
       `git=${gitSha.slice(0, 12)}${gitDirty ? "+dirty" : ""}`,
   );
   deps.log(
-    `[ceiling] max_tokens=${MAX_TOKENS} (local arms run at ${LOCAL_ARM_MAX_TOKENS}; ` +
-      `+${MAX_TOKENS - LOCAL_ARM_MAX_TOKENS} favouring this arm)\n` +
+    `[ceiling] max_tokens=${maxTokens} (local arms run at ${LOCAL_ARM_MAX_TOKENS}; ` +
+      `+${maxTokens - LOCAL_ARM_MAX_TOKENS} favouring this arm)\n` +
       `[ceiling] key usage=$${keyAtStart.usage.toFixed(4)} limit=${keyAtStart.limit === null ? "none" : `$${keyAtStart.limit}`} ` +
       `hard stop=$${SPEND_HARD_STOP_USD}`,
   );
@@ -552,7 +571,7 @@ export async function runCeiling(overrides: Partial<CeilingRunDeps> = {}): Promi
       policyText,
       item,
       runId: thisRunId,
-      maxTokens: MAX_TOKENS,
+      maxTokens,
       localArmMaxTokens: LOCAL_ARM_MAX_TOKENS,
       // The bake-off's own default destination provider, so an action resolved
       // here matches an action resolved in the browser arms.

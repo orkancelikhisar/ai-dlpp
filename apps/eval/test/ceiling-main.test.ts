@@ -656,6 +656,39 @@ describe("runCeiling wiring", () => {
     expect(h.seen.runItem.every((o) => o.maxTokens !== o.localArmMaxTokens)).toBe(true);
   });
 
+  it("sends the OVERRIDDEN token ceiling all the way to every call, not just to the plan", async () => {
+    // Sec 7.2: a thinking-ON phase cannot be measured at 600 -- GLM truncated 22%
+    // of its answers there, and all eight of its missed gold positives were on
+    // truncated calls. The override exists for that run.
+    //
+    // Asserted at `runItem`, NOT at `resolveRunPlan`, deliberately. A mutant that
+    // resolves the value correctly and then passes the constant at the call site
+    // is exactly the shape that survived three fixes of the ledger defect --
+    // see standing-conventions Sec 10.
+    const h = ceilingHarness({ SIH_CEILING_MODELS: ONE_MODEL, SIH_CEILING_MAX_TOKENS: "8192" });
+    await runCeiling(h.deps);
+    expect(h.seen.runItem.length).toBeGreaterThan(0);
+    expect(h.seen.runItem.every((o) => o.maxTokens === 8192)).toBe(true);
+    // The local-arm figure is a fact about the browser arms and must NOT move with it.
+    expect(h.seen.runItem.every((o) => o.localArmMaxTokens === 512)).toBe(true);
+    expect(h.seen.logs.some((l) => l.includes("max_tokens=8192"))).toBe(true);
+  });
+
+  it("REFUSES a malformed token ceiling rather than sending max_tokens: null", async () => {
+    // Number("8k") is NaN, which serialises to null and makes every arm run at
+    // whatever default its provider happens to use -- unrecorded, and different
+    // per provider. Failing loudly is the only safe behaviour.
+    for (const bad of ["8k", "", "0", "-1", "1.5", "abc"]) {
+      const bag = { SIH_CEILING_MODELS: ONE_MODEL, SIH_CEILING_MAX_TOKENS: bad };
+      if (bad === "") {
+        // An empty value reads as "unset" and must fall back to the default.
+        expect(resolveRunPlan({ ...bag }).maxTokens).toBe(600);
+        continue;
+      }
+      expect(() => resolveRunPlan({ ...bag })).toThrow(/SIH_CEILING_MAX_TOKENS/);
+    }
+  });
+
   it("requests thinking OFF by default and ON only when asked", async () => {
     const off = ceilingHarness({ SIH_CEILING_MODELS: ONE_MODEL });
     await runCeiling(off.deps);
