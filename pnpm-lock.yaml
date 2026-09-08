@@ -29,6 +29,9 @@ importers:
         specifier: ^4.0.0
         version: 4.4.3
     devDependencies:
+      '@mlc-ai/web-llm':
+        specifier: 0.2.84
+        version: 0.2.84
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.62.1
