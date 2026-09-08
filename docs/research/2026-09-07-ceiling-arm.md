@@ -695,6 +695,34 @@ files on disk now re-derive **2,461 calls / $0.386071** — the committed total 
 command reproduces the documented number again. The code defect behind the collision is fixed in
 `fd2087a`; §11 records what is still untested about that fix.
 
+### 8.4 Passes 2 and 3: launched detached, finished clean
+
+Relaunched after a session crash killed the four agents supervising pass 1. `SIH_CEILING_PASS_START=2`,
+`SIH_CEILING_PASSES=2`, `thinking=off`, `temperature: 0`, same pins and same request body as pass 1.
+
+| | |
+|---|---|
+| git at launch | `8c4fc8b`, `gitDirty: false` |
+| arms written | **10 of 10 in each pass**, 189 rows each, 20 files |
+| calls | **3,756** |
+| summed response cost | **$0.51381** |
+| price-table *estimate* | $0.87347 — **70% over** the billed figure |
+| key usage | $0.41335 → $0.91640 (spend **$0.92715** of a $10 key) |
+| spend guard | **never tripped** ($7.00 hard stop) |
+| finish | clean — `keyAtEnd` present, `[ceiling] done` |
+| skips | `glm-5.3-flash` judge and B, both passes, probe parsed 0 of 3 — identical to pass 1 |
+
+**The ledger-path fix worked in production.** The run wrote `runs/ceiling-ceiling-02.spend.json`
+and left pass 1's `runs/ceiling-ceiling-01.spend.json` untouched, which is exactly what `fd2087a`
+was for and exactly what the pre-fix code failed to do. Note that this is the *behaviour* being
+confirmed by a live run, not by a test: §11.1 records that the call site remains untested and the
+mutant reverting it still passes the suite. A green production run is not a substitute for that.
+
+**Two things worth carrying forward.** The price-table estimate overshoots the billed cost by 70%
+(**$0.873 estimated against $0.514 billed**) — safe for a spend *guard*, which is what it feeds, but
+useless for budgeting. And GLM's probe failed identically in all three launches, so its exclusion
+from the thinking-off slate is reproducible rather than a one-off.
+
 ---
 
 ## 9. The table — every arm, both levels, with the floors in it
