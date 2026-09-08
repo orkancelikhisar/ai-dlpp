@@ -189,7 +189,11 @@ export interface BoostReport {
    * definitions, and the reading that asks about surrounding PROSE.
    */
   readonly wideWordBoundary: BoostRates;
-  /** What the two readings together support. Generated from them, not typed. */
+  /**
+   * What the two readings together support. Generated from the rates rather
+   * than typed, apart from the two before-corpus figures it sets them
+   * against, which are `BEFORE_CORPUS_TIER0_BOOST`.
+   */
   readonly verdict: string;
 }
 
@@ -243,6 +247,32 @@ function rates(
 }
 
 /**
+ * The corpus this round replaces, at the tier-0 reading: the `asTier0Reads`
+ * DELTAS -- a gold rate minus a confusable rate -- that `measureBoost` returns
+ * for `corpora/generated/injection-p-fin-adjudicated-v1.jsonl` under the wave-2
+ * paired-type map. Both are deltas because the residuals `verdict` sets them
+ * against are deltas.
+ *
+ * Literals rather than a call: that corpus is not loaded here, and loading a
+ * superseded artifact inside a measurement of this one would make this
+ * manifest depend on it. `corpus-v2.test.ts` recomputes both from that file
+ * with the same function and fails if either drifts, and separately pins the
+ * own-type figure against a fraction derived from the span counts.
+ *
+ * The own-type figure published before this constant existed was +0.4352,
+ * which is that corpus's `goldOwnTypeRate` -- 47 of its 108 gold spans -- with
+ * nothing subtracted from it: a RATE, set against a delta. The delta is
+ * 47/108 - 4/108 = 43/108 = +0.3981. Direction and rough magnitude of the
+ * comparison are unchanged; the published statistic was the wrong one.
+ */
+export const BEFORE_CORPUS_TIER0_BOOST = {
+  /** Any contextBoost term near a gold span, minus the same near a confusable. */
+  delta: 0.4537,
+  /** The sharper own-entityType form of that same difference. */
+  ownTypeDelta: 0.3981,
+} as const;
+
+/**
  * `pairedType` maps a `neg:` label to the entityType it is a near miss for, so
  * the own-type rate has a counterpart on the negative side. Supplied by the
  * caller rather than derived: only the family catalogue knows which pair a
@@ -293,7 +323,8 @@ export function measureBoost(
         `${(asTier0Reads.confusablePairedTypeRate * 100).toFixed(1)}% (delta ` +
         `${asTier0Reads.ownTypeDelta >= 0 ? "+" : ""}${asTier0Reads.ownTypeDelta.toFixed(4)}). The ` +
         "residual favours the compiled arm. It is far smaller than the corpus this replaces -- " +
-        "which read +0.4537 and +0.4352 on the same two forms -- and it is not zero, so a " +
+        `which read +${BEFORE_CORPUS_TIER0_BOOST.delta.toFixed(4)} and ` +
+        `+${BEFORE_CORPUS_TIER0_BOOST.ownTypeDelta.toFixed(4)} on the same two forms -- and it is not zero, so a ` +
         "per-entityType accuracy number off this corpus carries a keyword advantage of that size " +
         "for any arm that reads contextBoost.",
   };

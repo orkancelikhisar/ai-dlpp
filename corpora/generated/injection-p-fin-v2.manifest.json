@@ -1431,7 +1431,7 @@
         "confusablePairedTypeRate": 0.410958904109589,
         "ownTypeDelta": 0.024226281075596157
       },
-      "verdict": "NOT SYMMETRIC under the tier-0 reading. A contextBoost keyword sits near 50.0% of gold spans and 42.5% of confusable spans (delta +0.0753), and on the sharper own-entityType form 48.1% against 38.4% (delta +0.0979). The residual favours the compiled arm. It is far smaller than the corpus this replaces -- which read +0.4537 and +0.4352 on the same two forms -- and it is not zero, so a per-entityType accuracy number off this corpus carries a keyword advantage of that size for any arm that reads contextBoost."
+      "verdict": "NOT SYMMETRIC under the tier-0 reading. A contextBoost keyword sits near 50.0% of gold spans and 42.5% of confusable spans (delta +0.0753), and on the sharper own-entityType form 48.1% against 38.4% (delta +0.0979). The residual favours the compiled arm. It is far smaller than the corpus this replaces -- which read +0.4537 and +0.3981 on the same two forms -- and it is not zero, so a per-entityType accuracy number off this corpus carries a keyword advantage of that size for any arm that reads contextBoost."
     },
     "orthography": {
       "goldSpans": 108,

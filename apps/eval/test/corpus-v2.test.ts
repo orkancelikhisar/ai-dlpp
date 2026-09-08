@@ -31,6 +31,7 @@ import {
 } from "../src/corpus/families.v2.js";
 import { formatSpecSweep } from "../src/corpus/format-sweep.js";
 import {
+  BEFORE_CORPUS_TIER0_BOOST,
   BOOST_WINDOW,
   IR_COUNTEREXAMPLE_SURFACES,
   TIER0_BOOST_WINDOW,
@@ -396,6 +397,44 @@ describe("decision 2: a contextBoost term is as likely near a confusable as near
     expect(after.asTier0Reads.confusableRate).toBeGreaterThan(0.25);
     // And the two readings are not the same number wearing two labels.
     expect(after.asTier0Reads.delta).not.toBeCloseTo(after.wideWordBoundary.delta, 2);
+  });
+
+  it("publishes the before corpus's own-type DELTA and not its own-type RATE", () => {
+    const before = measureBoost(BEFORE, IR, WAVE2_PAIRED_TYPE).asTier0Reads;
+    // Hand-derivation, from the two counts rather than from `rates()`: at the
+    // tier-0 width the before corpus carries 108 gold spans, 47 of which have a
+    // boost term of their OWN entityType near them, and 108 confusable spans, 4
+    // of which have a term of the type they are a near miss for. The rate is
+    // 47/108 = 0.43519. The DELTA -- the statistic the residuals below are --
+    // is (47 - 4)/108 = 43/108 = 0.39815. The manifest published 0.4352 for it,
+    // which is the rate with nothing subtracted, and no test read the literal.
+    const goldOwnTypeSpans = 47;
+    const confusablePairedTypeSpans = 4;
+    const spansOfEachKind = 108;
+    expect([before.goldSpans, before.confusableSpans]).toEqual([spansOfEachKind, spansOfEachKind]);
+    expect(before.goldOwnTypeRate).toBeCloseTo(goldOwnTypeSpans / spansOfEachKind, 12);
+    expect(before.confusablePairedTypeRate).toBeCloseTo(confusablePairedTypeSpans / spansOfEachKind, 12);
+    expect(before.goldOwnTypeRate).toBeCloseTo(0.43519, 5);
+    expect(before.ownTypeDelta).toBeCloseTo(
+      (goldOwnTypeSpans - confusablePairedTypeSpans) / spansOfEachKind,
+      12,
+    );
+    expect(before.ownTypeDelta).toBeCloseTo(0.39815, 5);
+    // The two are 4.8 points apart, so a manifest quoting one for the other is
+    // not a rounding difference.
+    expect(before.goldOwnTypeRate - before.ownTypeDelta).toBeGreaterThan(0.03);
+
+    // The literal the module publishes is that delta at four places, and the
+    // any-term figure beside it is that reading's delta too.
+    expect(BEFORE_CORPUS_TIER0_BOOST.ownTypeDelta).toBe(Number(before.ownTypeDelta.toFixed(4)));
+    expect(BEFORE_CORPUS_TIER0_BOOST.delta).toBe(Number(before.delta.toFixed(4)));
+    expect(BEFORE_CORPUS_TIER0_BOOST).toEqual({ delta: 0.4537, ownTypeDelta: 0.3981 });
+
+    // And the emitted manifest carries them, in that order, with the rate absent.
+    expect(manifest.leakage.boost.verdict).toContain(
+      `+${before.delta.toFixed(4)} and +${before.ownTypeDelta.toFixed(4)} on the same two forms`,
+    );
+    expect(manifest.leakage.boost.verdict).not.toContain(before.goldOwnTypeRate.toFixed(4));
   });
 
   it("carries the measurement into the manifest rather than only into this test", () => {

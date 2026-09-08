@@ -104,7 +104,9 @@ import {
  *    width and a match rule no arm uses. Measured the way `runTier0` actually
  *    reads contextBoost -- 40 characters, substring, window including the span
  *    -- the previous corpus reads +0.4537 and this one reads +0.0753, with the
- *    sharper own-entityType form falling from +0.4352 to +0.0979. A residual
+ *    sharper own-entityType form falling from +0.3981 to +0.0979. Both before
+ *    figures are DELTAS; the +0.4352 printed here until this commit was that
+ *    corpus's own-type RATE (47/108), not its delta (43/108). A residual
  *    that still favours the compiled arm, reported as such in
  *    `leakage.boost.verdict`.
  * 3. THE GOLD SPAN AS THE UNIQUE ODD TOKEN. On 58 of 108 gold spans the crude
