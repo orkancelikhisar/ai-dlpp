@@ -253,7 +253,7 @@ problem. Whatever is going wrong is not span extraction.
 
 ---
 
-## 7. Five measurement defects found in this arm's own instrumentation
+## 7. Six measurement defects found in this arm's own instrumentation
 
 Recorded here rather than quietly fixed, because each one changes how a number below reads.
 
@@ -529,6 +529,51 @@ one is asked: span-wise, the ceiling arms sit in the floor's neighbourhood; mess
 compiled judge separates from it clearly. Neither of those was the document's original claim, which
 was that they stop at the floor. This is queued with the scorer work in §11.2 and is **not** in the
 §9 tables, which remain span-wise throughout.
+
+---
+
+### 7.6 The `decode tok/s` column is a throughput measurement for one family and noise for the other
+
+`ceiling.ts:668-672` computes it as
+
+```ts
+const decodeWindowMs = ttftMs === undefined ? undefined : wallMs - ttftMs;
+const decodeTokPerSec = completionTokens / (decodeWindowMs / 1000);
+```
+
+Two problems, and they compound in the same direction.
+
+**It divides `n` tokens by the window after the *first* token arrived.** The first token is what ends
+TTFT, so only `n − 1` tokens decode inside that window. The rate is overstated by a factor of
+`n/(n−1)` — negligible when `n` is large, large when `n` is small.
+
+**The judge family's `n` is 5–7.** Measured over pass 1:
+
+| arm | median completion tok | median decode window | rate as published | rate using `n−1` | overstated by |
+|---|---|---|---|---|---|
+| `b-mistral-small-2603` | 81 | 366 ms | 208.2 | 206.4 | 0.9% |
+| `b-deepseek-v4-flash` | 75 | 990 ms | 88.2 | 87.6 | 0.8% |
+| `b-qwen3.8-flash` | 118 | 1,026 ms | 113.2 | 111.9 | 1.2% |
+| `b-nemotron-3-super-120b` | 57 | 4,204 ms | 13.7 | 13.3 | 3.1% |
+| `b-qwen3.8-27b` | 73 | 685 ms | 109.9 | 105.0 | 4.7% |
+| `judge-nemotron-3-super-120b` | 7 | 491 ms | 14.3 | 12.5 | **14.2%** |
+| `judge-qwen3.8-27b` | 6 | 57 ms | 112.9 | 98.8 | **14.3%** |
+| `judge-mistral-small-2603` | 7 | 41 ms | 170.6 | 146.2 | **16.7%** |
+| `judge-deepseek-v4-flash` | 7 | **9.6 ms** | 726.7 | 622.9 | **16.7%** |
+| `judge-qwen3.8-flash` | 5 | 82 ms | 82.6 | 67.8 | **21.8%** |
+
+**For the Approach-B arms the column is a real throughput measurement** — windows of 0.4–4.2 s, bias
+under 5%. **For the judge arms it is not.** `judge-deepseek`'s headline 726.7 tok/s is seven tokens
+divided by a **9.6-millisecond** window: at that scale the number describes when the last
+server-sent-event frame happened to arrive, not how fast the model decodes. The n/(n−1) bias is the
+smaller of the two problems.
+
+**What this does *not* touch.** The Spark projection in §10.4 is `completionTokens ÷ 60 tok/s` — it
+uses the token *count*, which is a property of the model and the task, and never the measured rate.
+Those figures stand. TTFT, per-call wall and item wall are also unaffected. The correction is
+confined to one column, and the honest reading is: **quote decode tok/s for the B arms; for the
+judge arms quote the completion-token count and the TTFT instead, because at 5–7 tokens the answer
+is essentially all TTFT anyway** (`judge-deepseek`: 1,198 ms TTFT against a 9.6 ms decode window).
 
 ---
 
