@@ -1140,9 +1140,11 @@ tables, which is why it took until §7.5 to see it.
 
 **Zero everywhere it could be asked — and one model would not be asked.**
 
-- **Ten of ten thinking-off arms reported `reasoning_tokens` p50 0 and max 0**, across **1,854
-  calls**, on five models and five providers. **No model leaked a single reasoning token.**
-  `reasoning: {enabled: false}` was honoured exactly.
+- **Every thinking-off arm reported `reasoning_tokens` 0**, across **5,580 calls over all three
+  passes**, on five models and five providers. Re-measured after passes 2–3 landed: **5,580 of 5,580
+  are exactly 0, with zero nulls** — so this is not a case of "not reported" being read as zero,
+  which the record schema is built to keep separate (§11.2). **No model leaked a single reasoning
+  token.** `reasoning: {enabled: false}` was honoured exactly, on every call, by every provider.
 - **`z-ai/glm-5.3-flash` cannot be asked.** It returns HTTP 400 *"Reasoning is mandatory for this
   endpoint and cannot be disabled"* on **all eleven of its providers** (§5). Not a leak — a refusal.
   OpenRouter's metadata does not advertise it: `reasoning_config` is `null` and
@@ -1191,16 +1193,22 @@ mandatory reasoning is **~33× that**, for a score that ties rather than beats i
 
 **Perfect, on every thinking-off arm.**
 
-| population | calls | parse failures | repairs | truncated |
+| population | calls | malformed | truncated | repairs |
 |---|---|---|---|---|
-| all ten thinking-off arms | **1,854** | **0** | **0** | **0** |
-| `judge-glm-5.3-flash` thinking ON | 216 | **48 (22.2%)** | 27 | 48 |
+| all thinking-off arms, **passes 1–3** | **5,580** | **0** | **3** | 3 |
+| `judge-glm-5.3-flash` thinking ON (600 cap) | 216 | **0** | **48 (22.2%)** | 27 |
 
 `response_format: {type: "json_schema", strict: true}` — carrying `JUDGE_SCHEMA` / `BASELINE_B_SCHEMA`
 unchanged, `minimum`/`maximum` bounds included — was accepted by **all five** answering providers and
-produced **zero** malformed or schema-invalid bodies in 1,854 calls. The one repair turn was never
-needed. This is a genuinely different result from the local arms, where Phi-4-mini failed to parse 3
-of 6 calls in a probe.
+produced **zero** malformed or schema-invalid bodies in **5,580 calls**. Re-measured across all three
+passes: `parse` is `ok` on 5,577 and `truncated` on 3, and `finishReason` is `stop` on 5,577 and
+`length` on exactly those 3. **There is no third failure mode.** 104 calls (1.9%) fell back to the
+non-streaming transport and still parsed.
+
+This is a genuinely different result from the local arms, where Phi-4-mini failed to parse 3 of 6
+calls in a probe. **Provider-side constrained decoding, at this scale, simply does not produce
+invalid JSON** — every failure in this experiment is a token budget meeting a response that wanted
+to be longer.
 
 **Every one of GLM's 48 failures is `finish_reason: "length"` — truncation, not malformation.** That
 is a finding about the *token budget* meeting mandatory reasoning, not about the mechanism. The
