@@ -867,6 +867,20 @@ budget constraint revealed that B's problem was never only the budget.
 And at the **span** level, B is the only family with numbers at all, and its best is the best
 ceiling result in this whole experiment (0.675). The two families are good at different things.
 
+**§7.5 puts a number on "different things", and it is a clean split.** Scored on the message-level
+decision each family is actually shaped for:
+
+| decision | best judge arm | best B arm | strongest trivial floor |
+|---|---|---|---|
+| *does this message disclose a client relationship* | **0.927** | 0.457 | 0.776 (capitalised-multiword) |
+| *does this message contain a sensitive entity at all* | — (no entity spans by construction) | **0.851** | 0.727 (always-fire) |
+
+Each family beats the relevant floor **on its own decision and only there** — the judge by +0.151,
+B by +0.124 — and the judge's B-side counterpart collapses to 0.457 while B emits no predicate
+worth scoring on four of five models. This is not a ranking of two methods; it is an argument for
+**running both**, which is what the tiered design already does. It is invisible in §9's span-level
+tables, which is why it took until §7.5 to see it.
+
 ### 3. Reasoning tokens with thinking off: zero everywhere, or not?
 
 **Zero everywhere it could be asked — and one model would not be asked.**
