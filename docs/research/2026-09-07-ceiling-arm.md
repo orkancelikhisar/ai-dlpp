@@ -1024,7 +1024,7 @@ these three passes cost $0.51 — and spending it on the span level would have b
 
 ---
 
-## 10. The six questions
+## 10. The six questions, and a seventh the repeat runs raised
 
 ### 1. Does ANY model — local or ceiling — beat the trivial floors? By how much?
 
@@ -1292,6 +1292,76 @@ any later pass spends on the same key returns a larger key figure and a correspo
 positive residual. The $0.388698 above is the reading at the moment pass 1 ended.
 
 **The experiment was bounded by wall-clock time, not by budget** — it used 3.9% of the key.
+
+---
+
+### 7. Does lifting the token cap recover the thinking-ON arm? — **yes, decisively**
+
+Run 2026-09-08, `runId=thinkonglm-01`: GLM-5.3-flash, judge **and** Approach B, `max_tokens: 8192`
+(against the thinking-off arms' 600), `SIH_CEILING_TIMEOUT_MS=180000`, `temperature: 0`, one pass,
+276 calls, **$0.31599**. Clean finish, guard never tripped.
+
+**Truncation is essentially eliminated.** Judge rows carrying a `finish_reason: "length"` call go
+from **27 of 189 to 1 of 189**. Reasoning p50 is unchanged (228 → 217): the median answer never
+needed the extra budget. It is the *tail* that did — and max reasoning is now **8,192**, the new
+ceiling, still hit at least once.
+
+**§7.2's prediction, tested and confirmed.** At 600 tokens every one of GLM's 8 missed gold
+positives was on a truncated call, with zero clean misses; the prediction was that removing
+truncation removes the misses, with the stated risk that truncation might merely *correlate* with
+difficulty. At 8,192, over the rows it answered:
+
+| GLM judge, thinking ON, **message level, attempted-only** | P | R | F1 | floor (same rows) | vs floor |
+|---|---|---|---|---|---|
+| 600-token cap — 179 rows, 19 positives | 1.000 | 0.579 | 0.733 | 0.776 | **−0.042** |
+| **8,192-token cap** — 121 rows, 13 positives | 0.867 | **1.000** | **0.929** | 0.743 | **+0.186** |
+
+**Recall goes 0.579 → 1.000 and the missed-positive list goes from eight items to empty.** The arm
+moves from 0.042 *below* the floor to 0.186 *above* it. Precision falls 1.000 → 0.867 (two false
+positives appear), which is the expected shape: an arm that was silent when cut off now answers.
+
+Span-wise the same arm goes **0.571 → 0.611** attempted-only against a 0.571 floor, and
+`ceiling-score.ts` names it in *"arms whose verdict against the floor CHANGES under attempted-only
+scoring"* alongside `judge-deepseek [ceiling-01]`.
+
+**And Approach B, which could not be measured at all at 600, is now the best span-level arm in the
+experiment.** Its probe went 0/3 → 3/3 (§7.2); scored, it tops §9.2's table:
+
+| span level | over **all 189** rows | over the **130 rows it answered** |
+|---|---|---|
+| `b-glm-5.3-flash` **thinking ON** | **0.697** | **0.809** |
+| budget-matched oracle *(told N)* | 0.695 | 0.633 |
+| unbudgeted oracle | 0.454 | 0.453 |
+| previous best arm, `b-nemotron` | 0.675 | — |
+
+**This is the first arm in the whole experiment to beat the budget-matched oracle**, and the only
+one to do so under either reading — marginally on all 189 rows (+0.002) and decisively on the rows
+it answered (**+0.176**). The oracle figures on the 130-row subset come from the real
+`measureOrthography`, which reproduces the published 0.695 / 0.454 exactly on all 189 rows before
+being applied to the subset; the arm figures use the **overlap** rule, verified to reproduce
+`ceiling-score.ts`'s own 93/70/23/38 → 0.697 exactly.
+
+**Four things that bound this, and the first is severe.**
+
+1. **31% of rows are missing.** BaseTen's shared pool rate-limited GLM heavily during this run — the
+   probe itself parsed 1 of 3 on 429s, having parsed 3 of 3 fifteen minutes earlier. 58 of 179
+   scored rows are unanswered for the judge arm and 59 for B. Every figure above is attempted-only
+   *with the floor moved to the same subset*, which is the correct treatment (§7.4), but a
+   13-positive subset is not a 19-positive gold and the two are not interchangeable.
+2. **One pass.** §9.3 measured message-level spreads up to 0.344 across three passes at
+   `temperature: 0`. A single thinking-ON pass is not a variance-controlled measurement, and this
+   document says so about every other single-pass number too.
+3. **The comparison is not clean on cost or latency.** The judge arm took 11.5 minutes for 189 rows
+   and B took **31.8 minutes**; the whole GLM pair cost $0.316, which is **35% of the entire
+   thinking-off experiment's $0.900** for two arms out of eleven.
+4. **8,192 is not a resolved ceiling either** — it was hit. A truly cap-free measurement has not
+   been made.
+
+**What it changes.** §10.1's answer was already "yes, with conditions" at the predicate level. This
+adds the span level: with mandatory reasoning given room to finish, one 30 B-class open-weight model
+clears the *oracle* floor that no thinking-off arm reached. The unresolved question is no longer
+"can these models do it" but "at what latency, and how reliably against a shared-pool provider" —
+31.8 minutes for 189 messages, with a third of them lost to rate limiting, is not a deployment.
 
 ---
 
