@@ -135,10 +135,32 @@ export interface CeilingModel {
  * 100 each. The real numbers land in every record's `promptTokens` /
  * `completionTokens`, and the write-up checks these two against them.
  *
- * It matters because the unweighted `in + out` sum gives a DIFFERENT order:
- * under it GLM-Flash (0.15+0.50) sorts ahead of Qwen-Flash (0.15+0.47), while
- * on a prompt-heavy workload with equal input rates the cheaper output rate
- * wins. Ordering by the sum would have put the more expensive of the two first.
+ * WHICH COMPARISON THIS ACTUALLY DECIDES. Only one, and it is not the pair an
+ * earlier version of this comment named. COMPUTED from the six price pairs
+ * below: an ascending sort on the unweighted `in + out` sum gives 0.24 < 0.62 <
+ * 0.65 < 0.75 < 0.95 < 2.44, which is the shipped order EXACTLY -- so on this
+ * slate the sum and the weighting do not disagree anywhere, and no example of
+ * the form "the sum would have ordered X before Y" exists to be given.
+ * GLM-Flash and Qwen-Flash in particular cannot be that example twice over:
+ * 0.62 < 0.65 puts Qwen-Flash first under the sum as well, and their input
+ * rates are EQUAL (0.15 each), so no positive weighting can separate them at
+ * all -- the comparison reduces to the output rate under every mix.
+ *
+ * The one pair a mix CAN reorder is nemotron (0.30/0.65) against qwen-27b
+ * (0.24/2.20). They cost the same when `p * 0.06 == c * 1.55`, i.e. at a
+ * prompt/completion ratio of 25.83; below it nemotron is cheaper, above it
+ * qwen-27b is. The estimate above sits at 8.5 and the shipped order follows.
+ *
+ * The MIX THAT ACTUALLY RAN sits far closer to that edge than the estimate did.
+ * MEASURED here on 2026-09-08 over `runs/ceiling-01.*` (first call per item;
+ * 941 judge items, 913 Approach-B items): median prompt tokens 433 for judge
+ * and 1,560 for B, median completions 7 and 71 -- so one item across both
+ * families is 1,993 prompt and 78 completion tokens, a ratio of 25.55. That is
+ * 1.1% UNDER the 25.83 crossover: the shipped order survives the correction,
+ * but nemotron beats qwen-27b on this workload by 0.2%, not by a margin. The
+ * estimate below was low on both prompt figures and high on completions; it is
+ * left unchanged because it is what the slate was ordered by at the time, and
+ * editing it now would rewrite the run's own provenance.
  */
 export const REPRESENTATIVE_PROMPT_TOKENS = 1700;
 export const REPRESENTATIVE_COMPLETION_TOKENS = 200;
@@ -453,10 +475,22 @@ export interface CallOutcome {
   /** Request start to final chunk. What a user waits through. */
   readonly wallMs: number;
   /**
-   * `completionTokens / ((wallMs - ttftMs) / 1000)`. PROVIDER-DEPENDENT.
-   * `undefined` when the decode window is zero or negative, or when either
-   * input is missing -- an Infinity here would enter the report as a model that
-   * decoded infinitely fast.
+   * `(completionTokens - 1) / ((wallMs - ttftMs) / 1000)`. PROVIDER-DEPENDENT.
+   *
+   * `n - 1` and not `n`: TTFT ENDS when the first token arrives, so only the
+   * remaining tokens decode inside this window. MEASURED here on 2026-09-08 by
+   * recomputing both formulas over pass 1's ten arm files: dividing by `n`
+   * overstates the median rate by 0.8-4.7% on the Approach-B arms (median
+   * 57-118 completion tokens) and by 14.2-21.8% on the judge arms (median 5-7),
+   * which is larger than the spread this column is used to compare judge arms
+   * with.
+   *
+   * `undefined` when the decode window is zero or negative, when either input
+   * is missing, or when `n <= 1` -- an Infinity here would enter the report as
+   * a model that decoded infinitely fast, and one token measures nothing but
+   * TTFT. MEASURED: of the 4,844 calls across passes 1-3 that reported usage,
+   * the smallest completion was 5 tokens, so the `n <= 1` arm guards a case
+   * this run never hit rather than changing any published figure.
    */
   readonly decodeTokPerSec: number | undefined;
 }
@@ -667,8 +701,11 @@ async function consumeStream(
   const completionTokens = num(usage?.["completion_tokens"]);
   const decodeWindowMs = ttftMs === undefined ? undefined : wallMs - ttftMs;
   const decodeTokPerSec =
-    completionTokens !== undefined && decodeWindowMs !== undefined && decodeWindowMs > 0
-      ? completionTokens / (decodeWindowMs / 1000)
+    completionTokens !== undefined &&
+    completionTokens > 1 &&
+    decodeWindowMs !== undefined &&
+    decodeWindowMs > 0
+      ? (completionTokens - 1) / (decodeWindowMs / 1000)
       : undefined;
 
   return {
@@ -929,7 +966,7 @@ export const CeilingCallSchema = z.object({
    * `retries` on this row names what was paid for the difference.
    */
   wallMs: z.number().nonnegative(),
-  /** PROVIDER-DEPENDENT. completionTokens / (wallMs - ttftMs), in tokens per second. */
+  /** PROVIDER-DEPENDENT. (completionTokens - 1) / (wallMs - ttftMs), tok/s. See CallOutcome. */
   decodeTokPerSec: z.number().positive().nullable(),
   /** What OpenRouter reported this call cost, in USD. */
   costUsd: z.number().nonnegative().nullable(),

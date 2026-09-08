@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PolicyIr } from "@sih/core";
+import { BASELINE_B_SCHEMA, JUDGE_SCHEMA, parseJudgeResponse } from "@sih/tier2";
+import type { OpenRouterRequestBody, SpendEntry } from "../src/driver/ceiling.js";
 import {
   CEILING_MODELS,
   passRunIdFor,
@@ -17,12 +19,14 @@ import {
   SpendGuard,
   armName,
   baselineMessagesFor,
+  baselineRepairTurn,
   buildRequestBody,
   callChat,
   collectBaseline,
   collectJudge,
   estimateCostUsd,
   judgeMessagesFor,
+  judgeRepairTurn,
   messagePassage,
 } from "../src/driver/ceiling.js";
 
@@ -57,7 +61,11 @@ function contentChunk(text: string, extra: Record<string, unknown> = {}): string
   });
 }
 
-function finalChunk(usage: Record<string, unknown>, finishReason = "stop"): string {
+function finalChunk(
+  usage: Record<string, unknown>,
+  finishReason = "stop",
+  extra: Record<string, unknown> = {},
+): string {
   return sse({
     id: "gen-1",
     object: "chat.completion.chunk",
@@ -65,6 +73,7 @@ function finalChunk(usage: Record<string, unknown>, finishReason = "stop"): stri
     provider: "DeepInfra",
     choices: [{ index: 0, delta: { content: "" }, finish_reason: finishReason }],
     usage,
+    ...extra,
   });
 }
 
@@ -136,6 +145,85 @@ const CALL = {
   maxTokens: 600,
 };
 
+
+// ---------------------------------------------------------------------------
+// FIXTURES THAT CAN TELL A REQUEST FROM A RESPONSE
+//
+// Every `runCeilingItem` fixture in this file before 2026-09-08 answered with
+// exactly the strings it had asked for -- provider `DeepInfra` pinned and
+// `DeepInfra` returned, `deepseek/...-0731` requested and returned -- so
+// `provider: lastProvider` could be replaced by `provider: model.provider`,
+// THE PIN WRITTEN DOWN AS THE FACT, and all 80 tests stayed green. Measured:
+// that mutation and 24 others survived the suite. A fixture too small for two
+// rules to give different answers is not coverage; these constants are what
+// make it one.
+// ---------------------------------------------------------------------------
+
+/** What a RE-ROUTED response names. Neither the pin nor the requested id. */
+const ANSWERED = {
+  provider: "Novita",
+  model: "deepseek/deepseek-v4-flash-0731:exacto",
+} as const;
+
+/** The final SSE frame with NO `usage` key at all -- the provider reported none. */
+function finalChunkNoUsage(extra: Record<string, unknown> = {}): string {
+  return sse({
+    id: "gen-1",
+    object: "chat.completion.chunk",
+    model: "deepseek/deepseek-v4-flash-0731",
+    provider: "DeepInfra",
+    choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop" }],
+    ...extra,
+  });
+}
+
+/**
+ * A `fetch` that RECORDS the request body it was handed and answers as a
+ * DIFFERENT provider and model than the one pinned.
+ *
+ * Recording `init.body` is the second gap this closes: nothing in this file
+ * inspected the wire before, so sending the wrong family's schema, the wrong
+ * family's messages, or dropping the thinking condition from the request while
+ * the row still recorded `thinkingRequested: "on"` all survived.
+ *
+ * `usage: null` produces a response that reports no usage at all, which is the
+ * only way to reach the record's `?? null` branches -- every earlier fixture
+ * supplied usage, so `?? 0` was unreachable and therefore unkillable.
+ */
+function reroutedFetch(
+  replies: readonly string[],
+  clock: { t: number },
+  sent: OpenRouterRequestBody[] = [],
+  usage: Record<string, unknown> | null = USAGE,
+  contentPerReply: (text: string) => string[] = (text) => [text],
+): typeof fetch {
+  let i = 0;
+  const answered = { provider: ANSWERED.provider, model: ANSWERED.model };
+  return (async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body)) as OpenRouterRequestBody);
+    const reply = replies[Math.min(i, replies.length - 1)]!;
+    i += 1;
+    const frames = [
+      ...contentPerReply(reply).map((piece) => contentChunk(piece, answered)),
+      usage === null ? finalChunkNoUsage(answered) : finalChunk(usage, "stop", answered),
+      "data: [DONE]\n\n",
+    ];
+    return streamingFetch(frames, clock, 1)("", {});
+  }) as unknown as typeof fetch;
+}
+
+/**
+ * A usage block whose `cost` is NOT the price-table estimate.
+ *
+ * MEASURED: the shared `USAGE` above carries `cost: 1.254e-5`, which is exactly
+ * `(26 * 0.06 + 61 * 0.18) / 1e6` -- the DeepSeek entry's own per-million rates
+ * at those token counts. It is a real capture, but it makes the response's own
+ * number and the table's estimate the same string, so no test built on it can
+ * tell which one the spend guard was fed. That is why feeding the guard the
+ * estimate instead of the cost survived.
+ */
+const USAGE_COSTLIER = { ...USAGE, cost: 4.0e-5 };
+
 // ---------------------------------------------------------------------------
 // The client
 // ---------------------------------------------------------------------------
@@ -175,14 +263,62 @@ describe("callChat over a mocked stream", () => {
     expect(outcome.wallMs).toBe(60);
   });
 
-  it("computes decode rate over the DECODE window (wall minus TTFT), not over wall time", async () => {
+  it("computes decode rate over the DECODE window (wall minus TTFT), and over n-1 tokens", async () => {
     const clock = { t: 0 };
     const frames = [contentChunk("a"), contentChunk("b"), finalChunk(USAGE), "data: [DONE]\n\n"];
     const { outcome } = await callChat(deps(streamingFetch(frames, clock, 100), clock), CALL);
-    // ttft 100ms, wall 400ms -> decode window 300ms -> 61 tok / 0.3 s
+    // ttft 100ms, wall 400ms -> decode window 300ms. 61 tokens were billed, but
+    // the FIRST of them is what ENDED ttft, so only 60 decoded inside the window.
     expect(outcome.ttftMs).toBe(100);
     expect(outcome.wallMs).toBe(400);
-    expect(outcome.decodeTokPerSec).toBeCloseTo(61 / 0.3, 6);
+    expect(outcome.decodeTokPerSec).toBeCloseTo(60 / 0.3, 6);
+    // This assertion read `61 / 0.3` until 2026-09-08 -- it pinned the defect.
+    // Kept as an explicit refusal because the gap is invisible where n is large
+    // and decisive where it is small: MEASURED by recomputing both formulas over
+    // runs/ceiling-01.*, dividing by n overstates the median rate by 0.8-4.7% on
+    // the Approach-B arms and by 14.2-21.8% on the judge arms, whose median
+    // completion is 5-7 tokens (`judge-qwen3.8-flash`: 82.6 -> 67.8 tok/s).
+    expect(outcome.decodeTokPerSec).not.toBeCloseTo(61 / 0.3, 6);
+  });
+
+  it("reports NO decode rate for a one-token completion, which measures only TTFT", async () => {
+    // n - 1 = 0 is a rate of zero tok/s, which the record schema refuses
+    // (`positive()`), and n / window would be a throughput read off a single
+    // frame's arrival time. MEASURED: the smallest completion among the 4,844
+    // calls across passes 1-3 that reported usage was 5 tokens, so this arm
+    // guards a case the run never hit rather than changing a published figure.
+    const clock = { t: 0 };
+    const frames = [
+      contentChunk("x"),
+      contentChunk("y"),
+      finalChunk({ ...USAGE, completion_tokens: 1 }),
+      "data: [DONE]\n\n",
+    ];
+    const { outcome } = await callChat(deps(streamingFetch(frames, clock, 10), clock), CALL);
+    expect(outcome.completionTokens).toBe(1);
+    expect(outcome.ttftMs).toBe(10);
+    expect(outcome.wallMs).toBeGreaterThan(outcome.ttftMs!);
+    expect(outcome.decodeTokPerSec).toBeUndefined();
+  });
+
+  it("overstates by exactly n/(n-1) against the as-published formula, at every n on this run", async () => {
+    // §7.6 of the write-up tabulates both columns for all ten pass-1 arms. Every
+    // value in it reproduced exactly when both formulas were recomputed over
+    // runs/ceiling-01.* on 2026-09-08; this is that check in miniature, over the
+    // median completion counts those ten arms actually had (5-7 judge, 57-118 B).
+    for (const n of [5, 6, 7, 57, 73, 81, 118]) {
+      const clock = { t: 0 };
+      const frames = [
+        contentChunk("a"),
+        contentChunk("b"),
+        finalChunk({ ...USAGE, completion_tokens: n }),
+        "data: [DONE]\n\n",
+      ];
+      const { outcome } = await callChat(deps(streamingFetch(frames, clock, 100), clock), CALL);
+      const windowSec = (outcome.wallMs - outcome.ttftMs!) / 1000;
+      expect(outcome.decodeTokPerSec).toBeCloseTo((n - 1) / windowSec, 9);
+      expect(n / windowSec / outcome.decodeTokPerSec!).toBeCloseTo(n / (n - 1), 9);
+    }
   });
 
   it("reports decode rate as undefined rather than Infinity when the decode window is zero", async () => {
@@ -904,6 +1040,16 @@ const IR: PolicyIr = {
 
 const TEXT = "Tamarind Grocers is our client and the retainer starts in June.";
 
+/**
+ * A stand-in policy document, long enough that Approach B's turns cannot be
+ * confused with the judge's. The real one is 5,320 chars; what matters here is
+ * only that B carries it verbatim and the judge does not.
+ */
+const POLICY_TEXT = [
+  "S3.1 Client organisation names must not be disclosed to a third-party provider.",
+  "S3.3 The existence of a client relationship is itself confidential.",
+].join("\n");
+
 describe("the judge family", () => {
   it("sends the compiled judge's own two turns, with the predicate and the whole message", () => {
     const messages = judgeMessagesFor(IR, TEXT);
@@ -1093,6 +1239,9 @@ describe("runCeilingItem: one repair, then fail closed", () => {
   });
 
   it("records the answering provider and the pin separately on the row", async () => {
+    // This fixture answers with the SAME provider it pinned, so it cannot tell
+    // `provider: lastProvider` from `provider: model.provider`. The test that
+    // can is "records the provider and the model that ANSWERED" below.
     const clock = { t: 0 };
     const record = await runCeilingItem(base(bodies(['{"findings":[]}'], clock), clock));
     expect(record.requestedProvider).toBe("DeepInfra");
@@ -1109,6 +1258,265 @@ describe("runCeilingItem: one repair, then fail closed", () => {
     expect(record.error).toMatch(/400/);
     expect(record.findings).toEqual([]);
     expect(record.calls).toEqual([]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The record write, and the wire
+//
+// These assert the two things §11.2 of the write-up records as unverified: that
+// the row states what HAPPENED rather than what was asked, and that what was
+// asked actually left the process.
+// ---------------------------------------------------------------------------
+
+describe("runCeilingItem: the row states the FACT, not the request", () => {
+  const ITEM = { id: "i1", text: TEXT, policy: "p-fin", gold: [] };
+  const opts = (fetchImpl: typeof fetch, clock: { t: number }) => ({
+    deps: deps(fetchImpl, clock),
+    model: MODEL,
+    family: "judge" as const,
+    ir: IR,
+    irHash: "b".repeat(64),
+    policyText: "policy",
+    item: ITEM,
+    runId: "t",
+    maxTokens: 600,
+    destinationProvider: "claude",
+    gitSha: "0".repeat(40),
+    gitDirty: true,
+  });
+
+  it("records the provider and the model that ANSWERED, never the two it pinned", async () => {
+    // §9 of the write-up says all eleven arms honoured their provider pin. That
+    // claim is only checkable if the row can DISAGREE with the pin, and until
+    // this fixture existed it could not: `provider: model.provider` -- the pin
+    // copied into the fact column -- passed the whole suite.
+    const clock = { t: 0 };
+    const record = await runCeilingItem(opts(reroutedFetch(['{"findings":[]}'], clock), clock));
+    expect(record.requestedProvider).toBe("DeepInfra");
+    expect(record.requestedModelId).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(record.provider).toBe("Novita");
+    expect(record.modelId).toBe("deepseek/deepseek-v4-flash-0731:exacto");
+    expect(record.provider).not.toBe(record.requestedProvider);
+    expect(record.modelId).not.toBe(record.requestedModelId);
+    // The per-call row carries the same fact, so a run that was re-routed
+    // part-way through is visible call by call and not only in aggregate.
+    expect(record.calls[0]!.provider).toBe("Novita");
+    expect(record.calls[0]!.modelId).toBe("deepseek/deepseek-v4-flash-0731:exacto");
+  });
+
+  it("writes null -- never 0 -- for every column the provider did not report", async () => {
+    // The record docblock promises `reasoningTokens: null` "must never be read
+    // as zero -- zero is the answer this run is looking for". `consumeStream`
+    // keeps that promise and was tested; the RECORD's own `?? null` was not,
+    // because every fixture supplied usage and so never reached the branch.
+    const clock = { t: 0 };
+    const record = await runCeilingItem(
+      opts(reroutedFetch(['{"findings":[]}'], clock, [], null), clock),
+    );
+    expect(record.calls).toHaveLength(1);
+    expect(record.calls[0]!.reasoningTokens).toBeNull();
+    expect(record.calls[0]!.promptTokens).toBeNull();
+    expect(record.calls[0]!.completionTokens).toBeNull();
+    expect(record.calls[0]!.costUsd).toBeNull();
+    expect(record.calls[0]!.decodeTokPerSec).toBeNull();
+    // Zero is a measurement here, so the absence of one has to look different
+    // from it in the file a scorer reads.
+    expect(record.calls[0]!.reasoningTokens).not.toBe(0);
+  });
+
+  it("writes null ttft for a stream that delivered no content token at all", async () => {
+    // MEASURED on the live slate: `qwen/qwen3.8-flash` on Alibaba streamed
+    // normally for one family and then returned zero bytes on every streamed
+    // request within the same hour. A row like that has no first-token
+    // timestamp, and `0` would be the positive claim that one arrived instantly.
+    const clock = { t: 0 };
+    const record = await runCeilingItem(
+      opts(reroutedFetch([""], clock, [], USAGE, () => [""]), clock),
+    );
+    // No content ever parses, so the one repair runs and then it fails closed.
+    expect(record.calls).toHaveLength(2);
+    expect(record.calls[0]!.ttftMs).toBeNull();
+    expect(record.calls[0]!.decodeTokPerSec).toBeNull();
+    expect(record.calls[0]!.parse).toBe("truncated");
+    // Usage WAS reported on this one, so the two nulls above are about the
+    // missing timestamp alone and not about a silent response.
+    expect(record.calls[0]!.completionTokens).toBe(61);
+  });
+
+  it("stamps the identity it was GIVEN, not a constant this file happens to pass", async () => {
+    // Ten separate hardcodings survived here -- runId, irHash, policyHash,
+    // gitSha, gitDirty, maxTokens, localArmMaxTokens, family, quantization and
+    // the arm name -- because every fixture passed the same literal the
+    // hardcoding would have used. Every value below is deliberately different
+    // from the one used everywhere else in this file.
+    const clock = { t: 0 };
+    const OTHER_MODEL = CEILING_MODELS.find((m) => m.id === "qwen/qwen3.8-flash")!;
+    const OTHER_IR = { ...IR, policyHash: "9".repeat(64) } as PolicyIr;
+    const record = await runCeilingItem({
+      deps: deps(reroutedFetch(['{"findings":[]}'], clock), clock),
+      model: OTHER_MODEL,
+      family: "b",
+      ir: OTHER_IR,
+      irHash: "c".repeat(64),
+      policyText: "policy",
+      item: { id: "i9", text: TEXT, policy: "p-med", gold: [] },
+      runId: "ceiling-03",
+      maxTokens: 448,
+      localArmMaxTokens: 384,
+      destinationProvider: "claude",
+      gitSha: "9f".repeat(20),
+      gitDirty: false,
+    });
+    expect(record.runId).toBe("ceiling-03");
+    expect(record.itemId).toBe("i9");
+    expect(record.policy).toBe("p-med");
+    expect(record.irHash).toBe("c".repeat(64));
+    expect(record.policyHash).toBe("9".repeat(64));
+    expect(record.gitSha).toBe("9f".repeat(20));
+    expect(record.gitDirty).toBe(false);
+    expect(record.maxTokens).toBe(448);
+    expect(record.localArmMaxTokens).toBe(384);
+    expect(record.family).toBe("b");
+    expect(record.requestedModelId).toBe("qwen/qwen3.8-flash");
+    expect(record.requestedProvider).toBe("Alibaba");
+    // "unknown" is a VALUE on this slate, not a missing one, and it is this
+    // model's own -- not the fp8 the DeepSeek pin advertises.
+    expect(record.quantization).toBe("unknown");
+    // The vendor prefix is STRIPPED. An arm named `ceiling-b-qwen/qwen3.8-flash`
+    // would not join to any score table.
+    expect(record.arm).toBe("ceiling-b-qwen3.8-flash");
+    expect(record.arm).toBe(armName("b", OTHER_MODEL));
+  });
+
+  it("feeds the spend guard the RESPONSE's own cost, once per call, repair included", async () => {
+    // The guard is thoroughly tested in isolation. That anything ever FEEDS it
+    // was tested nowhere: deleting the `options.onCall?.({...})` hook outright
+    // left the suite green, and so did handing it the price-table estimate in
+    // place of the number OpenRouter billed.
+    const clock = { t: 0 };
+    const seen: SpendEntry[] = [];
+    const guard = new SpendGuard({ hardStopUsd: SPEND_HARD_STOP_USD, keyUsageAtStart: 0, keyLimit: 10 });
+    const record = await runCeilingItem({
+      ...opts(reroutedFetch(["not json at all", '{"findings":[]}'], clock, [], USAGE_COSTLIER), clock),
+      onCall: (entry) => {
+        seen.push(entry);
+        guard.record(entry);
+      },
+    });
+    expect(record.calls).toHaveLength(2);
+    expect(seen).toHaveLength(2);
+    const estimate = estimateCostUsd(MODEL, 26, 61);
+    expect(estimate).toBeCloseTo(1.254e-5, 12);
+    // The response said 4.0e-5 and the table says 1.254e-5. Both go through, in
+    // their own fields, and the guard's running total is the RESPONSE's.
+    expect(seen[0]!.costUsd).toBe(4.0e-5);
+    expect(seen[0]!.estimateUsd).toBeCloseTo(estimate, 12);
+    expect(seen[0]!.model).toBe(MODEL.id);
+    expect(seen[0]!.family).toBe("judge");
+    expect(guard.calls).toBe(2);
+    expect(guard.totalUsd).toBeCloseTo(2 * 4.0e-5, 12);
+    expect(guard.estimatedUsd).toBeCloseTo(2 * estimate, 12);
+  });
+});
+
+describe("runCeilingItem: what actually goes on the wire", () => {
+  const ITEM = { id: "i1", text: TEXT, policy: "p-fin", gold: [] };
+  const opts = (fetchImpl: typeof fetch, clock: { t: number }) => ({
+    deps: deps(fetchImpl, clock),
+    model: MODEL,
+    family: "judge" as const,
+    ir: IR,
+    irHash: "b".repeat(64),
+    policyText: POLICY_TEXT,
+    item: ITEM,
+    runId: "t",
+    maxTokens: 600,
+    destinationProvider: "claude",
+    gitSha: "0".repeat(40),
+    gitDirty: true,
+  });
+
+  it("sends the JUDGE family's own schema, schema name and turns", async () => {
+    const clock = { t: 0 };
+    const sent: OpenRouterRequestBody[] = [];
+    await runCeilingItem(opts(reroutedFetch(['{"findings":[]}'], clock, sent), clock));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.response_format.json_schema.name).toBe("judge_response");
+    expect(sent[0]!.response_format.json_schema.schema).toEqual(JUDGE_SCHEMA);
+    // The two schemas are genuinely different documents, so this is a real
+    // discrimination and not a comparison of two identical objects.
+    expect(JSON.stringify(JUDGE_SCHEMA)).not.toBe(JSON.stringify(BASELINE_B_SCHEMA));
+    expect(sent[0]!.messages).toEqual(judgeMessagesFor(IR, TEXT));
+    expect(sent[0]!.messages).not.toEqual(baselineMessagesFor(IR, POLICY_TEXT, TEXT));
+    expect(sent[0]!.model).toBe(MODEL.id);
+    expect(sent[0]!.max_tokens).toBe(600);
+    expect(sent[0]!.provider).toEqual({ order: ["DeepInfra"], allow_fallbacks: false });
+  });
+
+  it("sends APPROACH B's own schema, schema name and turns", async () => {
+    const clock = { t: 0 };
+    const sent: OpenRouterRequestBody[] = [];
+    await runCeilingItem({
+      ...opts(reroutedFetch(['{"findings":[]}'], clock, sent), clock),
+      family: "b",
+    });
+    expect(sent[0]!.response_format.json_schema.name).toBe("baseline_response");
+    expect(sent[0]!.response_format.json_schema.schema).toEqual(BASELINE_B_SCHEMA);
+    expect(sent[0]!.messages).toEqual(baselineMessagesFor(IR, POLICY_TEXT, TEXT));
+    expect(sent[0]!.messages).not.toEqual(judgeMessagesFor(IR, TEXT));
+    // B carries the whole policy document; the judge carries the predicate.
+    // If this ever stops being true the two families are no longer the local
+    // arms' two families.
+    expect(JSON.stringify(sent[0]!.messages)).toContain(POLICY_TEXT.slice(0, 40));
+  });
+
+  it("APPENDS the repair turn rather than replacing the conversation with it", async () => {
+    // A replacement would drop the system prompt and the passage, so the model
+    // would be asked to answer again about nothing -- and the row would still
+    // read `repairs: 1`, which is the failure mode that looks fine in a table.
+    const clock = { t: 0 };
+    const sent: OpenRouterRequestBody[] = [];
+    const record = await runCeilingItem(
+      opts(reroutedFetch(["not json at all", '{"findings":[]}'], clock, sent), clock),
+    );
+    expect(record.repairs).toBe(1);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.messages).toHaveLength(sent[0]!.messages.length + 1);
+    expect(sent[1]!.messages.slice(0, sent[0]!.messages.length)).toEqual(sent[0]!.messages);
+    const parsed = parseJudgeResponse("not json at all", "stop");
+    if (parsed.ok) throw new Error("fixture parses; the repair turn would never be built");
+    expect(sent[1]!.messages.at(-1)).toEqual(judgeRepairTurn(parsed.reason, parsed.detail));
+    // NOT a check that the JUDGE built it. MEASURED 2026-09-08: `judgeRepairTurn`
+    // and `baselineRepairTurn` return byte-identical objects for the same
+    // (reason, detail) -- packages/tier2's judge.ts:1254 and baselineB.ts:939
+    // are the same six lines -- so swapping them is a provably equivalent
+    // mutation that no assertion here or anywhere else can kill.
+    expect(judgeRepairTurn("malformed", "d")).toEqual(baselineRepairTurn("malformed", "d"));
+  });
+
+  it("puts the thinking condition on the WIRE, not only in the column that reports it", async () => {
+    // The row's `thinkingRequested` is what was ASKED. Nothing checked that the
+    // ask reached OpenRouter: dropping `thinking` from the ChatCall leaves a row
+    // reading "on" over a request body that said `{enabled: false}` -- intent
+    // recorded as fact, in the one column this arm's thinking-off claim rests on.
+    const clock = { t: 0 };
+    const on: OpenRouterRequestBody[] = [];
+    const record = await runCeilingItem({
+      ...opts(reroutedFetch(['{"findings":[]}'], clock, on), clock),
+      thinking: "on",
+    });
+    expect(record.thinkingRequested).toBe("on");
+    expect(record.reasoningRequest).toBe('{"enabled":true}');
+    expect(on[0]!.reasoning).toEqual({ enabled: true });
+    expect(on[0]!.reasoning).toEqual(JSON.parse(record.reasoningRequest));
+
+    const off: OpenRouterRequestBody[] = [];
+    const offRecord = await runCeilingItem(opts(reroutedFetch(['{"findings":[]}'], clock, off), clock));
+    expect(offRecord.thinkingRequested).toBe("off");
+    expect(off[0]!.reasoning).toEqual({ enabled: false });
+    expect(off[0]!.reasoning).toEqual(JSON.parse(offRecord.reasoningRequest));
   });
 });
 
@@ -1209,16 +1617,64 @@ describe("applyPinOverrides", () => {
 
 describe("the model slate", () => {
   it("runs cheapest-first FOR THIS WORKLOAD, so a tripped guard leaves the most expensive arm partial", () => {
-    // Ordered on the cost of the run that is actually made, not on
-    // `in + out` unweighted. This corpus is prompt-heavy and output-light --
-    // Approach B alone carries the whole 5,320-char policy on every call -- so
-    // the input rate dominates, and the two orderings genuinely disagree:
-    // by the unweighted sum GLM-Flash (0.65) sorts ahead of Qwen-Flash (0.62),
-    // and by this workload's mix Qwen-Flash is the cheaper of the two.
+    // Ordered on the cost of the run that is actually made, not on `in + out`
+    // unweighted. This corpus is prompt-heavy and output-light -- Approach B
+    // alone carries the whole 5,320-char policy on every call -- so the input
+    // rate dominates. See the test below for WHICH comparison that decides; an
+    // earlier version of this comment named GLM-Flash against Qwen-Flash, which
+    // is the one pair on this slate where it provably cannot.
     const cost = CEILING_MODELS.map((m) =>
       estimateCostUsd(m, REPRESENTATIVE_PROMPT_TOKENS, REPRESENTATIVE_COMPLETION_TOKENS),
     );
     expect([...cost].sort((a, b) => a - b)).toEqual(cost);
+  });
+
+  it("orders identically to the UNWEIGHTED in+out sum, which is why no pair demonstrates the weighting", () => {
+    // COMPUTED here rather than asserted in prose. Ascending, the sums are
+    // 0.24 < 0.62 < 0.65 < 0.75 < 0.95 < 2.44 -- the shipped order exactly. The
+    // docblock on REPRESENTATIVE_PROMPT_TOKENS used to claim the sum gives a
+    // DIFFERENT order and name GLM-Flash (0.65) as sorting ahead of Qwen-Flash
+    // (0.62); 0.62 < 0.65, so it does not. Pinned so the claim cannot come back,
+    // and so a future slate on which the two rules DO disagree is noticed here.
+    const sums = CEILING_MODELS.map((m) => m.pricePerMTokIn + m.pricePerMTokOut);
+    expect([...sums].sort((a, b) => a - b)).toEqual(sums);
+  });
+
+  it("depends on ONE pair, and on the representative mix staying the correct side of its crossover", () => {
+    // Four of the five consecutive pairs cannot disagree under ANY positive
+    // weighting: deepseek/qwen-flash and mistral/nemotron are strict
+    // dominations, and qwen-flash/glm-flash and glm-flash/mistral have EQUAL
+    // input rates, so each reduces to the output rate under every mix. The
+    // fifth pair is the whole of what this ordering rests on.
+    const nemotron = CEILING_MODELS.find((m) => m.id === "nvidia/nemotron-3-super-120b-a12b")!;
+    const qwen27b = CEILING_MODELS.find((m) => m.id === "qwen/qwen3.8-27b")!;
+    const crossover =
+      (qwen27b.pricePerMTokOut - nemotron.pricePerMTokOut) /
+      (nemotron.pricePerMTokIn - qwen27b.pricePerMTokIn);
+    expect(crossover).toBeCloseTo(25.833, 3);
+
+    // Below the crossover nemotron is cheaper and the shipped order holds;
+    // above it qwen-27b is, and the shipped order is WRONG. Both halves are
+    // asserted, because only the second one proves the mix carries information.
+    expect(estimateCostUsd(nemotron, 100, 100)).toBeLessThan(estimateCostUsd(qwen27b, 100, 100));
+    const above = Math.ceil(crossover * 1.5) * 100;
+    expect(estimateCostUsd(nemotron, above, 100)).toBeGreaterThan(estimateCostUsd(qwen27b, above, 100));
+
+    // THE PREMISE. Prompt-heavy by a wide margin, and under the crossover.
+    // Without the first assertion the two constants can be swapped for each
+    // other -- 200/200 and 1700/1700 both leave the slate correctly ordered by
+    // accident, and both mutations survived the suite before this line existed.
+    expect(REPRESENTATIVE_PROMPT_TOKENS).toBeGreaterThan(REPRESENTATIVE_COMPLETION_TOKENS * 4);
+    expect(REPRESENTATIVE_PROMPT_TOKENS / REPRESENTATIVE_COMPLETION_TOKENS).toBeLessThan(crossover);
+
+    // The pair the old justification named, and why it cannot serve as one:
+    // equal input rates, so no positive weighting separates them at all.
+    const glm = CEILING_MODELS.find((m) => m.id === "z-ai/glm-5.3-flash")!;
+    const qwenFlash = CEILING_MODELS.find((m) => m.id === "qwen/qwen3.8-flash")!;
+    expect(glm.pricePerMTokIn).toBe(qwenFlash.pricePerMTokIn);
+    expect(qwenFlash.pricePerMTokIn + qwenFlash.pricePerMTokOut).toBeLessThan(
+      glm.pricePerMTokIn + glm.pricePerMTokOut,
+    );
   });
 
   it("pins a provider and a quantization for every model, with 'unknown' a permitted VALUE", () => {
