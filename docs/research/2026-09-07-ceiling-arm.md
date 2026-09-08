@@ -1159,19 +1159,34 @@ Run thinking-**on**, GLM emitted reasoning p50 **228** and max **600** — the c
 what load, behind a US aggregator. They do not transfer. `reasoningTokens` and `completionTokens`
 do — they are properties of the model and the task.
 
-| arm | TTFT p50/p95 ms | decode tok/s p50 | **call** wall p50 ms | **item** wall p50 ms | 429s |
-|---|---|---|---|---|---|
-| `judge-mistral-small-2603` | 345 / 639 | 170.6 | **385** | 386 | 0 |
-| `judge-qwen3.8-27b` | 545 / 908 | 112.9 | 650 | 651 | 0 |
-| `b-mistral-small-2603` | 331 / 603 | 208.2 | 772 | 774 | 0 |
-| `judge-qwen3.8-flash` | 718 / 5697 | 82.6 | 1044 | 1190 | 5 |
-| `judge-nemotron-3-super-120b` | 755 / 1180 | 14.3 | 1262 | 1263 | 0 |
-| `judge-deepseek-v4-flash` | 1198 / 4828 | 726.7 | 1325 | 2127 | 154 |
-| `b-qwen3.8-27b` | 604 / 894 | 109.9 | 1404 | 1405 | 0 |
-| `b-deepseek-v4-flash` | 890 / 2297 | 89.3 | 2000 | 4089 | 161 |
-| `b-qwen3.8-flash` | 880 / 8591 | 113.3 | 2600 | 4249 | 25 |
-| `b-nemotron-3-super-120b` | 745 / 1208 | 13.7 | 5056 | 18724 | 0 |
-| `judge-glm-5.3-flash` **thinking ON** | 4476 / 10891 | 1017.4 | 5444 | 4885 | 0 |
+Pooled over **all three passes** (pass-1-only figures were in an earlier draft). The `decode tok/s`
+column is deliberately **absent**: §7.6 shows it is a throughput measurement for the B arms and
+frame-timing noise for the judge arms, and `ceiling-score.ts` now suppresses or flags it per arm
+rather than printing a number that is not a measurement. Item wall is **answered rows only**, per
+§7.4 — including rows with no calls inflated the old p95 by up to 2.5×.
+
+| arm | calls | TTFT p50/p95 ms | **call** wall p50 ms | **item** wall p50 ms | completion tok p50 | 429s |
+|---|---|---|---|---|---|---|
+| `judge-mistral-small-2603` | 567 | 312 / 563 | **357** | 358 | 7 | 0 |
+| `judge-qwen3.8-27b` | 567 | 556 / 871 | 709 | 710 | 6 | 0 |
+| `b-mistral-small-2603` | 568 | 311 / 592 | 752 | 752 | 81 | 0 |
+| `judge-qwen3.8-flash` | 567 | 704 / 4736 | 862 | 954 | 5 | 5 |
+| `judge-deepseek-v4-flash` | 561 | 866 / 3058 | 952 | 1250 | 7 | **266** |
+| `judge-nemotron-3-super-120b` | 522 | 719 / 2314 | 1209 | 1221 | 7 | 117 |
+| `b-qwen3.8-27b` | 567 | 643 / 984 | 1584 | 1584 | 69 | 0 |
+| `b-deepseek-v4-flash` | 541 | 869 / 2975 | 1948 | 2966 | 58 | **372** |
+| `b-qwen3.8-flash` | 555 | 792 / 5796 | 1978 | 2123 | 113 | 31 |
+| `b-nemotron-3-super-120b` | 565 | 731 / 2392 | 4487 | 4551 | 58 | 17 |
+| `judge-glm-5.3-flash` **thinking ON, 600 cap** | 216 | 4476 / 10891 | 5444 | 4885 | 235 | 0 |
+
+**The compiled judge is uniformly faster than Approach B on the same model** — 357 vs 752 ms on
+Mistral, 709 vs 1,584 on qwen-27b, 1,209 vs 4,487 on nemotron — and the reason is in the last
+column: it emits **5–7 completion tokens** where B emits **58–113**. The gap is decode volume, not
+model speed.
+
+**Rate limiting is concentrated, not ambient.** DeepSeek's two arms absorb **638 of the 808 total
+429s**; four arms (both Mistral, both qwen3.8-27b) saw none at all. That is a property of one provider's shared pool, not of the
+model, and it is the mechanism behind §7.4's unanswered rows.
 
 **The transferable number.** `reasoningTokens ÷ 60 tok/s` — a DGX Spark-class decode budget for a
 model this size — is **0.00 s for every one of the ten thinking-off arms**, because every one
