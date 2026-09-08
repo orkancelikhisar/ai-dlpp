@@ -54,12 +54,50 @@ srows = "".join(f"<tr><td class='l'>{s['segment']}</td><td>{s['calls']:,}</td><t
 TABLE_SPEND = ("<table class='data'>{CAP}<thead><tr><th class='l'>ledger segment</th><th>calls</th><th>billed</th></tr></thead><tbody>" + srows +
                f"<tr class='tot'><td class='l'>total (seven reconciled segments)</td><td>{S['calls']:,}</td><td>${S['costUsd']:.5f}</td></tr></tbody></table>")
 
-FIGS = {"FIG1": "f1-architecture.svg", "FIG2": "f2-headline.svg", "FIG3": "f3-variance.svg", "FIG5": "f5-thinking-on.svg",
-        "FIG6": "f6-latency.svg", "FIG7": "f7-cost.svg", "FIG8": "f8-pr-scatter.svg",
-        "EFIG_VARIANCE": "e-variance.svg", "EFIG_THINKON": "e-thinkon.svg", "EFIG_LATENCY": "e-latency.svg", "EFIG_SCATTER": "e-scatter.svg"}
+# ---- Table: in-browser feasibility (from the gates files) ---------------------
+F = N["local_feasibility"]
+order = ["Qwen3.5-2B", "Ministral-3-3B", "Qwen3-4B", "Phi-4-mini-instruct"]
+vram = {"Qwen3.5-2B": 2245, "Ministral-3-3B": 2864, "Qwen3-4B": 3432, "Phi-4-mini-instruct": 3438}
+def feas_row(prefix, label):
+    out = []
+    for m in order:
+        k = next((k for k in F if k.startswith(f"{prefix}{m} [")), None)
+        if not k: continue
+        x = F[k]; nm = m.replace("-instruct", "")
+        ans = f"{min(x['answered'], x['items'])}/{x['items']}"
+        ttft = f"{x['ttft_p95']:,}" if x["ttft_p95"] is not None else "—"
+        gate = "pass" if not x["killed_on_gates"] and x["answered"] else ("—" if not x["answered"] else "<b>killed</b>")
+        out.append(f"<tr><td class='l'>{label} · {nm}</td><td>{vram[m]:,}</td><td>{x['engine_load_ms']:,}</td><td>{ans}</td><td>{x['budget_exhausted']}</td>"
+                   f"<td>{ttft}</td><td>{x['item_wall_p50']:,}</td><td>{x['item_wall_p95']:,}</td><td>{x['decode_tok_s'] if x['decode_tok_s'] is not None else '—'}</td><td>{gate}</td></tr>")
+    return "".join(out)
+TABLE_FEAS = ("<table class='data'>{CAP}<thead><tr><th class='l'>configuration · model</th><th>VRAM MB</th><th>engine load ms</th><th>answered</th><th>budget-exhausted</th>"
+              "<th>TTFT p95 ms</th><th>per-message p50 ms</th><th>p95 ms</th><th>decode tok/s</th><th>p95-TTFT gate</th></tr></thead><tbody>"
+              + feas_row("tier2-", "compiled") + feas_row("baselineB-", "B") + "</tbody></table>")
+
+# ---- Table: prevention (entity level) ------------------------------------------
+Pv = N["prevention"]
+import statistics as st, collections
+prows = []
+for m in order:
+    k = next((k for k in Pv if k.startswith(f"tier2-{m} [")), None)
+    if k: v = Pv[k]; prows.append(f"<tr><td class='l'>in-browser compiled · {m.replace('-instruct','')}</td><td>{v['fully_caught']}/{v['leak_bearing']}</td><td><b>{100*v['leak_prevention']:.0f}%</b></td><td>{v['over_blocked']}/{v['clean']}</td><td><b>{100*v['over_blocking']:.0f}%</b></td></tr>")
+k = next(k for k in Pv if k.startswith("baselineB+tier0-Qwen3.5-2B ["))
+v = Pv[k]; prows.append(f"<tr><td class='l'>in-browser B + tier 0 · Qwen3.5-2B</td><td>{v['fully_caught']}/{v['leak_bearing']}</td><td>{100*v['leak_prevention']:.0f}%</td><td>{v['over_blocked']}/{v['clean']}</td><td>{100*v['over_blocking']:.0f}%</td></tr>")
+agg = collections.defaultdict(lambda: {"lp": [], "ob": []})
+for k, v in Pv.items():
+    if v["kind"] == "hosted" and "[ceiling-0" in k: a = k.split(" [")[0]; agg[a]["lp"].append(v["leak_prevention"]); agg[a]["ob"].append(v["over_blocking"])
+for a, d in sorted(agg.items(), key=lambda kv: -st.mean(kv[1]["lp"])):
+    prows.append(f"<tr><td class='l'>hosted B · {short(a).replace('B·','')} (3-pass mean)</td><td>—</td><td><b>{100*st.mean(d['lp']):.0f}%</b></td><td>—</td><td><b>{100*st.mean(d['ob']):.0f}%</b></td></tr>")
+v = Pv["b-glm-5.3-flash [thinkonglm-01]"]
+prows.append(f"<tr><td class='l'>hosted B · glm-5.3-flash, reasoning on (all rows; 59 unanswered)</td><td>{v['fully_caught']}/{v['leak_bearing']}</td><td>{100*v['leak_prevention']:.0f}%</td><td>{v['over_blocked']}/{v['clean']}</td><td>{100*v['over_blocking']:.0f}%</td></tr>")
+TABLE_PREVENTION = ("<table class='data'>{CAP}<thead><tr><th class='l'>arm</th><th>leaks fully caught</th><th>prevention</th><th>clean messages actioned</th><th>over-blocking</th></tr></thead><tbody>"
+                    + "".join(prows) + "</tbody></table>")
+
+FIGS = {"FIG1": "f1-architecture.svg", "FIG_SCORE": "f2-scorecard.svg", "FIG_FEAS": "f3-feasibility.svg", "FIG_VAR": "f4-variance.svg",
+        "FIG_THINK": "f5-thinking-on.svg", "FIG_LAT": "f6-latency.svg", "FIG_PR": "f8-pr-scatter.svg", "EFIG_SCORE": "e-scorecard.svg"}
 def render(template, outname):
     out = open(os.path.join(HERE, template), encoding="utf8").read()
-    tables = {"TABLE_CEILING": TABLE_CEILING, "TABLE_LATENCY": TABLE_LATENCY, "TABLE_SPEND": TABLE_SPEND}
+    tables = {"TABLE_CEILING": TABLE_CEILING, "TABLE_LATENCY": TABLE_LATENCY, "TABLE_SPEND": TABLE_SPEND, "TABLE_FEAS": TABLE_FEAS, "TABLE_PREVENTION": TABLE_PREVENTION}
     for k, tbl in tables.items():   # {{TABLE_X|CAP=...}} puts the caption INSIDE the table so it cannot be orphaned by a page break
         for m in list(re.finditer(r"\{\{" + k + r"\|CAP=(.*?)\}\}", out, re.S)):
             out = out.replace(m.group(0), tbl.replace("{CAP}", "<caption>" + m.group(1) + "</caption>"))

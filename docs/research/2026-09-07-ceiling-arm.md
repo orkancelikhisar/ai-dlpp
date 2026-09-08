@@ -1266,7 +1266,7 @@ finding that *the binding constraint is classification, not span extraction*, no
 
 ### 6. Spend
 
-**$0.900 total for the whole thinking-off experiment against a $10 key limit and a $7.00 hard stop.
+**$0.844 total for the whole thinking-off experiment ($0.900 with GLM's 600-cap thinking-ON run, which ran inside the same window) against a $10 key limit and a $7.00 hard stop.
 The guard never tripped.** An earlier draft of this section totalled $0.386 — that was pass 1 alone,
 before passes 2–3 existed and before their segment was added to the joiner.
 
@@ -1281,8 +1281,11 @@ before passes 2–3 existed and before their segment was added to the joiner.
 | `thinkonglm-01` (GLM thinking ON at 8,192, both arms) | 276 | $0.31599 |
 | **ledger total** | **6,502** | **$1.21937** |
 
-The first four rows are the thinking-off experiment (**$0.89988**); the last two are the thinking-ON
-phase (**$0.31949**). **The GLM pair alone cost 35% of the entire thinking-off slate** for two arms
+Four rows — the probe, both `ceiling-01` windows and `ceiling-02`+`03` — are the thinking-off experiment
+(**$0.84415**, 5,992 calls); `glmon-01` and the last two rows are the thinking-ON phase (**$0.37521**).
+An earlier version of this paragraph counted `glmon-01` as thinking-off ($0.89988 / $0.31949) and the
+paper's first draft inherited that split. **The 8,192-token GLM pair alone cost 37% of the entire
+thinking-off slate** for two arms
 out of eleven — mandatory reasoning at an 8,192-token ceiling is not a cheap condition.
 
 **One ledger in this table was destroyed, by me, in the way this whole file exists to catch.** The
@@ -1305,15 +1308,16 @@ behaviour for a key that cannot be read. The $1.29213 above is therefore a recor
 reproducible measurement, and the join's file-derived half is the only half that still reproduces.
 
 Per model, all passes and both families: qwen3.8-27b **$0.357**, nemotron $0.275, qwen3.8-flash
-$0.101, mistral $0.071, glm $0.056, deepseek **$0.041**. The spread is **8.8×** between the cheapest
+$0.101, mistral $0.071, glm $0.056 (its 600-cap thinking-ON judge run — GLM has no thinking-off arm), deepseek **$0.041**. The spread is **8.8×** between the cheapest
 and dearest model for identical work.
 
-Per family: judge **$0.295**, B **$0.605** — **B costs 2.05× the judge**, which is its 1,410-token
-prompt on every call. Note this is the *cost* ratio; §10.4 shows the *latency* ratio is larger
+Per family, thinking off: judge **$0.243**, B **$0.602** — **B costs 2.48× the judge** ($0.086 against
+$0.212 per thousand messages), which is its ~1,570-token prompt on every call. (An earlier version said
+$0.295 / 2.05×; it had counted GLM's thinking-ON 600-cap run in the judge family.) Note this is the *cost* ratio; §10.4 shows the *latency* ratio is larger
 (**2.05–3.71×** on the same model) because B also emits **8.3–22.6×** more completion tokens.
 
-**The price-table estimate overshoots the billed figure by 64%** ($1.475 estimated against $0.900
-billed) across all five segments. It feeds the spend guard, where overshooting is the safe
+**The price-table estimate overshoots the billed figure by 68%** ($1.417 estimated against $0.844
+billed) across the four thinking-off segments, and by 48% over the whole study ($1.806 against $1.219). It feeds the spend guard, where overshooting is the safe
 direction, and it is useless for budgeting — a run planned from it would reserve nearly twice what
 it needs.
 
@@ -1393,8 +1397,8 @@ being applied to the subset; the arm figures use the **overlap** rule, verified 
    `temperature: 0`. A single thinking-ON pass is not a variance-controlled measurement, and this
    document says so about every other single-pass number too.
 3. **The comparison is not clean on cost or latency.** The judge arm took 11.5 minutes for 189 rows
-   and B took **31.8 minutes**; the whole GLM pair cost $0.316, which is **35% of the entire
-   thinking-off experiment's $0.900** for two arms out of eleven.
+   and B took **31.8 minutes**; the whole GLM pair cost $0.316, which is **37% of the entire
+   thinking-off experiment's $0.844** for two arms out of eleven.
 4. **8,192 is not a resolved ceiling either** — it was hit. A truly cap-free measurement has not
    been made.
 5. **The other five models were not run thinking-ON, by decision.** A full-slate launch was started

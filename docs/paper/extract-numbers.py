@@ -169,12 +169,14 @@ for name, fn in segs:
     est += d["estimatedCostUsd"]
     for k,v in d["byModel"].items(): bym[k.split("/")[-1]] += v
     for k,v in d["byFamily"].items(): byf[k] += v
-toff = [json.load(open(os.path.join(RUNS, fn))) for _, fn in segs[:5]]
+toff = [json.load(open(os.path.join(RUNS, fn))) for i, (_, fn) in enumerate(segs) if i in (0, 1, 3, 4)]   # thinking-off only: glmon-01 is a thinking-ON run
+ton = [json.load(open(os.path.join(RUNS, fn))) for i, (_, fn) in enumerate(segs) if i in (2, 5, 6)]
 tbf = collections.Counter()
 for d in toff:
     for k, v in d["byFamily"].items(): tbf[k] += v
 thinkoff = {"calls": sum(d["calls"] for d in toff), "costUsd": round(sum(d["costUsd"] for d in toff),6), "estimateUsd": round(sum(d["estimatedCostUsd"] for d in toff),6), "byFamily": {k: round(v,5) for k,v in tbf.items()}}
-spend_total = {"thinkoff": thinkoff, "calls": sum(s["calls"] for s in spend), "costUsd": round(sum(s["costUsd"] for s in spend),6), "estimateUsd": round(est,6),
+thinkon_sub = {"calls": sum(d["calls"] for d in ton), "costUsd": round(sum(d["costUsd"] for d in ton),6)}
+spend_total = {"thinkoff": thinkoff, "thinkon": thinkon_sub, "calls": sum(s["calls"] for s in spend), "costUsd": round(sum(s["costUsd"] for s in spend),6), "estimateUsd": round(est,6),
                "byModel": {k: round(v,5) for k,v in bym.most_common()}, "byFamily": {k: round(v,5) for k,v in byf.items()},
                "keyFinalUsd": 1.29213, "keyLimitUsd": 10, "hardStopUsd": 7}
 
@@ -231,6 +233,84 @@ for l in res.stdout.split("\n"):
 if not oracle: print("WARN oracle helper produced nothing:", res.stderr[-400:], file=sys.stderr)
 thinkon["oracle_on_glm_b_rows"] = oracle
 
+# ---- in-browser feasibility, from the gates files + per-item wall time -------
+def q(v, p):
+    if not v: return None
+    v = sorted(v); return v[min(len(v)-1, int(p*len(v)))]
+local_feas = {}
+for g in sorted(glob.glob(os.path.join(RUNS, "slate-rebuild-*.gates.jsonl"))):
+    run = os.path.basename(g).replace(".gates.jsonl", "")
+    for r in rows(g):
+        arm = r["arm"].replace("-q4f16_1-MLC", "").replace("-Instruct-2512-BF16", "")
+        recs = rows(os.path.join(RUNS, f"{run}.{r['arm']}.jsonl"))
+        t2 = [x["timings"]["tier2Ms"] for x in recs if x.get("timings") and x["timings"].get("tier2Ms") is not None]
+        local_feas[f"{arm} [{run}]"] = {
+            "family": r["family"], "items": r["items"], "answered": r["answeredCalls"],
+            "budget_exhausted": (r.get("degradedItems") or {}).get("budget-exhausted", 0),
+            "ttft_p95": round(r["ttftMs"]["p95"]) if r.get("ttftMs") and r["ttftMs"].get("p95") is not None else None,
+            "prompt_p50": (r.get("promptTokens") or {}).get("p50"), "completion_p50": (r.get("completionTokens") or {}).get("p50"),
+            "decode_tok_s": round(r["sustainedDecodeTokPerSec"], 1) if r.get("sustainedDecodeTokPerSec") else None,
+            "engine_load_ms": round(r.get("engineLoadMs") or 0), "engine_warmup_ms": round(r.get("engineWarmupMs") or 0),
+            "budget_ms": r["run"]["latencyBudgetMs"], "killed_on_gates": r.get("killedOnRunGates"),
+            "item_wall_p50": round(q(t2, .5)) if t2 else None, "item_wall_p95": round(q(t2, .95)) if t2 else None,
+        }
+
+# answered-only per-message median for the in-browser arms (rows not budget-exhausted)
+for k, v in local_feas.items():
+    arm, run = k.split(" [")[0], k.split(" [")[1].rstrip("]")
+    raw = next(a for a in os.listdir(RUNS) if a.startswith(run + ".") and a.replace("-q4f16_1-MLC", "").replace("-Instruct-2512-BF16", "") == f"{run}.{arm}.jsonl")
+    recs = rows(os.path.join(RUNS, raw))
+    ans = [x["timings"]["tier2Ms"] for x in recs if x.get("timings") and not any(d.get("reason") == "budget-exhausted" for d in (x.get("degraded") or []))]
+    v["answered_wall_p50"] = round(q(ans, .5)) if ans else None
+# span-ladder health of the in-browser arms, from the gates
+local_ladder = {}
+for g in sorted(glob.glob(os.path.join(RUNS, "slate-rebuild-*.gates.jsonl"))):
+    run = os.path.basename(g).replace(".gates.jsonl", "")
+    for r in rows(g):
+        arm = r["arm"].replace("-q4f16_1-MLC", "").replace("-Instruct-2512-BF16", "")
+        lad = r.get("ladder") or {}
+        rr = next((x for x in (r.get("gates") or []) if x.get("gate") == "resolvable-rate"), {})
+        local_ladder[f"{arm} [{run}]"] = {"resolved": (lad.get("rung1") or 0) + (lad.get("rung2") or 0),
+                                          "unresolvedQuotes": lad.get("unresolvedQuotes"), "unresolvedMentions": lad.get("unresolvedMentions"), "unknownLabels": lad.get("unknownLabels"),
+                                          "resolvable_rate": (round(rr["observed"], 3) if rr.get("observed") is not None else None), "resolvable_floor": rr.get("threshold"), "verdict": rr.get("verdict"),
+                                          "killed": [x["gate"] for x in (r.get("gates") or []) if x.get("verdict") == "fail"]}
+
+# ---- leak-prevention / over-blocking at the entity level (spec 6.4 metric 1) ----
+def prevention(recs):
+    bearing = caught = clean = blocked = 0
+    for r in recs:
+        gs = [(x["start"], x["end"]) for x in (r.get("gold") or []) if not str(x.get("entityType", "")).startswith("pred:")]
+        fs = [(x["start"], x["end"]) for x in (r.get("findings") or []) if not str(x.get("entityType", "")).startswith("pred:")]
+        if gs:
+            bearing += 1
+            if all(any(f[0] < g[1] and g[0] < f[1] for f in fs) for g in gs): caught += 1
+        else:
+            clean += 1
+            if fs: blocked += 1
+    return {"leak_bearing": bearing, "fully_caught": caught, "leak_prevention": round(caught/bearing, 3) if bearing else None,
+            "clean": clean, "over_blocked": blocked, "over_blocking": round(blocked/clean, 3) if clean else None}
+prev = {}
+for g in sorted(glob.glob(os.path.join(RUNS, "slate-rebuild-*.gates.jsonl"))):
+    run = os.path.basename(g).replace(".gates.jsonl", "")
+    for r in rows(g):
+        arm = r["arm"].replace("-q4f16_1-MLC", "").replace("-Instruct-2512-BF16", "")
+        prev[f"{arm} [{run}]"] = {"kind": "in-browser", **prevention(rows(os.path.join(RUNS, f"{run}.{r['arm']}.jsonl")))}
+for f in sorted(glob.glob(os.path.join(RUNS, "ceiling-0[123].ceiling-b-*.jsonl"))) + [os.path.join(RUNS, "thinkonglm-01.ceiling-b-glm-5.3-flash.jsonl")]:
+    run, arm = armkey(f); prev[f"{arm} [{run}]"] = {"kind": "hosted", **prevention(rows(f))}
+
+# ---- cost per 1,000 messages ---------------------------------------------------
+per_model_msgs = 3 * 189 * 2   # three thinking-off passes, two families
+cost_1k = {"thinkoff_per_model": {m.split("/")[-1]: round(v / per_model_msgs * 1000, 4) for m, v in
+           collections.Counter({k: v for d in toff for k, v in d["byModel"].items()}).items()},
+           "thinkoff_judge": round(tbf["judge"] / (5 * 3 * 189) * 1000, 4), "thinkoff_b": round(tbf["b"] / (5 * 3 * 189) * 1000, 4)}
+# byModel across the five thinking-off segments, summed properly
+_bm = collections.Counter()
+for d in toff:
+    for k, v in d["byModel"].items(): _bm[k.split("/")[-1]] += v
+cost_1k["thinkoff_per_model"] = {k: round(v / per_model_msgs * 1000, 4) for k, v in _bm.items() if k != "glm-5.3-flash"}
+_g = json.load(open(os.path.join(RUNS, "ceiling-thinkonglm-01.spend.json")))["byFamily"]
+cost_1k["thinkon_glm_judge"] = round(_g["judge"] / 189 * 1000, 4); cost_1k["thinkon_glm_b"] = round(_g["b"] / 189 * 1000, 4)
+
 # ---- corpus facts -------------------------------------------------------------
 lab = rows(os.path.join(ROOT,"corpora/generated/injection-p-fin-v2.labelled.jsonl"))
 ents = [g for r in lab for g in (r.get("gold") or r.get("spans") or [])]
@@ -247,7 +327,8 @@ out = {"gold": G, "corpus": corpus, "floor_message_level_all": floor_all, "messa
                     "entity_per_arm": ent_spread, "entity_mean_spread": float(f"{st.mean(ent_spread.values()):.3f}"), "entity_max_spread": float(f"{max(ent_spread.values()):.3f}")},
        "local_message_level": local_msg, "spanwise_predicate": spanwise, "floors_spanwise": floors_spanwise,
        "spanlevel_entity": spanlevel, "span_floors": span_floors, "attempted_only": attempted, "latency": latency,
-       "structured": structured, "spend": {"segments": spend, **spend_total}, "thinkon": thinkon}
+       "structured": structured, "spend": {"segments": spend, **spend_total}, "thinkon": thinkon,
+       "local_feasibility": local_feas, "local_ladder": local_ladder, "prevention": prev, "cost_per_1k": cost_1k}
 json.dump(out, open(OUT,"w",encoding="utf8"), indent=1)
 print("wrote", OUT)
 print(f"  gold {G}  floor(msg) {floor_all['F1']}  variance mean {out['variance']['mean_spread']} max {out['variance']['max_spread']}")

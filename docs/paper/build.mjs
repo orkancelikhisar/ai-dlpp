@@ -25,7 +25,7 @@ try {
     await page.emulateMedia({ media: "print" });
     const footer = j.pdf === "paper.pdf"
       ? { displayHeaderFooter: true, headerTemplate: "<span></span>",
-          footerTemplate: "<div style='width:100%;font:7pt Helvetica,Arial,sans-serif;color:#666;padding:0 13mm;display:flex;justify-content:space-between'><span>AI-DLPP · capability-ceiling study · draft v1</span><span><span class='pageNumber'></span> / <span class='totalPages'></span></span></div>",
+          footerTemplate: "<div style='width:100%;font:7pt Helvetica,Arial,sans-serif;color:#666;padding:0 13mm;display:flex;justify-content:space-between'><span>AI-DLPP · capability-ceiling study · draft v2</span><span><span class='pageNumber'></span> / <span class='totalPages'></span></span></div>",
           margin: { top: "14mm", bottom: "16mm", left: "13mm", right: "13mm" } }
       : {};
     await page.pdf({ path: join(here, j.pdf), format: "A4", printBackground: true, preferCSSPageSize: !footer.displayHeaderFooter, ...footer });
