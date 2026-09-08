@@ -253,7 +253,7 @@ problem. Whatever is going wrong is not span extraction.
 
 ---
 
-## 7. Four measurement defects found in this arm's own instrumentation
+## 7. Five measurement defects found in this arm's own instrumentation
 
 Recorded here rather than quietly fixed, because each one changes how a number below reads.
 
@@ -411,6 +411,68 @@ actually answered — reported *beside* the whole-gold numbers, never instead of
 unanswered rows are a real cost of running against a rate-limited hosted provider and should not be
 defined away. That change is not in this document's numbers; it is queued with the other scorer
 work in §11.2, and every figure above is the as-published scoring unless the row says otherwise.
+
+---
+
+### 7.5 The predicate gold is a message-level label, and it is scored span-wise
+
+**This is the largest single effect found in this review, and it changes the answer to §10.1.**
+
+The predicate gold carries **179 scored message-level booleans and 19 spans**. The blind annotation
+round asked annotators one question per message — *does this message satisfy the predicate* — and
+the `spans` field is supplementary to that judgment. The table in §9.1, labelled "predicate level",
+does **not** score that judgment: it goes through `scoreArms`, which pairs a finding's **span**
+against a gold **span**. An arm that correctly identifies a disclosing message but points at the
+wrong phrase scores a false positive *and* a false negative.
+
+That is a defensible metric — pseudonymisation needs the span, and flagging the right message for
+the wrong reason is a real failure — but it is the **stricter of two**, and the document presents it
+as though it were the natural one.
+
+**The floor's 0.571 reproduces exactly** under an independent reimplementation (tp 14, fp 16, fn 5;
+identical under exact, overlap and iou50 — the three rules carry no information here, because gold
+predicate spans *are* capitalised organisation names like `Marrowfield Group`, so the reader either
+hits one exactly or misses it entirely; there is no partial-overlap regime). The published span-wise
+numbers are correct. The point is what the other metric says.
+
+**Scored on the judgment the gold actually records** — an arm predicts *satisfies* iff it emits any
+`pred:` finding on that message:
+
+| | P | R | F1 | tp / fp / fn |
+|---|---|---|---|---|
+| **FLOOR** capitalised-multiword | 0.633 | **1.000** | 0.776 | 19 / 11 / 0 |
+| `ceiling-02 judge-deepseek` | 0.826 | **1.000** | **0.905** | 19 / 4 / 0 |
+| `ceiling-01 judge-deepseek` | 0.833 | 0.789 | **0.811** | 15 / 3 / 4 |
+| `ceiling-02 judge-qwen3.8-27b` | 0.633 | 1.000 | 0.776 | 19 / 11 / 0 |
+| `ceiling-01 judge-qwen3.8-27b` | 0.613 | 1.000 | 0.760 | 19 / 12 / 0 |
+| `glmon-01 judge-glm` (thinking on) | **1.000** | 0.579 | 0.733 | 11 / 0 / 8 |
+| `ceiling-02 b-nemotron` | 0.000 | 0.000 | 0.000 | 0 / 0 / 19 |
+
+**Both passes of the compiled judge on DeepSeek beat the floor, by 0.129 and 0.035** — margins far
+outside the ±0.05-per-item noise that makes the span-wise comparison unreadable. The best arm holds
+**perfect recall with 4 false positives across 179 messages**, against the floor's 11. The B family
+collapses here (recall 0.158 or worse, two arms at zero), exactly as §6 predicts: it is asked about
+nine entity classes and rarely names the predicate at all.
+
+**What this does and does not license.**
+
+- It does **not** retract the span-wise result. Both are real: *these models find the right message
+  and are much less reliable about where in it to point* — the same shape as the local finding in
+  §5d, now at 30–120 B.
+- The floor's **perfect message-level recall is a corpus artifact** as much as a result: every
+  positive in this corpus contains a capitalised organisation name, which is the known open leak
+  (12 fragments in `families.v2.ts`). The floor cannot miss. That inflates the floor and makes the
+  best arm's margin *harder* to achieve, not easier — but it also means neither number transfers to
+  a corpus without that property.
+- The local bake-off's predicate figure (0.197, used for the "2.87×" claim) was computed span-wise
+  too. **It has not been recomputed at message level**, so the local-vs-ceiling ratio in §10.1 is
+  not comparable to this table and no ratio is quoted from it here.
+
+**What follows.** §9.1 should report both metrics side by side, and §10.1's answer differs by which
+one is asked: span-wise, the ceiling arms sit in the floor's neighbourhood; message-wise, the best
+compiled judge separates from it clearly. Neither of those was the document's original claim, which
+was that they stop at the floor. This is queued with the scorer work in §11.2 and is **not** in the
+§9 tables, which remain span-wise throughout.
 
 ---
 
@@ -638,6 +700,14 @@ solved decisively by any of these methods.
 > Pass 3 was in flight when this correction was written and is not in these figures. §9 carries the
 > per-pass table once all three land; this paragraph is rewritten against the full variance then,
 > not before.
+>
+> **Two further corrections bear on this paragraph and pull the same way.** §7.4: pass 1 was
+> rate-limited off a gold positive it never got to attempt, and the scorer charges that as a miss —
+> removing it moves pass 1 to 0.577. §7.5, larger: the predicate gold is a **message-level** label
+> scored span-wise here, and on the judgment the gold actually records, **both** DeepSeek judge
+> passes beat the floor — 0.905 and 0.811 against 0.776. The span-wise tie is real and so is the
+> message-level separation; they say different things about the same rows, and "the task itself is
+> not being solved by any of these methods" is not supportable as written.
 
 ### 2. Compiled (judge) or prompting (B) at the ceiling — and does it differ from the local result?
 

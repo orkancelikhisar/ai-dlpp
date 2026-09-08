@@ -1477,8 +1477,12 @@ statistic.**
    why it is a measurement arm and not a shippable path; the cloud boundary for the
    product is unchanged.
 
-   **The result, at the predicate level: the ceiling arms land in the neighbourhood of the
-   trivial capitalisation floor (0.571), not clearly above it.** Pass 1's best thinking-off
+   **The result depends on which of two metrics is asked, and the document reports the
+   stricter one.** Scored span-wise (as §9 there does), the ceiling arms land in the
+   neighbourhood of the trivial capitalisation floor (0.571) and do not clearly separate
+   from it. Scored on the **message-level boolean the predicate gold actually records**,
+   the best compiled judge does separate: **0.905 and 0.811 against a 0.776 floor**, with
+   perfect recall and 4 false positives on 179 messages. See that document's §7.5. Pass 1's best thinking-off
    arm scored 0.565 (−0.006); pass 2's same arm scored 0.615 (+0.044) at `temperature: 0`,
    with three items changing hands on a 19-positive gold. Pass-to-pass variance exceeds the
    distance to the floor, so this sample does not separate them. Against the *local* arms
