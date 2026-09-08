@@ -1,0 +1,1803 @@
+{
+ "gold": {
+  "scored": 179,
+  "positives": 19,
+  "disputed": 10
+ },
+ "corpus": {
+  "items": 189,
+  "entity_spans": 108,
+  "entity_types": [
+   "api-credential",
+   "bank-account-identifier",
+   "client-name",
+   "db-connection-string",
+   "in-aadhaar",
+   "in-pan",
+   "internal-customer-id",
+   "private-key-material"
+  ],
+  "items_with_entity": 108,
+  "predicate_gold": {
+   "scored": 179,
+   "positives": 19,
+   "disputed": 10
+  }
+ },
+ "floor_message_level_all": {
+  "P": 0.633,
+  "R": 1.0,
+  "F1": 0.776,
+  "F1_raw": 0.7755102040816326,
+  "tp": 19,
+  "fp": 11,
+  "fn": 0
+ },
+ "message_level": {
+  "b-deepseek-v4-flash-0731": {
+   "ceiling-01": {
+    "P": 0.75,
+    "R": 0.158,
+    "F1": 0.261,
+    "F1_raw": 0.2608695652173913,
+    "tp": 3,
+    "fp": 1,
+    "fn": 16
+   },
+   "ceiling-02": {
+    "P": 1.0,
+    "R": 0.158,
+    "F1": 0.273,
+    "F1_raw": 0.2727272727272727,
+    "tp": 3,
+    "fp": 0,
+    "fn": 16
+   },
+   "ceiling-03": {
+    "P": 1.0,
+    "R": 0.158,
+    "F1": 0.273,
+    "F1_raw": 0.2727272727272727,
+    "tp": 3,
+    "fp": 0,
+    "fn": 16
+   }
+  },
+  "b-mistral-small-2603": {
+   "ceiling-01": {
+    "P": 0.381,
+    "R": 0.421,
+    "F1": 0.4,
+    "F1_raw": 0.4,
+    "tp": 8,
+    "fp": 13,
+    "fn": 11
+   },
+   "ceiling-02": {
+    "P": 0.5,
+    "R": 0.421,
+    "F1": 0.457,
+    "F1_raw": 0.45714285714285713,
+    "tp": 8,
+    "fp": 8,
+    "fn": 11
+   },
+   "ceiling-03": {
+    "P": 0.286,
+    "R": 0.316,
+    "F1": 0.3,
+    "F1_raw": 0.3,
+    "tp": 6,
+    "fp": 15,
+    "fn": 13
+   }
+  },
+  "b-nemotron-3-super-120b-a12b": {
+   "ceiling-01": {
+    "P": 0.0,
+    "R": 0.0,
+    "F1": 0.0,
+    "F1_raw": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 19
+   },
+   "ceiling-02": {
+    "P": 0.0,
+    "R": 0.0,
+    "F1": 0.0,
+    "F1_raw": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 19
+   },
+   "ceiling-03": {
+    "P": 0.0,
+    "R": 0.0,
+    "F1": 0.0,
+    "F1_raw": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 19
+   }
+  },
+  "b-qwen3.8-27b": {
+   "ceiling-01": {
+    "P": 1.0,
+    "R": 0.158,
+    "F1": 0.273,
+    "F1_raw": 0.2727272727272727,
+    "tp": 3,
+    "fp": 0,
+    "fn": 16
+   },
+   "ceiling-02": {
+    "P": 1.0,
+    "R": 0.158,
+    "F1": 0.273,
+    "F1_raw": 0.2727272727272727,
+    "tp": 3,
+    "fp": 0,
+    "fn": 16
+   },
+   "ceiling-03": {
+    "P": 1.0,
+    "R": 0.158,
+    "F1": 0.273,
+    "F1_raw": 0.2727272727272727,
+    "tp": 3,
+    "fp": 0,
+    "fn": 16
+   }
+  },
+  "b-qwen3.8-flash": {
+   "ceiling-01": {
+    "P": 0.75,
+    "R": 0.158,
+    "F1": 0.261,
+    "F1_raw": 0.2608695652173913,
+    "tp": 3,
+    "fp": 1,
+    "fn": 16
+   },
+   "ceiling-02": {
+    "P": 1.0,
+    "R": 0.053,
+    "F1": 0.1,
+    "F1_raw": 0.1,
+    "tp": 1,
+    "fp": 0,
+    "fn": 18
+   },
+   "ceiling-03": {
+    "P": 0.75,
+    "R": 0.316,
+    "F1": 0.444,
+    "F1_raw": 0.44444444444444436,
+    "tp": 6,
+    "fp": 2,
+    "fn": 13
+   }
+  },
+  "judge-deepseek-v4-flash-0731": {
+   "ceiling-01": {
+    "P": 0.833,
+    "R": 0.789,
+    "F1": 0.811,
+    "F1_raw": 0.8108108108108109,
+    "tp": 15,
+    "fp": 3,
+    "fn": 4
+   },
+   "ceiling-02": {
+    "P": 0.826,
+    "R": 1.0,
+    "F1": 0.905,
+    "F1_raw": 0.9047619047619047,
+    "tp": 19,
+    "fp": 4,
+    "fn": 0
+   },
+   "ceiling-03": {
+    "P": 0.864,
+    "R": 1.0,
+    "F1": 0.927,
+    "F1_raw": 0.9268292682926829,
+    "tp": 19,
+    "fp": 3,
+    "fn": 0
+   }
+  },
+  "judge-mistral-small-2603": {
+   "ceiling-01": {
+    "P": 1.0,
+    "R": 0.053,
+    "F1": 0.1,
+    "F1_raw": 0.1,
+    "tp": 1,
+    "fp": 0,
+    "fn": 18
+   },
+   "ceiling-02": {
+    "P": 1.0,
+    "R": 0.211,
+    "F1": 0.348,
+    "F1_raw": 0.34782608695652173,
+    "tp": 4,
+    "fp": 0,
+    "fn": 15
+   },
+   "ceiling-03": {
+    "P": 1.0,
+    "R": 0.105,
+    "F1": 0.19,
+    "F1_raw": 0.1904761904761905,
+    "tp": 2,
+    "fp": 0,
+    "fn": 17
+   }
+  },
+  "judge-nemotron-3-super-120b-a12b": {
+   "ceiling-01": {
+    "P": 0.636,
+    "R": 0.368,
+    "F1": 0.467,
+    "F1_raw": 0.4666666666666667,
+    "tp": 7,
+    "fp": 4,
+    "fn": 12
+   },
+   "ceiling-02": {
+    "P": 0.556,
+    "R": 0.263,
+    "F1": 0.357,
+    "F1_raw": 0.35714285714285715,
+    "tp": 5,
+    "fp": 4,
+    "fn": 14
+   },
+   "ceiling-03": {
+    "P": 0.5,
+    "R": 0.211,
+    "F1": 0.296,
+    "F1_raw": 0.2962962962962963,
+    "tp": 4,
+    "fp": 4,
+    "fn": 15
+   }
+  },
+  "judge-qwen3.8-27b": {
+   "ceiling-01": {
+    "P": 0.613,
+    "R": 1.0,
+    "F1": 0.76,
+    "F1_raw": 0.76,
+    "tp": 19,
+    "fp": 12,
+    "fn": 0
+   },
+   "ceiling-02": {
+    "P": 0.633,
+    "R": 1.0,
+    "F1": 0.776,
+    "F1_raw": 0.7755102040816326,
+    "tp": 19,
+    "fp": 11,
+    "fn": 0
+   },
+   "ceiling-03": {
+    "P": 0.633,
+    "R": 1.0,
+    "F1": 0.776,
+    "F1_raw": 0.7755102040816326,
+    "tp": 19,
+    "fp": 11,
+    "fn": 0
+   }
+  },
+  "judge-qwen3.8-flash": {
+   "ceiling-01": {
+    "P": 0.295,
+    "R": 0.947,
+    "F1": 0.45,
+    "F1_raw": 0.45,
+    "tp": 18,
+    "fp": 43,
+    "fn": 1
+   },
+   "ceiling-02": {
+    "P": 0.316,
+    "R": 0.947,
+    "F1": 0.474,
+    "F1_raw": 0.47368421052631576,
+    "tp": 18,
+    "fp": 39,
+    "fn": 1
+   },
+   "ceiling-03": {
+    "P": 0.317,
+    "R": 1.0,
+    "F1": 0.481,
+    "F1_raw": 0.4810126582278481,
+    "tp": 19,
+    "fp": 41,
+    "fn": 0
+   }
+  },
+  "judge-glm-5.3-flash": {
+   "glmon-01": {
+    "P": 1.0,
+    "R": 0.579,
+    "F1": 0.733,
+    "F1_raw": 0.7333333333333334,
+    "tp": 11,
+    "fp": 0,
+    "fn": 8
+   },
+   "thinkonglm-01": {
+    "P": 0.867,
+    "R": 0.684,
+    "F1": 0.765,
+    "F1_raw": 0.7647058823529413,
+    "tp": 13,
+    "fp": 2,
+    "fn": 6
+   }
+  },
+  "b-glm-5.3-flash": {
+   "thinkonglm-01": {
+    "P": 0.4,
+    "R": 0.105,
+    "F1": 0.167,
+    "F1_raw": 0.16666666666666666,
+    "tp": 2,
+    "fp": 3,
+    "fn": 17
+   }
+  }
+ },
+ "unanswered": {
+  "b-deepseek-v4-flash-0731 [ceiling-01]": {
+   "unanswered": 19,
+   "positives_lost": 2
+  },
+  "b-mistral-small-2603 [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-nemotron-3-super-120b-a12b [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-27b [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-flash [ceiling-01]": {
+   "unanswered": 13,
+   "positives_lost": 1
+  },
+  "judge-deepseek-v4-flash-0731 [ceiling-01]": {
+   "unanswered": 4,
+   "positives_lost": 1
+  },
+  "judge-mistral-small-2603 [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-nemotron-3-super-120b-a12b [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-qwen3.8-27b [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-qwen3.8-flash [ceiling-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-deepseek-v4-flash-0731 [ceiling-02]": {
+   "unanswered": 4,
+   "positives_lost": 0
+  },
+  "b-mistral-small-2603 [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-nemotron-3-super-120b-a12b [ceiling-02]": {
+   "unanswered": 2,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-27b [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-flash [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-deepseek-v4-flash-0731 [ceiling-02]": {
+   "unanswered": 1,
+   "positives_lost": 0
+  },
+  "judge-mistral-small-2603 [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-nemotron-3-super-120b-a12b [ceiling-02]": {
+   "unanswered": 25,
+   "positives_lost": 1
+  },
+  "judge-qwen3.8-27b [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-qwen3.8-flash [ceiling-02]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-deepseek-v4-flash-0731 [ceiling-03]": {
+   "unanswered": 4,
+   "positives_lost": 2
+  },
+  "b-mistral-small-2603 [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-nemotron-3-super-120b-a12b [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-27b [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-qwen3.8-flash [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-deepseek-v4-flash-0731 [ceiling-03]": {
+   "unanswered": 1,
+   "positives_lost": 0
+  },
+  "judge-mistral-small-2603 [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-nemotron-3-super-120b-a12b [ceiling-03]": {
+   "unanswered": 20,
+   "positives_lost": 2
+  },
+  "judge-qwen3.8-27b [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-qwen3.8-flash [ceiling-03]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "judge-glm-5.3-flash [glmon-01]": {
+   "unanswered": 0,
+   "positives_lost": 0
+  },
+  "b-glm-5.3-flash [thinkonglm-01]": {
+   "unanswered": 59,
+   "positives_lost": 5
+  },
+  "judge-glm-5.3-flash [thinkonglm-01]": {
+   "unanswered": 61,
+   "positives_lost": 6
+  }
+ },
+ "local_best_message": {
+  "arm": "tier2-Qwen3-4B [slate-rebuild-01c]",
+  "P": 0.19,
+  "R": 0.421,
+  "F1": 0.262,
+  "F1_raw": 0.26229508196721313,
+  "tp": 8,
+  "fp": 34,
+  "fn": 11
+ },
+ "variance": {
+  "per_arm": {
+   "b-deepseek-v4-flash-0731": {
+    "passes": [
+     0.261,
+     0.273,
+     0.273
+    ],
+    "spread": 0.012
+   },
+   "b-mistral-small-2603": {
+    "passes": [
+     0.4,
+     0.457,
+     0.3
+    ],
+    "spread": 0.157
+   },
+   "b-nemotron-3-super-120b-a12b": {
+    "passes": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "spread": 0.0
+   },
+   "b-qwen3.8-27b": {
+    "passes": [
+     0.273,
+     0.273,
+     0.273
+    ],
+    "spread": 0.0
+   },
+   "b-qwen3.8-flash": {
+    "passes": [
+     0.261,
+     0.1,
+     0.444
+    ],
+    "spread": 0.344
+   },
+   "judge-deepseek-v4-flash-0731": {
+    "passes": [
+     0.811,
+     0.905,
+     0.927
+    ],
+    "spread": 0.116
+   },
+   "judge-mistral-small-2603": {
+    "passes": [
+     0.1,
+     0.348,
+     0.19
+    ],
+    "spread": 0.248
+   },
+   "judge-nemotron-3-super-120b-a12b": {
+    "passes": [
+     0.467,
+     0.357,
+     0.296
+    ],
+    "spread": 0.17
+   },
+   "judge-qwen3.8-27b": {
+    "passes": [
+     0.76,
+     0.776,
+     0.776
+    ],
+    "spread": 0.016
+   },
+   "judge-qwen3.8-flash": {
+    "passes": [
+     0.45,
+     0.474,
+     0.481
+    ],
+    "spread": 0.031
+   }
+  },
+  "mean_spread": 0.109,
+  "max_spread": 0.344,
+  "entity_per_arm": {
+   "b-nemotron-3-super-120b-a12b": 0.011,
+   "b-deepseek-v4-flash-0731": 0.025,
+   "b-qwen3.8-27b": 0.012,
+   "b-mistral-small-2603": 0.019,
+   "b-qwen3.8-flash": 0.022
+  },
+  "entity_mean_spread": 0.018,
+  "entity_max_spread": 0.025
+ },
+ "local_message_level": {
+  "baselineB+tier0-Qwen3.5-2B [slate-rebuild-01]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 1,
+   "fn": 19
+  },
+  "baselineB-Qwen3.5-2B [slate-rebuild-01]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 1,
+   "fn": 19
+  },
+  "tier2-Ministral-3-3B [slate-rebuild-01]": {
+   "P": 0.25,
+   "R": 0.211,
+   "F1": 0.229,
+   "F1_raw": 0.22857142857142856,
+   "tp": 4,
+   "fp": 12,
+   "fn": 15
+  },
+  "tier2-Qwen3.5-2B [slate-rebuild-01]": {
+   "P": 0.111,
+   "R": 0.316,
+   "F1": 0.164,
+   "F1_raw": 0.1643835616438356,
+   "tp": 6,
+   "fp": 48,
+   "fn": 13
+  },
+  "tier2only-Ministral-3-3B [slate-rebuild-01]": {
+   "P": 0.2,
+   "R": 0.211,
+   "F1": 0.205,
+   "F1_raw": 0.20512820512820512,
+   "tp": 4,
+   "fp": 16,
+   "fn": 15
+  },
+  "tier2only-Qwen3.5-2B [slate-rebuild-01]": {
+   "P": 0.132,
+   "R": 0.263,
+   "F1": 0.175,
+   "F1_raw": 0.17543859649122803,
+   "tp": 5,
+   "fp": 33,
+   "fn": 14
+  },
+  "baselineB+tier0-Ministral-3-3B [slate-rebuild-01b]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "baselineB-Ministral-3-3B [slate-rebuild-01b]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "baselineB+tier0-Phi-4-mini-instruct [slate-rebuild-01c]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "baselineB+tier0-Qwen3-4B [slate-rebuild-01c]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "baselineB-Phi-4-mini-instruct [slate-rebuild-01c]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "baselineB-Qwen3-4B [slate-rebuild-01c]": {
+   "P": 0.0,
+   "R": 0.0,
+   "F1": 0.0,
+   "F1_raw": 0.0,
+   "tp": 0,
+   "fp": 0,
+   "fn": 19
+  },
+  "tier2-Phi-4-mini-instruct [slate-rebuild-01c]": {
+   "P": 0.136,
+   "R": 0.895,
+   "F1": 0.236,
+   "F1_raw": 0.23611111111111113,
+   "tp": 17,
+   "fp": 108,
+   "fn": 2
+  },
+  "tier2-Qwen3-4B [slate-rebuild-01c]": {
+   "P": 0.19,
+   "R": 0.421,
+   "F1": 0.262,
+   "F1_raw": 0.26229508196721313,
+   "tp": 8,
+   "fp": 34,
+   "fn": 11
+  },
+  "tier2only-Phi-4-mini-instruct [slate-rebuild-01c]": {
+   "P": 0.124,
+   "R": 0.895,
+   "F1": 0.218,
+   "F1_raw": 0.21794871794871792,
+   "tp": 17,
+   "fp": 120,
+   "fn": 2
+  },
+  "tier2only-Qwen3-4B [slate-rebuild-01c]": {
+   "P": 0.154,
+   "R": 0.421,
+   "F1": 0.225,
+   "F1_raw": 0.22535211267605634,
+   "tp": 8,
+   "fp": 44,
+   "fn": 11
+  }
+ },
+ "spanwise_predicate": {
+  "ceiling-judge-deepseek-v4-flash-0731 [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "1",
+   "R": "0",
+   "F1": "0.627"
+  },
+  "ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "1",
+   "R": "0",
+   "F1": "0.615"
+  },
+  "ceiling-judge-glm-5.3-flash [glmon-01] **thinking ON**": {
+   "kind": "ceiling",
+   "P": "0.625",
+   "R": "0.526",
+   "F1": "0.571"
+  },
+  "ceiling-judge-qwen3.8-27b [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.432",
+   "R": "0.842",
+   "F1": "0.571"
+  },
+  "ceiling-judge-qwen3.8-27b [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.432",
+   "R": "0.842",
+   "F1": "0.571"
+  },
+  "ceiling-judge-deepseek-v4-flash-0731 [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "4",
+   "R": "1",
+   "F1": "0.565"
+  },
+  "ceiling-judge-qwen3.8-27b [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.421",
+   "R": "0.842",
+   "F1": "0.561"
+  },
+  "ceiling-judge-glm-5.3-flash [thinkonglm-01] **thinking ON**": {
+   "kind": "ceiling",
+   "P": "58",
+   "R": "6",
+   "F1": "0.524"
+  },
+  "ceiling-judge-nemotron-3-super-120b-a12b [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.545",
+   "R": "0.316",
+   "F1": "0.400"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.250",
+   "R": "0.105",
+   "F1": "0.148"
+  },
+  "ceiling-judge-nemotron-3-super-120b-a12b [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "21",
+   "R": "1",
+   "F1": "0.357"
+  },
+  "ceiling-judge-qwen3.8-flash [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.219",
+   "R": "0.842",
+   "F1": "0.348"
+  },
+  "ceiling-judge-qwen3.8-flash [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.213",
+   "R": "0.842",
+   "F1": "0.340"
+  },
+  "ceiling-judge-qwen3.8-flash [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.213",
+   "R": "0.842",
+   "F1": "0.340"
+  },
+  "ceiling-judge-mistral-small-2603 [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.667",
+   "R": "0.211",
+   "F1": "0.320"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.200",
+   "R": "0.263",
+   "F1": "0.227"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.200",
+   "R": "0.211",
+   "F1": "0.205"
+  },
+  "ceiling-judge-nemotron-3-super-120b-a12b [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "19",
+   "R": "2",
+   "F1": "0.222"
+  },
+  "tier2-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "70",
+   "R": "10",
+   "F1": "0.197"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.087",
+   "R": "0.105",
+   "F1": "0.095"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "13",
+   "R": "1",
+   "F1": "0.174"
+  },
+  "tier2only-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "57",
+   "R": "10",
+   "F1": "0.169"
+  },
+  "tier2-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "3",
+   "R": "0",
+   "F1": "0.135"
+  },
+  "tier2only-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "2",
+   "R": "0",
+   "F1": "0.125"
+  },
+  "ceiling-judge-mistral-small-2603 [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.333",
+   "R": "0.053",
+   "F1": "0.091"
+  },
+  "tier2-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "0.019",
+   "R": "0.053",
+   "F1": "0.027"
+  },
+  "tier2only-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "baselineB-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "71",
+   "R": "6",
+   "F1": "0.000"
+  },
+  "baselineB+tier0-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "62",
+   "R": "3",
+   "F1": "0.000"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "17",
+   "R": "2",
+   "F1": "0.000"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "4",
+   "R": "0",
+   "F1": "0.000"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "4",
+   "R": "2",
+   "F1": "0.000"
+  },
+  "ceiling-b-glm-5.3-flash [thinkonglm-01] **thinking ON**": {
+   "kind": "ceiling",
+   "P": "55",
+   "R": "5",
+   "F1": "0.000"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "ceiling-judge-mistral-small-2603 [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  },
+  "tier2-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "39",
+   "R": "4",
+   "F1": "0.000"
+  },
+  "tier2only-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "17",
+   "R": "3",
+   "F1": "0.000"
+  },
+  "baselineB-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "baselineB-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "baselineB-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "baselineB+tier0-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "baselineB+tier0-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "baselineB+tier0-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "P": "179",
+   "R": "19",
+   "F1": "\u2014"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-01]": {
+   "kind": "ceiling",
+   "P": "\u2014",
+   "R": "0.000",
+   "F1": "\u2014"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-02]": {
+   "kind": "ceiling",
+   "P": "2",
+   "R": "0",
+   "F1": "\u2014"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-03]": {
+   "kind": "ceiling",
+   "P": "\u2014",
+   "R": "0.000",
+   "F1": "\u2014"
+  }
+ },
+ "floors_spanwise": {
+  "capitalised-multiword": {
+   "P": "0.380",
+   "R": "1.000",
+   "F1": "0.551"
+  },
+  "first-capitalised-multiword": {
+   "P": "0.467",
+   "R": "0.737",
+   "F1": "0.571"
+  },
+  "whole-message": {
+   "P": "0.000",
+   "R": "0.000",
+   "F1": "0.000"
+  }
+ },
+ "spanlevel_entity": {
+  "ceiling-b-glm-5.3-flash [thinkonglm-01] **thinking ON**": {
+   "kind": "ceiling",
+   "findings": 93,
+   "tp": 70,
+   "fp": 23,
+   "fn": 38,
+   "P": "0.753",
+   "R": "0.648",
+   "F1": "0.697"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-01]": {
+   "kind": "ceiling",
+   "findings": 123,
+   "tp": 78,
+   "fp": 45,
+   "fn": 30,
+   "P": "0.634",
+   "R": "0.722",
+   "F1": "0.675"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-02]": {
+   "kind": "ceiling",
+   "findings": 131,
+   "tp": 80,
+   "fp": 51,
+   "fn": 28,
+   "P": "0.611",
+   "R": "0.741",
+   "F1": "0.669"
+  },
+  "ceiling-b-nemotron-3-super-120b-a12b [ceiling-03]": {
+   "kind": "ceiling",
+   "findings": 130,
+   "tp": 79,
+   "fp": 51,
+   "fn": 29,
+   "P": "0.608",
+   "R": "0.731",
+   "F1": "0.664"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-02]": {
+   "kind": "ceiling",
+   "findings": 198,
+   "tp": 91,
+   "fp": 107,
+   "fn": 17,
+   "P": "0.460",
+   "R": "0.843",
+   "F1": "0.595"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-03]": {
+   "kind": "ceiling",
+   "findings": 235,
+   "tp": 101,
+   "fp": 134,
+   "fn": 7,
+   "P": "0.430",
+   "R": "0.935",
+   "F1": "0.589"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-01]": {
+   "kind": "ceiling",
+   "findings": 241,
+   "tp": 102,
+   "fp": 139,
+   "fn": 6,
+   "P": "0.423",
+   "R": "0.944",
+   "F1": "0.585"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-03]": {
+   "kind": "ceiling",
+   "findings": 211,
+   "tp": 93,
+   "fp": 118,
+   "fn": 15,
+   "P": "0.441",
+   "R": "0.861",
+   "F1": "0.583"
+  },
+  "ceiling-b-qwen3.8-27b [ceiling-02]": {
+   "kind": "ceiling",
+   "findings": 242,
+   "tp": 101,
+   "fp": 141,
+   "fn": 7,
+   "P": "0.417",
+   "R": "0.935",
+   "F1": "0.577"
+  },
+  "ceiling-b-deepseek-v4-flash-0731 [ceiling-01]": {
+   "kind": "ceiling",
+   "findings": 197,
+   "tp": 87,
+   "fp": 110,
+   "fn": 21,
+   "P": "0.442",
+   "R": "0.806",
+   "F1": "0.570"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-03]": {
+   "kind": "ceiling",
+   "findings": 200,
+   "tp": 84,
+   "fp": 116,
+   "fn": 24,
+   "P": "0.420",
+   "R": "0.778",
+   "F1": "0.545"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-02]": {
+   "kind": "ceiling",
+   "findings": 283,
+   "tp": 106,
+   "fp": 177,
+   "fn": 2,
+   "P": "0.375",
+   "R": "0.981",
+   "F1": "0.542"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-03]": {
+   "kind": "ceiling",
+   "findings": 265,
+   "tp": 99,
+   "fp": 166,
+   "fn": 9,
+   "P": "0.374",
+   "R": "0.917",
+   "F1": "0.531"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-02]": {
+   "kind": "ceiling",
+   "findings": 211,
+   "tp": 84,
+   "fp": 127,
+   "fn": 24,
+   "P": "0.398",
+   "R": "0.778",
+   "F1": "0.527"
+  },
+  "ceiling-b-mistral-small-2603 [ceiling-01]": {
+   "kind": "ceiling",
+   "findings": 196,
+   "tp": 80,
+   "fp": 116,
+   "fn": 28,
+   "P": "0.408",
+   "R": "0.741",
+   "F1": "0.526"
+  },
+  "ceiling-b-qwen3.8-flash [ceiling-01]": {
+   "kind": "ceiling",
+   "findings": 261,
+   "tp": 96,
+   "fp": 165,
+   "fn": 12,
+   "P": "0.368",
+   "R": "0.889",
+   "F1": "0.520"
+  },
+  "baselineB-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 43,
+   "tp": 25,
+   "fp": 18,
+   "fn": 83,
+   "P": "0.581",
+   "R": "0.231",
+   "F1": "0.331"
+  },
+  "baselineB+tier0-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 217,
+   "tp": 79,
+   "fp": 138,
+   "fn": 29,
+   "P": "0.364",
+   "R": "0.731",
+   "F1": "0.486"
+  },
+  "baselineB+tier0-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 200,
+   "tp": 72,
+   "fp": 128,
+   "fn": 36,
+   "P": "0.360",
+   "R": "0.667",
+   "F1": "0.468"
+  },
+  "baselineB+tier0-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 200,
+   "tp": 72,
+   "fp": 128,
+   "fn": 36,
+   "P": "0.360",
+   "R": "0.667",
+   "F1": "0.468"
+  },
+  "baselineB+tier0-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 200,
+   "tp": 72,
+   "fp": 128,
+   "fn": 36,
+   "P": "0.360",
+   "R": "0.667",
+   "F1": "0.468"
+  },
+  "tier2-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 200,
+   "tp": 72,
+   "fp": 128,
+   "fn": 36,
+   "P": "0.360",
+   "R": "0.667",
+   "F1": "0.468"
+  },
+  "tier2-Qwen3.5-2B-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 199,
+   "tp": 71,
+   "fp": 128,
+   "fn": 37,
+   "P": "0.357",
+   "R": "0.657",
+   "F1": "0.463"
+  },
+  "tier2-Qwen3-4B-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 198,
+   "tp": 70,
+   "fp": 128,
+   "fn": 38,
+   "P": "0.354",
+   "R": "0.648",
+   "F1": "0.458"
+  },
+  "tier2-Phi-4-mini-instruct-q4f16_1-MLC": {
+   "kind": "local",
+   "findings": 194,
+   "tp": 67,
+   "fp": 127,
+   "fn": 41,
+   "P": "0.345",
+   "R": "0.620",
+   "F1": "0.444"
+  }
+ },
+ "span_floors": {
+  "budget-matched": {
+   "P": "0.705",
+   "R": "0.685",
+   "F1": "0.695"
+  },
+  "unbudgeted": {
+   "P": "0.307",
+   "R": "0.870",
+   "F1": "0.454"
+  }
+ },
+ "attempted_only": [
+  {
+   "arm": "ceiling-judge-deepseek-v4-flash-0731 [ceiling-03]",
+   "unanswered": 1,
+   "positives_lost": 0,
+   "whole_F1": "0.627",
+   "whole_floor": "0.571",
+   "att_F1": "0.627",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]",
+   "unanswered": 1,
+   "positives_lost": 0,
+   "whole_F1": "0.615",
+   "whole_floor": "0.571",
+   "att_F1": "0.615",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "ceiling-judge-glm-5.3-flash [thinkonglm-01] **thinking ON**",
+   "unanswered": 58,
+   "positives_lost": 6,
+   "whole_F1": "0.524",
+   "whole_floor": "0.571",
+   "att_F1": "0.611",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "ceiling-judge-deepseek-v4-flash-0731 [ceiling-01]",
+   "unanswered": 4,
+   "positives_lost": 1,
+   "whole_F1": "0.565",
+   "whole_floor": "0.571",
+   "att_F1": "0.578",
+   "att_floor": "0.565"
+  },
+  {
+   "arm": "ceiling-judge-nemotron-3-super-120b-a12b [ceiling-02]",
+   "unanswered": 21,
+   "positives_lost": 1,
+   "whole_F1": "0.357",
+   "whole_floor": "0.571",
+   "att_F1": "0.370",
+   "att_floor": "0.578"
+  },
+  {
+   "arm": "ceiling-judge-nemotron-3-super-120b-a12b [ceiling-03]",
+   "unanswered": 19,
+   "positives_lost": 2,
+   "whole_F1": "0.222",
+   "whole_floor": "0.571",
+   "att_F1": "0.240",
+   "att_floor": "0.548"
+  },
+  {
+   "arm": "tier2-Qwen3-4B-q4f16_1-MLC",
+   "unanswered": 70,
+   "positives_lost": 10,
+   "whole_F1": "0.197",
+   "whole_floor": "0.571",
+   "att_F1": "0.235",
+   "att_floor": "0.545"
+  },
+  {
+   "arm": "tier2only-Qwen3-4B-q4f16_1-MLC",
+   "unanswered": 57,
+   "positives_lost": 10,
+   "whole_F1": "0.169",
+   "whole_floor": "0.571",
+   "att_F1": "0.197",
+   "att_floor": "0.500"
+  },
+  {
+   "arm": "ceiling-b-qwen3.8-flash [ceiling-01]",
+   "unanswered": 13,
+   "positives_lost": 1,
+   "whole_F1": "0.174",
+   "whole_floor": "0.571",
+   "att_F1": "0.182",
+   "att_floor": "0.565"
+  },
+  {
+   "arm": "tier2-Phi-4-mini-instruct-q4f16_1-MLC",
+   "unanswered": 3,
+   "positives_lost": 0,
+   "whole_F1": "0.135",
+   "whole_floor": "0.571",
+   "att_F1": "0.135",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "tier2only-Phi-4-mini-instruct-q4f16_1-MLC",
+   "unanswered": 2,
+   "positives_lost": 0,
+   "whole_F1": "0.125",
+   "whole_floor": "0.571",
+   "att_F1": "0.125",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "baselineB-Qwen3.5-2B-q4f16_1-MLC",
+   "unanswered": 71,
+   "positives_lost": 6,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.542"
+  },
+  {
+   "arm": "baselineB+tier0-Qwen3.5-2B-q4f16_1-MLC",
+   "unanswered": 62,
+   "positives_lost": 3,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "ceiling-b-deepseek-v4-flash-0731 [ceiling-01]",
+   "unanswered": 17,
+   "positives_lost": 2,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.548"
+  },
+  {
+   "arm": "ceiling-b-deepseek-v4-flash-0731 [ceiling-02]",
+   "unanswered": 4,
+   "positives_lost": 0,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.571"
+  },
+  {
+   "arm": "ceiling-b-deepseek-v4-flash-0731 [ceiling-03]",
+   "unanswered": 4,
+   "positives_lost": 2,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.548"
+  },
+  {
+   "arm": "ceiling-b-glm-5.3-flash [thinkonglm-01] **thinking ON**",
+   "unanswered": 55,
+   "positives_lost": 5,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.538"
+  },
+  {
+   "arm": "tier2-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC",
+   "unanswered": 39,
+   "positives_lost": 4,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.536"
+  },
+  {
+   "arm": "tier2only-Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC",
+   "unanswered": 17,
+   "positives_lost": 3,
+   "whole_F1": "0.000",
+   "whole_floor": "0.571",
+   "att_F1": "0.000",
+   "att_floor": "0.533"
+  }
+ ],
+ "latency": {
+  "b-deepseek-v4-flash-0731": {
+   "calls": 541,
+   "ttft_p50": 869,
+   "ttft_p95": 2975,
+   "call_wall_p50": 1948,
+   "item_wall_p50_answered": 2966,
+   "completion_p50": 58,
+   "n429": 372,
+   "reasoning_zero": 541,
+   "reasoning_n": 541
+  },
+  "b-mistral-small-2603": {
+   "calls": 568,
+   "ttft_p50": 311,
+   "ttft_p95": 592,
+   "call_wall_p50": 752,
+   "item_wall_p50_answered": 752,
+   "completion_p50": 81,
+   "n429": 0,
+   "reasoning_zero": 568,
+   "reasoning_n": 568
+  },
+  "b-nemotron-3-super-120b-a12b": {
+   "calls": 565,
+   "ttft_p50": 731,
+   "ttft_p95": 2392,
+   "call_wall_p50": 4487,
+   "item_wall_p50_answered": 4551,
+   "completion_p50": 58,
+   "n429": 17,
+   "reasoning_zero": 565,
+   "reasoning_n": 565
+  },
+  "b-qwen3.8-27b": {
+   "calls": 567,
+   "ttft_p50": 643,
+   "ttft_p95": 984,
+   "call_wall_p50": 1584,
+   "item_wall_p50_answered": 1584,
+   "completion_p50": 69,
+   "n429": 0,
+   "reasoning_zero": 567,
+   "reasoning_n": 567
+  },
+  "b-qwen3.8-flash": {
+   "calls": 555,
+   "ttft_p50": 792,
+   "ttft_p95": 5796,
+   "call_wall_p50": 1978,
+   "item_wall_p50_answered": 2123,
+   "completion_p50": 113,
+   "n429": 31,
+   "reasoning_zero": 555,
+   "reasoning_n": 555
+  },
+  "judge-deepseek-v4-flash-0731": {
+   "calls": 561,
+   "ttft_p50": 866,
+   "ttft_p95": 3058,
+   "call_wall_p50": 952,
+   "item_wall_p50_answered": 1250,
+   "completion_p50": 7,
+   "n429": 266,
+   "reasoning_zero": 561,
+   "reasoning_n": 561
+  },
+  "judge-mistral-small-2603": {
+   "calls": 567,
+   "ttft_p50": 312,
+   "ttft_p95": 563,
+   "call_wall_p50": 357,
+   "item_wall_p50_answered": 358,
+   "completion_p50": 7,
+   "n429": 0,
+   "reasoning_zero": 567,
+   "reasoning_n": 567
+  },
+  "judge-nemotron-3-super-120b-a12b": {
+   "calls": 522,
+   "ttft_p50": 719,
+   "ttft_p95": 2314,
+   "call_wall_p50": 1209,
+   "item_wall_p50_answered": 1221,
+   "completion_p50": 7,
+   "n429": 117,
+   "reasoning_zero": 522,
+   "reasoning_n": 522
+  },
+  "judge-qwen3.8-27b": {
+   "calls": 567,
+   "ttft_p50": 556,
+   "ttft_p95": 871,
+   "call_wall_p50": 709,
+   "item_wall_p50_answered": 710,
+   "completion_p50": 6,
+   "n429": 0,
+   "reasoning_zero": 567,
+   "reasoning_n": 567
+  },
+  "judge-qwen3.8-flash": {
+   "calls": 567,
+   "ttft_p50": 704,
+   "ttft_p95": 4736,
+   "call_wall_p50": 862,
+   "item_wall_p50_answered": 954,
+   "completion_p50": 5,
+   "n429": 5,
+   "reasoning_zero": 567,
+   "reasoning_n": 567
+  }
+ },
+ "structured": {
+  "calls": 5580,
+  "parse": {
+   "ok": 5577,
+   "truncated": 3
+  },
+  "reasoning_exactly_zero": 5580,
+  "reasoning_null": 0,
+  "completion_ge_512": 12,
+  "truncated": 3
+ },
+ "spend": {
+  "segments": [
+   {
+    "segment": "probe",
+    "calls": 11,
+    "costUsd": 0.00121
+   },
+   {
+    "segment": "ceiling-01 window 1",
+    "calls": 1457,
+    "costUsd": 0.13645
+   },
+   {
+    "segment": "glmon-01",
+    "calls": 225,
+    "costUsd": 0.05572
+   },
+   {
+    "segment": "ceiling-01 window 2",
+    "calls": 768,
+    "costUsd": 0.19269
+   },
+   {
+    "segment": "ceiling-02+03",
+    "calls": 3756,
+    "costUsd": 0.51381
+   },
+   {
+    "segment": "thinkon-01 (aborted)",
+    "calls": 9,
+    "costUsd": 0.0035
+   },
+   {
+    "segment": "thinkonglm-01",
+    "calls": 276,
+    "costUsd": 0.31599
+   }
+  ],
+  "thinkoff": {
+   "calls": 6217,
+   "costUsd": 0.899876,
+   "estimateUsd": 1.475117,
+   "byFamily": {
+    "judge": 0.29493,
+    "b": 0.60495
+   }
+  },
+  "calls": 6502,
+  "costUsd": 1.21937,
+  "estimateUsd": 1.805783,
+  "byModel": {
+   "glm-5.3-flash": 0.37171,
+   "qwen3.8-27b": 0.35696,
+   "nemotron-3-super-120b-a12b": 0.27465,
+   "qwen3.8-flash": 0.10319,
+   "mistral-small-2603": 0.0714,
+   "deepseek-v4-flash-0731": 0.04146
+  },
+  "byFamily": {
+   "judge": 0.34018,
+   "b": 0.87918
+  },
+  "keyFinalUsd": 1.29213,
+  "keyLimitUsd": 10,
+  "hardStopUsd": 7
+ },
+ "thinkon": {
+  "glm_600": {
+   "rows": 189,
+   "answered": 189,
+   "scored_answered": 179,
+   "positives_answered": 19,
+   "truncated_rows": 27,
+   "reasoning_p50": 228,
+   "reasoning_max": 600,
+   "message_whole": {
+    "P": 1.0,
+    "R": 0.579,
+    "F1": 0.733,
+    "F1_raw": 0.7333333333333334,
+    "tp": 11,
+    "fp": 0,
+    "fn": 8
+   },
+   "message_attempted": {
+    "P": 1.0,
+    "R": 0.579,
+    "F1": 0.733,
+    "F1_raw": 0.7333333333333334,
+    "tp": 11,
+    "fp": 0,
+    "fn": 8
+   },
+   "floor_attempted": {
+    "P": 0.633,
+    "R": 1.0,
+    "F1": 0.776,
+    "F1_raw": 0.7755102040816326,
+    "tp": 19,
+    "fp": 11,
+    "fn": 0
+   },
+   "split": {
+    "detected_clean": 9,
+    "detected_truncated": 2,
+    "missed_clean": 0,
+    "missed_truncated": 8
+   }
+  },
+  "glm_8192": {
+   "rows": 189,
+   "answered": 128,
+   "scored_answered": 121,
+   "positives_answered": 13,
+   "truncated_rows": 1,
+   "reasoning_p50": 217,
+   "reasoning_max": 8192,
+   "message_whole": {
+    "P": 0.867,
+    "R": 0.684,
+    "F1": 0.765,
+    "F1_raw": 0.7647058823529413,
+    "tp": 13,
+    "fp": 2,
+    "fn": 6
+   },
+   "message_attempted": {
+    "P": 0.867,
+    "R": 1.0,
+    "F1": 0.929,
+    "F1_raw": 0.9285714285714286,
+    "tp": 13,
+    "fp": 2,
+    "fn": 0
+   },
+   "floor_attempted": {
+    "P": 0.591,
+    "R": 1.0,
+    "F1": 0.743,
+    "F1_raw": 0.7428571428571429,
+    "tp": 13,
+    "fp": 9,
+    "fn": 0
+   },
+   "split": {
+    "detected_clean": 13,
+    "detected_truncated": 0,
+    "missed_clean": 0,
+    "missed_truncated": 0
+   }
+  },
+  "glm_b_8192": {
+   "answered": 130,
+   "entity_whole": {
+    "P": 0.753,
+    "R": 0.648,
+    "F1": 0.697,
+    "F1_raw": 0.6965174129353234,
+    "tp": 70,
+    "fp": 23,
+    "fn": 38
+   },
+   "entity_answered": {
+    "P": 0.753,
+    "R": 0.875,
+    "F1": 0.809,
+    "F1_raw": 0.8092485549132947,
+    "tp": 70,
+    "fp": 23,
+    "fn": 10
+   },
+   "truncated_rows": 20
+  },
+  "oracle_on_glm_b_rows": {
+   "all": {
+    "rows": 189,
+    "budget_matched_F1": 0.695,
+    "unbudgeted_F1": 0.454
+   },
+   "answered": {
+    "rows": 130,
+    "budget_matched_F1": 0.633,
+    "unbudgeted_F1": 0.453
+   }
+  }
+ }
+}

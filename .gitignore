@@ -11,3 +11,7 @@ runs/
 .env
 .env.*
 *.key
+
+# paper build scratch
+docs/paper/_pages/
+docs/paper/figures/_contact.*

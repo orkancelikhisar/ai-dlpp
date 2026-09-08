@@ -1482,7 +1482,7 @@ statistic.**
    neighbourhood of the trivial capitalisation floor (0.571) and do not clearly separate
    from it. Scored on the **message-level boolean the predicate gold actually records**,
    the best compiled judge does separate, and so does the whole ordering. On the same 179
-   rows: **best local (in-browser 2–4 B) 0.275 < trivial floor 0.776 < best ceiling
+   rows: **best local (in-browser 2–4 B) 0.262 < trivial floor 0.776 < best ceiling
    (hosted 30–120 B) 0.905**, the ceiling arm holding perfect recall with 4 false
    positives. The mechanism is precision — local arms over-fire badly (no local arm
    exceeds precision 0.25; `Phi-4-mini` reaches recall 0.895 with 108 false positives),

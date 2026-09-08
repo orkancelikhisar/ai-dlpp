@@ -146,7 +146,7 @@ annotators were actually asked for, and the document presented the other as thou
 
 The two disagree about the experiment's headline question. Span-wise: local 0.197 < floor 0.571 ≈
 ceiling 0.565, so scale does not get you past a regex. Message-wise, same rows and same gold:
-local 0.275 < floor 0.776 < **ceiling 0.905**, so scale clearly does. One of those says the
+local 0.262 < floor 0.776 < **ceiling 0.905**, so scale clearly does. One of those says the
 in-browser constraint is not what costs accuracy; the other says it substantially is.
 
 The rules that follow:

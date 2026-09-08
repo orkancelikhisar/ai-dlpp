@@ -328,7 +328,7 @@ splitting them by whether that item's call was truncated:
 
 **Every single miss is on a truncated call, and there are no clean misses.** P(detect │ clean) =
 **9/9 = 1.000**; P(detect │ truncated) = **2/10 = 0.200**. Combined with its precision — GLM
-thinking-on emits **zero false positives** on this gold, the only arm in the experiment that does —
+thinking-on emits **zero false positives** on this gold at message level while detecting eleven positives — no other arm pairs a zero false-positive count with more than four true positives —
 the shape of the result is unambiguous: **its recall loss is the token cap, not the model.**
 
 **The probe already confirms half of it.** A thinking-ON probe at `max_tokens: 8192` (run
@@ -544,26 +544,27 @@ nine entity classes and rarely names the predicate at all.
   (12 fragments in `families.v2.ts`). The floor cannot miss. That inflates the floor and makes the
   best arm's margin *harder* to achieve, not easier — but it also means neither number transfers to
   a corpus without that property.
-**The local arms, recomputed at message level on the same rows.** The 32 in-browser arms that ran
-against the v2 corpus (`slate-corpus-01*`, `slate-rebuild-01*`) all cover the full 179 scored items,
-so they are directly comparable. Best eight:
+**The local arms, recomputed at message level on the same rows.** The 16 in-browser arms that ran
+against the v2 corpus — `slate-rebuild-01*`; the `slate-corpus-01*` runs record the superseded v1
+corpus in their gates files and were wrongly included in an earlier draft of this table — all cover
+the full 179 scored items, so they are directly comparable. Best eight:
 
 | local arm | P | R | F1 | tp / fp / fn |
 |---|---|---|---|---|
-| `tier2-Qwen3-4B` (corpus-01c) | 0.169 | 0.737 | **0.275** | 14 / 69 / 5 |
-| `tier2only-Qwen3-4B` (corpus-01c) | 0.161 | 0.737 | 0.264 | 14 / 73 / 5 |
-| `tier2-Qwen3-4B` (rebuild-01c) | 0.190 | 0.421 | 0.262 | 8 / 34 / 11 |
-| `tier2-Phi-4-mini` (rebuild-01c) | 0.136 | 0.895 | 0.236 | 17 / 108 / 2 |
+| `tier2-Qwen3-4B` (rebuild-01c) | 0.190 | 0.421 | **0.262** | 8 / 34 / 11 |
+| `tier2-Phi-4-mini-instruct` (rebuild-01c) | 0.136 | 0.895 | 0.236 | 17 / 108 / 2 |
 | `tier2-Ministral-3-3B` (rebuild-01) | 0.250 | 0.211 | 0.229 | 4 / 12 / 15 |
 | `tier2only-Qwen3-4B` (rebuild-01c) | 0.154 | 0.421 | 0.225 | 8 / 44 / 11 |
-| `tier2only-Phi-4-mini` (rebuild-01c) | 0.124 | 0.895 | 0.218 | 17 / 120 / 2 |
-| `tier2-Qwen3.5-2B` (corpus-01) | 0.140 | 0.421 | 0.211 | 8 / 49 / 11 |
+| `tier2only-Phi-4-mini-instruct` (rebuild-01c) | 0.124 | 0.895 | 0.218 | 17 / 120 / 2 |
+| `tier2only-Ministral-3-3B` (rebuild-01) | 0.200 | 0.211 | 0.205 | 4 / 16 / 15 |
+| `tier2only-Qwen3.5-2B` (rebuild-01) | 0.132 | 0.263 | 0.175 | 5 / 33 / 14 |
+| `tier2-Qwen3.5-2B` (rebuild-01) | 0.111 | 0.316 | 0.164 | 6 / 48 / 13 |
 
 **The three-way comparison, all on the same 179 items:**
 
 | | message-level F1 |
 |---|---|
-| best **local**, in-browser 2–4 B | **0.275** |
+| best **local**, in-browser 2–4 B | **0.262** |
 | trivial **floor**, `capitalised-multiword` | **0.776** |
 | best **ceiling**, hosted 30–120 B | **0.905** |
 
@@ -588,9 +589,9 @@ floors here are strong and must be stated:
 | FLOOR always-fire | 0.571 | 1.000 | 0.727 |
 | FLOOR any 6+-digit run | 0.740 | 0.343 | 0.468 |
 | FLOOR capitalised-multiword | 0.725 | 0.269 | 0.392 |
-| **best arm** — `ceiling-02 b-deepseek` | **0.832** | **0.870** | **0.851** |
+| **best arm** — `ceiling-03 b-deepseek` | **0.839** | **0.870** | **0.855** |
 
-**+0.124 over the strongest floor**, and unlike the predicate table this is the *Approach-B* family
+**+0.128 over the strongest floor**, and unlike the predicate table this is the *Approach-B* family
 winning, not the compiled judge. So the two families are **complementary rather than ranked**: B is
 a usable entity detector and a poor predicate detector (§7.5 above); the compiled judge is the
 reverse. That is an argument for the tiered design running both, and it is not visible in either
@@ -1096,7 +1097,7 @@ oracle read as a baseline.
   it survives as a statement *about those comparisons*.
 - Against the **message-level judgment the gold records**, and against **floors with no label
   access**, the best ceiling arm separates clearly and repeatably — **+0.105** mean over three
-  passes at the predicate, **+0.221** at the span level — while the local arms (0.275) stay far
+  passes at the predicate, **+0.221** at the span level — while the local arms (0.262) stay far
   below the same floor (0.776). On that reading the gap **is** substantially the price of the
   in-browser constraint, the opposite of what this section originally concluded.
 
@@ -1154,10 +1155,10 @@ decision each family is actually shaped for:
 | decision | best judge arm | best B arm | strongest trivial floor |
 |---|---|---|---|
 | *does this message disclose a client relationship* | **0.927** | 0.457 | 0.776 (capitalised-multiword) |
-| *does this message contain a sensitive entity at all* | — (no entity spans by construction) | **0.851** | 0.727 (always-fire) |
+| *does this message contain a sensitive entity at all* | — (no entity spans by construction) | **0.855** | 0.727 (always-fire) |
 
 Each family beats the relevant floor **on its own decision and only there** — the judge by +0.151,
-B by +0.124 — and the judge's B-side counterpart collapses to 0.457 while B emits no predicate
+B by +0.128 — and the judge's B-side counterpart collapses to 0.457 while B emits no predicate
 worth scoring on four of five models. This is not a ranking of two methods; it is an argument for
 **running both**, which is what the tiered design already does. It is invisible in §9's span-level
 tables, which is why it took until §7.5 to see it.

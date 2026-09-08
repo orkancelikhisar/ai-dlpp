@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>AI-DLPP capability-ceiling study — executive summary</title>
+<style>
+@page { size: A4; margin: 9mm 10mm 8mm 10mm; }
+html { font-size: 8.3pt; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #111; margin: 0; line-height: 1.25; }
+h1 { font-size: 14pt; margin: 0 0 1pt; letter-spacing: -0.2pt; line-height: 1.1; }
+.sub { color: #555; font-size: 7.8pt; margin: 0 0 4pt; }
+.q { background: #1f2937; color: #fff; padding: 4pt 7pt; border-radius: 3pt; font-size: 8.8pt; margin: 0 0 5pt; line-height: 1.3; }
+.q b { color: #fbbf24; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5pt; margin: 0 0 5pt; }
+.tile { border: 1px solid #d1d5db; border-radius: 3pt; padding: 3pt 6pt 3pt; }
+.tile .n { font-size: 16pt; font-weight: 700; line-height: 1.05; letter-spacing: -0.3pt; white-space: nowrap; }
+.tile .n small { font-size: 8.5pt; font-weight: 600; color: #555; }
+.tile .l { font-size: 7.2pt; color: #444; margin-top: 2pt; line-height: 1.22; }
+.blue { color: #2b6cb0; } .purple { color: #6b3fa0; } .orange { color: #e0782f; } .grey { color: #6b7280; }
+.hero { display: grid; grid-template-columns: 3fr 2fr; gap: 6pt; align-items: start; margin: 0 0 5pt; }
+.hero svg { width: 100%; height: auto; display: block; }
+.row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6pt; margin: 0 0 5pt; }
+.panel { border: 1px solid #e5e7eb; border-radius: 3pt; padding: 2pt 3pt 1pt; }
+.panel svg { width: 100%; height: auto; display: block; }
+.cap { font-size: 7.1pt; color: #444; margin: 1pt 0 0; line-height: 1.25; }
+.concl { border: 2px solid #2b6cb0; border-radius: 3pt; padding: 4pt 8pt; margin: 1pt 0 3pt; background: #f8fafc; }
+.concl h2 { font-size: 9.2pt; margin: 0 0 2pt; color: #1e3a5f; }
+.concl ol { margin: 0 0 0 13pt; padding: 0; } .concl li { margin: 0 0 1.5pt; font-size: 7.9pt; line-height: 1.28; }
+.concl .v { margin-top: 3pt; font-size: 8.5pt; font-weight: 700; color: #1e3a5f; }
+.foot { font-size: 6.6pt; color: #666; margin-top: 2pt; line-height: 1.25; }
+</style></head>
+<body>
+<h1>Is the browser the bottleneck? — AI-DLPP capability-ceiling study, executive summary</h1>
+<p class="sub">Policy-conditioned, fully-local detection of confidential data in LLM prompts · shippable in-browser 2–4 B models vs the same method on hosted open-weight models of 27–120 B where the size is published · 6,502 calls, three passes at temperature 0, every figure regenerated from artifacts · draft v1, 8 Sep 2026</p>
+
+<div class="q"><b>Question.</b> Our in-browser detectors find the right region of a prompt and attach the wrong label. Is that the browser's constraint, or the task's difficulty? <b>Method.</b> Run the identical compiled judge and policy-in-context baseline on six much larger hosted models, providers pinned, three passes, and print a model-free floor beside every number.</div>
+
+<div class="tiles">
+  <div class="tile"><div class="n"><span class="grey">0.262</span> → <span class="blue">0.881</span></div><div class="l">message-level F1 at the policy's predicate, best in-browser vs best hosted arm. Floor <span class="orange">0.776</span>; all three hosted passes clear it.</div></div>
+  <div class="tile"><div class="n"><span class="blue">6×</span></div><div class="l">pass-to-pass variance at temperature 0 for classification (0.109) vs span extraction (0.018): unstable exactly where inaccurate.</div></div>
+  <div class="tile"><div class="n"><span class="purple">0.579 → 1.000</span></div><div class="l">recall of the mandatory-reasoning model when its cap rises from 600 to 8,192 tokens. Every miss at 600 was a truncated call.</div></div>
+  <div class="tile"><div class="n">$1.22 <small>· 0 / 5,580</small></div><div class="l">total billed, and malformed JSON responses from provider-side constrained decoding in 5,580 thinking-off calls.</div></div>
+</div>
+
+<div class="hero">
+  <div>{{FIG2}}<p class="cap"><b>The headline, three ways.</b> Only the metric changes between A and B — same rows, same gold. Scored span-wise the hosted arms tie a regular expression; scored on the message-level judgment the annotators actually gave, they clear it while the in-browser arms stay far below. In C the label-informed oracle (told how many spans to find) is beaten only by the reasoning model.</p></div>
+  <div class="panel">{{EFIG_SCATTER}}<p class="cap"><b>Why the in-browser arms fail: precision.</b> They reach recall only by firing on most messages (P ≤ 0.25); the hosted judge separates on precision at the same recall.</p></div>
+</div>
+
+<div class="row">
+  <div class="panel">{{EFIG_THINKON}}<p class="cap"><b>The thinking-off ceiling is a ceiling on that inference mode, not the models.</b> With reasoning allowed to finish, GLM goes from 0.042 below the floor to 0.186 above it, and its policy-in-context arm is the only one to beat the label-informed span oracle (0.809 vs 0.633 on the rows it answered).</p></div>
+  <div class="panel">{{EFIG_LATENCY}}<p class="cap"><b>What transfers to a local server: token counts.</b> The compiled judge is 2.1–3.7× faster and 2.05× cheaper than policy-in-context on the same model because it answers in 5–7 tokens; that gap is prompt size and does not shrink with hardware.</p></div>
+  <div class="panel">{{EFIG_VARIANCE}}<p class="cap"><b>A single pass against a hosted provider is not a measurement.</b> This study's first headline came from one pass, one metric and one floor — each the least favourable available — and reversed when the repeat passes landed.</p></div>
+</div>
+
+<div class="concl">
+<h2>Conclusion</h2>
+<ol>
+<li><b>The browser constraint is a real part of what costs accuracy.</b> On the judgment the gold records, models 6–60× larger than the shippable ones go from far below a trivial floor to clearly and repeatably above it (+0.105 mean over three passes); on the stricter span-matched reading they tie it. Both are true; the original "scale stops at a regex" rested on the stricter reading alone.</li>
+<li><b>The binding constraint at every scale is classification, not span extraction.</b> Spans are placed byte-exactly by a 2 B model and resolved cleanly 99.2% of the time at 27–120 B; what moves between passes, and what separates arms, is the label.</li>
+<li><b>Carry the compiled judge to a local server, alongside policy-in-context for entities.</b> The judge wins the semantic predicate (0.927 vs 0.457) and is cheaper and faster; policy-in-context wins entity finding (0.855 vs an always-fire floor of 0.727). A deployment runs both — which the tiered design already does.</li>
+<li><b>Reasoning buys accuracy at a latency price this corpus makes visible</b> — 31.8 minutes for 189 messages on the B family — and at 600 tokens the token cap, not the model, was the limit.</li>
+</ol>
+<div class="v">Verdict: the task is learnable by open-weight models a company could host; the shippable in-browser tier is not yet capable of it; the gap is precision on the semantic predicate, and it is substantially the price of the in-browser constraint.</div>
+</div>
+<p class="foot">Bounds: one policy (p-fin), one predicate, 19 gold positives (one item ≈ 0.03 F1 for the headline arm); the corpus's known generator leak gives the capitalisation floor perfect recall, so no floor figure transfers to a corpus without it; the thinking-ON result is one model, one pass, with 31% of rows lost to provider rate limiting; hosted quantisation is the provider's. Six defects in the study's own instrumentation are reported in the paper (§5). Repository <code>orkancelikhisar/ai-dlpp</code>, <code>docs/paper/</code>; full records in <code>docs/research/</code>.</p>
+</body></html>
