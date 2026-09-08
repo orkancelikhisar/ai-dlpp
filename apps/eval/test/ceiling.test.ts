@@ -1558,9 +1558,11 @@ describe("passRunIdFor", () => {
     // were correctly named `ceiling-02.*`. MEASURED on disk: that file held
     // calls=403 / $0.02033 eight seconds after the relaunch began.
     //
-    // `ceiling-main.ts` now derives `ledgerRunId = passRunIdFor(runId, 1, passStart)`,
-    // so the property that has to hold is that the FIRST pass id differs
-    // between an original run and a relaunch.
+    // `ceiling-run.ts`'s `resolveRunPlan` derives the ledger name from
+    // `spendLedgerFileFor(runId, passStart)`, so the property that has to hold
+    // here is that the FIRST pass id differs between an original run and a
+    // relaunch. The WIRING that consumes it is pinned in `ceiling-main.test.ts`,
+    // not here -- see that file's `runCeiling wiring` block.
     const original = passRunIdFor("ceiling-01", 1, 1);
     const relaunch = passRunIdFor("ceiling-01", 1, 2);
     expect(original).toBe("ceiling-01");

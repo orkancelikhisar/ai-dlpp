@@ -299,8 +299,16 @@ export function passRunIdFor(runId: string, pass: number, passStart = 1): string
  * ledger overwrote `ceiling-ceiling-01.spend.json` -- pass 1's window-2 ledger,
  * 768 calls and $0.19269 -- eight seconds in, replaced by calls=403 / $0.02033.
  * A test that pinned only `passRunIdFor` did NOT catch reverting the call site,
- * because nothing exercised the call site; this function is what makes that
- * mutation killable.
+ * because nothing exercised the call site.
+ *
+ * NOTE, and it is the whole lesson: extracting THIS function was still not
+ * enough. A mutant that ignores the returned value and rebuilds
+ * `ceiling-${runId}.spend.json` at the point of use is invisible to every test
+ * of this function, because this function keeps returning the right string and
+ * nothing consumes it -- the same defect one layer further out. What actually
+ * kills that mutant is `writeSpend` being an INJECTED dependency in
+ * `ceiling-run.ts`, so a test reads the filename each write really received.
+ * See `ceiling-main.test.ts`.
  */
 export function spendLedgerFileFor(runId: string, passStart = 1): string {
   return `ceiling-${passRunIdFor(runId, 1, passStart)}.spend.json`;
