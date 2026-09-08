@@ -1261,7 +1261,25 @@ before passes 2–3 existed and before their segment was added to the joiner.
 | `glmon-01` (GLM thinking on) | 225 | $0.05572 |
 | `ceiling-01` window 2 (arms 8–10) | 768 | $0.19269 |
 | `ceiling-02` + `ceiling-03` (passes 2–3, 20 arms) | 3,756 | $0.51381 |
-| **ledger total** | **6,217** | **$0.89988** |
+| `thinkon-01` (thinking-ON full slate, stopped after 9 calls) | 9 | $0.00350 |
+| `thinkonglm-01` (GLM thinking ON at 8,192, both arms) | 276 | $0.31599 |
+| **ledger total** | **6,502** | **$1.21937** |
+
+The first four rows are the thinking-off experiment (**$0.89988**); the last two are the thinking-ON
+phase (**$0.31949**). **The GLM pair alone cost 35% of the entire thinking-off slate** for two arms
+out of eleven — mandatory reasoning at an 8,192-token ceiling is not a cheap condition.
+
+**One ledger in this table was destroyed, by me, in the way this whole file exists to catch.** The
+thinking-ON probe ran as `runId=thinkon-01`; the full-slate launch that followed reused the same
+run id, so it overwrote the probe's ledger — **28 calls / $0.02832** replaced by a 9-call partial.
+That figure survives only in `runs/thinkon-probe.log` (`[ceiling] probe only; spent $0.02832 so
+far`). It is deliberately **not** re-inserted as a synthetic segment: the file it belonged to no
+longer exists, and fabricating one would defeat the purpose of a reconciliation. It is part of the
+residual, and it is the reason the residual is larger here than in §8.3.
+
+**Final key reading $1.29213 of $10; residual against the seven-segment join is +$0.072762**, of
+which $0.02832 is the destroyed probe ledger and the rest is diagnostic `curl` traffic plus the
+inter-run gaps. Positive, as §8.3's corrected sign predicts.
 
 Per model, all passes and both families: qwen3.8-27b **$0.357**, nemotron $0.275, qwen3.8-flash
 $0.101, mistral $0.071, glm $0.056, deepseek **$0.041**. The spread is **8.8×** between the cheapest

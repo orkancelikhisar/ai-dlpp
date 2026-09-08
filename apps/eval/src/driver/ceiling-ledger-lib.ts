@@ -59,6 +59,16 @@ export const LEDGER_SEGMENTS: readonly LedgerSegmentSpec[] = [
     name: "ceiling-02 + ceiling-03",
     note: "Passes 2 and 3, one launch at passStart=2, relaunched detached after a session crash killed pass 1's supervising agents. Same pins, request body and thinking-off condition as pass 1; 10 of 10 arms written in each pass, guard never tripped, clean finish. This is the launch whose ledger filename proves the fd2087a fix: it wrote ceiling-ceiling-02.spend.json and left pass 1's file alone.",
   },
+  {
+    file: "orphaned/thinkon-fullslate-aborted.spend.json",
+    name: "thinkon-01 (aborted)",
+    note: "A thinking-ON full-slate launch at max_tokens 8192, stopped deliberately after 9 calls once its probe showed Approach-B calls running 46-54s and aborting: the cost-ordered slate would have reached GLM, the arm the phase exists to measure, only after four hours. NOTE, and it is the same defect this file exists to reconcile: this launch reused runId=thinkon-01 from the probe-only run that preceded it, so it OVERWROTE that probe's ledger (28 calls / $0.02832). That $0.02832 is recoverable only from runs/thinkon-probe.log, which records '[ceiling] probe only; spent $0.02832 so far'. It is deliberately NOT added here as a synthetic segment -- the ledger file it belongs to no longer exists, and inventing one would defeat the point of this join. It is part of the residual.",
+  },
+  {
+    file: "ceiling-thinkonglm-01.spend.json",
+    name: "thinkonglm-01",
+    note: "GLM-5.3-flash judge AND Approach B with thinking ON at max_tokens 8192 and a 180s per-attempt timeout, run alone after the full-slate launch was stopped. 189 rows per arm, clean finish. This is the run behind Sec 10.7; its Approach-B arm is the first in the experiment to beat the budget-matched oracle at the span level.",
+  },
 ];
 
 /** A segment as it appears in the joined file: the ledger's own fields plus the three added here. */

@@ -160,6 +160,8 @@ describe("segments are joined once each", () => {
       "ceiling-glmon-01.spend.json",
       "ceiling-ceiling-01.spend.json",
       "ceiling-ceiling-02.spend.json",
+      "orphaned/thinkon-fullslate-aborted.spend.json",
+      "ceiling-thinkonglm-01.spend.json",
     ]);
   });
 
