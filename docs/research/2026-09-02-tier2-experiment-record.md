@@ -1468,13 +1468,29 @@ statistic.**
 
 ## 9. What is not yet done
 
-1. **The capability-ceiling arm (spec §4.2b).** A larger instruct model served locally by
-   llama.cpp or Ollama, still fully local but not in-browser and explicitly
-   non-shippable. It is the arm that separates *"the task is hard"* from *"2–4 B in a
-   browser is too small"*. Spec §4.2b: if the ceiling arm also performs poorly, the
-   browser constraint is not what costs accuracy; if it performs well, the gap **is** the
-   price of the in-browser constraint. §5d makes this sharper than when it was written —
-   models find the right region and the wrong label.
+1. ~~**The capability-ceiling arm (spec §4.2b).**~~ **BUILT AND RUN.** See
+   `docs/research/2026-09-07-ceiling-arm.md`. It was executed over OpenRouter against six
+   open-weight models (30–120 B) with providers pinned and fallbacks disabled, rather than
+   via llama.cpp or Ollama — the models are the ones a Spark-class box or an EU-hosted
+   server could run, so the arm answers spec §4.2b's question while remaining a
+   *capability* ceiling rather than a *deployment* one. Prompts left the browser, which is
+   why it is a measurement arm and not a shippable path; the cloud boundary for the
+   product is unchanged.
+
+   **The result, at the predicate level: the ceiling arms land in the neighbourhood of the
+   trivial capitalisation floor (0.571), not clearly above it.** Pass 1's best thinking-off
+   arm scored 0.565 (−0.006); pass 2's same arm scored 0.615 (+0.044) at `temperature: 0`,
+   with three items changing hands on a 19-positive gold. Pass-to-pass variance exceeds the
+   distance to the floor, so this sample does not separate them. Against the *local* arms
+   the improvement is real and large — 2.87× at the predicate level, 2.04× at the span
+   level — which sharpens §5d rather than overturning it: **the binding constraint is
+   classification, not span extraction**, and it is still binding at 120 B. Span placement
+   is essentially solved at this size (2 unresolved quotes and 8 unresolved mentions on
+   1,243 findings).
+
+   Cost: **$0.386 over 2,461 calls**, reconciled against the key endpoint. What the arm did
+   *not* settle, and what is still untested in its own instrumentation, is
+   `2026-09-07-ceiling-arm.md` §11.
 2. **A regenerated corpus that closes the 12-fragment leak, followed by a re-run blind
    round.** Also on that list: randomising distractor position (which closes §7.15 but
    moves every offset, so the labels must be re-collected), and handing annotators

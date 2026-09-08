@@ -153,8 +153,8 @@ pnpm -C apps/eval ceiling:score  # every table below
 - **Structured output** via `response_format: {type: "json_schema", strict: true, schema}` carrying
   `JUDGE_SCHEMA` / `BASELINE_B_SCHEMA` unchanged — `minimum`/`maximum` bounds included, which every
   answering provider accepted.
-- **`max_tokens: 600`**, the local arms' own `DEFAULT_TIER2_CONFIG` value, so a truncation here
-  means what a truncation there means. **`temperature: 0`**, so repeat passes measure provider and
+- **`max_tokens: 600`**. This was *intended* to match the local arms and does **not**:
+  `DEFAULT_TIER2_CONFIG` is **512**. The 88-token asymmetry, and which way it cuts, is §7.1. **`temperature: 0`**, so repeat passes measure provider and
   routing variance rather than the sampler.
 - **Provider pinned** with `provider: {order: [<name>], allow_fallbacks: false}`. A pin is a
   request; every row records `requestedProvider` **and** the `provider` the response carried.
@@ -236,14 +236,18 @@ Counted from `runs/ceiling-01.ceiling-{judge,b}-deepseek-v4-flash-0731.jsonl`:
 | findings emitted | 30, **all** `pred:client-relationship-disclosure` | 204, spread over **all nine** entityTypes |
 | of which at the predicate | 30 | **7** |
 | unresolved quotes / mentions | 0 / 0 | 0 / 0 |
-| whole-clause mentions | 0 | — |
+| whole-clause mentions | 0 | **33** |
 
 This is the mechanism behind the family gap in §7. Approach B is asked about nine classes at once
 and spends its findings on identifiers, naming the relationship predicate **7 times in 189
 messages**; the compiled judge is asked about one predicate and names it 30 times.
 
-**The span ladder placed every single finding on both arms** — 0 unresolved quotes and 0 unresolved
-mentions across 234 findings. The local arms do not manage this, and it is worth stating plainly:
+**The span ladder placed every finding on both arms of this pair** — 0 unresolved quotes and 0
+unresolved mentions across these 234 findings. It is not clean across the whole slate: pooled over
+all ten pass-1 arms the counts are **2 unresolved quotes** (all in `b-mistral`) and **8 unresolved
+mentions** (`judge-nemotron` 3, `judge-qwen3.8-27b` 2, `judge-qwen3.8-flash` 2, `b-mistral` 1), on
+**1,243 findings**. Approach B also resolves to the whole clause far more often than the judge does
+— 157 of the 158 pooled whole-clause mentions are B-family. The local arms do not manage this, and it is worth stating plainly:
 at this model size, quoting a clause verbatim and pointing at a shorter span inside it is a solved
 problem. Whatever is going wrong is not span extraction.
 
@@ -363,7 +367,8 @@ What repeats can and cannot show here: every call is made at `temperature: 0`, s
 **provider and routing variance, not sampler variance**. The accuracy columns should be near-stable;
 the latency columns will not be, and the 429 counts in §7.3 show why. With **19 positives**, one
 item changing hands moves F1 by roughly 0.05 — which is larger than the 0.006 gap between the best
-thinking-off arm and the floor, so §12 is what says whether that gap is real or noise.
+thinking-off arm and the floor, so the repeat passes in §9 are what say whether that gap is real
+or noise. (This sentence previously pointed at a "§12"; this document ends at §11.)
 
 ### 8.1 What stopped the first window: unknown, and not a deliberate kill
 
@@ -427,9 +432,27 @@ The completion run reused `runId=ceiling-01` and therefore overwrote
 The residual between the ledgers and the key is reported **with its sign and without a story**. It
 has two known contributors pulling opposite ways — diagnostic curls made outside the driver (which
 push the key *above* the ledgers) and the key endpoint's accounting trailing the per-response
-`usage.cost` (which pushes it *below*) — and the script cannot attribute it. An earlier draft of
-this file asserted the residual was diagnostic spend; the measured sign was negative, which
-contradicts that, so the claim was withdrawn rather than kept.
+`usage.cost` (which pushes it *below*) — and the script cannot attribute it.
+
+**Correction.** An earlier draft of this paragraph said the diagnostic-spend claim was withdrawn
+because *"the measured sign was negative, which contradicts that"*. The measured residual is
+**+$0.002626 — positive** (§6). The retraction was reasoned from a figure that appears in no
+artifact. The honest statement is the joiner's own: a positive residual is **consistent with**
+diagnostic spend outside the driver and does **not** establish it, because the lagging-accounting
+contributor pushes the other way and neither is separately measured. The claim stays out, but for
+that reason, not the one previously given.
+
+**The same `runId` collision later destroyed the window-2 ledger, and it has been restored.** The
+pass-2 launch wrote its ledger to `runs/ceiling-ceiling-01.spend.json` again, replacing window 2's
+768 calls / $0.19269 with a 489-call partial. Running the `regenerateWith` command above in that
+state would have silently rewritten the join from $0.386071 to $0.217950 — the reconciliation
+destroying its own input. Window 2 was rebuilt from the segment preserved inside
+`runs/ceiling-combined.spend.json` (a ledger segment carries every field of the ledger file it came
+from, plus three the joiner adds), and the killed partial was moved to
+`runs/orphaned/killed-pass2-launch.ceiling-ceiling-01.spend.json` rather than deleted. The four
+files on disk now re-derive **2,461 calls / $0.386071** — the committed total — so the documented
+command reproduces the documented number again. The code defect behind the collision is fixed in
+`fd2087a`; §11 records what is still untested about that fix.
 
 ---
 
@@ -510,8 +533,33 @@ sets and two independent floors agree.
 
 This is the answer §4.2b was built to get, and it is the unwelcome one: **the browser constraint is
 not what is costing accuracy.** Making the model 30–60× larger and giving it a datacentre GPU moves
-the numbers up to the floor and stops. On this corpus and this policy, the task itself is not being
-solved by any of these methods.
+the numbers up to roughly the floor. On this corpus and this policy, the task itself is not being
+solved decisively by any of these methods.
+
+> **Correction (pass 2). An earlier draft of this paragraph ended "moves the numbers up to the floor
+> and stops." The repeat pass this document commissioned to settle that has settled it the other
+> way, and the word "stops" is withdrawn.**
+>
+> Re-scoring with pass 2 present, `ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]` scores
+> **P 0.485 / R 0.842 / F1 0.615** at the predicate level, and `ceiling:score` names it under all
+> three matching rules: *"best floor F1 0.571; arms beating it: ceiling-judge-deepseek-v4-flash-0731
+> [ceiling-02]"*. That is **+0.044 over the floor**, where pass 1 was −0.006.
+>
+> | pass | predicted | tp | fp | fn | F1 | vs floor 0.571 |
+> |---|---|---|---|---|---|---|
+> | `ceiling-01` | 27 | 13 | 14 | 6 | 0.565 | −0.006 |
+> | `ceiling-02` | 33 | 16 | 17 | 3 | **0.615** | **+0.044** |
+>
+> Both passes are `temperature: 0`; the difference is provider and routing variance, not the
+> sampler. **Three items changed hands** on a 19-positive gold — and §8 computes that one item is
+> worth ≈0.05 F1 here, so the whole pass-to-pass swing is three items and the original "gap" it was
+> compared against was one-eighth of a single item. A tie and a −0.006 gap were never enough to
+> support "stops"; the defensible claim on this sample is that **the ceiling arms land in the
+> neighbourhood of the floor, with pass-to-pass variance larger than their distance from it.**
+>
+> Pass 3 was in flight when this correction was written and is not in these figures. §9 carries the
+> per-pass table once all three land; this paragraph is rewritten against the full variance then,
+> not before.
 
 ### 2. Compiled (judge) or prompting (B) at the ceiling — and does it differ from the local result?
 
@@ -613,8 +661,10 @@ of 6 calls in a probe.
 is a finding about the *token budget* meeting mandatory reasoning, not about the mechanism. The
 provider-side json_schema mechanism itself did not fail once in this experiment.
 
-The span ladder was equally clean: **0 unresolved quotes and 0 unresolved mentions** across every
-ceiling arm. At this model size, quoting a clause verbatim and pointing at a shorter span inside it
+The span ladder was nearly clean: pooled over all ten pass-1 arms, **2 unresolved quotes and 8
+unresolved mentions on 1,243 findings** — 0.8 per 100. (An earlier draft of this line said 0 and 0
+"across every ceiling arm"; that was the DeepSeek pair's figure generalised to the slate.) At this
+model size, quoting a clause verbatim and pointing at a shorter span inside it
 is a solved problem. Whatever is failing, it is not span extraction — which restates the local
 finding that *the binding constraint is classification, not span extraction*, now at 30–120B.
 
@@ -634,10 +684,20 @@ Per model (thinking-off arms, both families): qwen3.8-27b $0.116, nemotron $0.07
 $0.032, mistral $0.025, deepseek **$0.013**. Per family: judge $0.074, B $0.184 — **B costs 2.5×
 the judge**, which is its 1,410-token prompt on every call.
 
-**Final `GET /api/v1/auth/key`: `usage` $0.37858, `limit` $10.** Residual against the ledger is
-**−$0.00749** (ledgers exceed the key). Reported with its sign and no story attached: diagnostic
-curls outside the driver push the key *above* the ledgers, the key endpoint's accounting trailing
-per-response `usage.cost` pushes it *below*, and this cannot attribute between them.
+**Final `GET /api/v1/auth/key`: `usage` $0.388698, `limit` $10.** Residual against the ledger is
+**+$0.002626** (the key exceeds the ledgers). Reported with its sign and no story attached:
+diagnostic curls outside the driver push the key *above* the ledgers, the key endpoint's accounting
+trailing per-response `usage.cost` pushes it *below*, and this cannot attribute between them. Both
+figures are `keyUsageFinalUsd` and `residualUsd` in `runs/ceiling-combined.spend.json`.
+
+An earlier draft of this line read *"`usage` $0.37858 … residual −$0.00749 (ledgers exceed the
+key)"*. **That reading appears in no artifact**, and the sign was the wrong one; §8.3's retraction
+was reasoned from a negative residual that is in fact positive. Corrected against the join.
+
+**This reconciliation is point-in-time.** `ledgerTotalUsd` re-derives from four files on disk and is
+stable; `keyUsageFinalUsd` is read live from the key endpoint, so re-running `ceiling:ledger` after
+any later pass spends on the same key returns a larger key figure and a correspondingly larger
+positive residual. The $0.388698 above is the reading at the moment pass 1 ended.
 
 **The experiment was bounded by wall-clock time, not by budget** — it used 3.9% of the key.
 
@@ -663,4 +723,81 @@ declared separately in a cleanup commit and is **not** part of this change.
 - `p-med` and `p-corp` still have no compiled IR, so this arm — like every other — is p-fin only.
 - The corpus's known open leak (12 fragments in `families.v2.ts` decide every label) is unchanged
   and bears on these numbers exactly as it bears on the local arms'.
+
+### 11.1 The ledger fix is still not tested at the site that broke
+
+`fd2087a` extracted `spendLedgerFileFor` so the ledger filename would be pinned by a test. **The
+function is pinned; the call site is not.** Reverting `ceiling-main.ts:308` from
+`spendLedgerFileFor(runId, passStart)` back to `` `ceiling-${runId}.spend.json` `` — byte-for-byte
+the defect that destroyed a 768-call ledger — **survives all 791 tests.** Verified directly:
+mutation applied by exact-string replace, md5 confirmed changed, suite green, restored by absolute
+path with md5 confirmed returned.
+
+**The commit message for `fd2087a` says "Both mutants — the real defect and ignoring `passStart` —
+are now killed." That is wrong.** Only the second is. The extraction moved the boundary up one
+layer and did not close it.
+
+The cause is structural: `ceiling-main.ts`, `ceiling-score.ts` and `ceiling-ledger.ts` each end in a
+top-level `main()` and **export nothing**, and `apps/eval/test/ceiling.test.ts` imports only
+`../src/driver/ceiling.js`. Nothing in the workspace imports the three scripts; they are reachable
+only through their `pnpm` aliases. **All 29 mutants planted across those three files survived**,
+including: the spend guard never fed (`onCall` hook deleted), the mid-arm and between-arms stop
+paths disabled, `gitDirty` hardcoded, arm files named by the base `runId` instead of the pass id,
+the probe verdict forced to "pass", the final ledger write deleted, and — in `ceiling-ledger.ts` —
+the residual **sign flipped** and `guardEverTripped` hardcoded false. That last pair matters to this
+document directly: §6 and §8.3 above both had sign errors, and no test could have caught either.
+
+### 11.2 Mutation coverage, measured rather than asserted
+
+An adversarial review ran **169 mutants: 58 killed, 110 survived**, against a harness proved honest
+in both directions (three positive controls killed, two negative controls survived, checked at the
+start and the end of the run). Two survivors are intended controls and three are provably
+equivalent, leaving **105 real coverage gaps**. The previously reported "35/35 mutants killed" was
+not false — the mutants in that set are genuinely killed, including the retry-clock mutant this
+document relies on in §7.3 — but it measured a narrow band. What it missed is everything **one
+layer out from the unit under test**:
+
+- The three script files entirely (above).
+- **21 mutants of `runCeilingItem`'s record write survive**, because every fixture uses a case where
+  the *requested* value and the *actual* value are the same string. `provider: lastProvider` can be
+  replaced by `provider: model.provider` — **the pin recorded as the fact** — and the suite stays
+  green, which makes §9's "all 11 arms honoured their provider pin" unfalsifiable by the tests. The
+  same holds for `modelId`, and for `reasoningTokens ?? null → ?? 0`, the `null`-is-not-zero
+  distinction this arm's whole thinking-off claim rests on.
+- **No fetch mock inspects `init.body`**, so sending the wrong family's schema, the wrong family's
+  messages, or dropping `reasoning: {enabled: false}` from the wire while the row still records
+  `thinkingRequested: "on"` all survive. The "same method, bigger model" claim is unverified at the
+  caller.
+
+None of this is evidence that the reported numbers are wrong — the artifacts were separately
+re-derived and the accuracy, span, transport, token-budget and ledger tables all reproduce. It is
+evidence that **the tests would not have caught it if they were**, which is a different and weaker
+guarantee than the 35/35 figure implied.
+
+### 11.3 A docblock that justifies the cost model is arithmetically false
+
+`ceiling.ts:138-141` justifies ordering the slate by a prompt-weighted cost with: *"the unweighted
+`in + out` sum gives a DIFFERENT order: under it GLM-Flash (0.15+0.50) sorts ahead of Qwen-Flash
+(0.15+0.47) … Ordering by the sum would have put the more expensive of the two first."*
+
+**It does not.** 0.62 < 0.65, so an ascending sort by the unweighted sum puts Qwen-Flash first —
+the same as the shipped order. More strongly, the two models have **equal input rates** (0.15
+each), so under any positive weighting the comparison reduces to the output rate, 0.47 < 0.50. The
+named pair provably cannot distinguish the two orderings, and the test that cites this reasoning
+cannot make the distinction it claims. Mutation confirms it: changing the representative token mix
+from 1700/200 to 200/1700 survives.
+
+The weighting is still the right choice — nemotron (0.30/0.65) and qwen-27b (0.24/2.20) genuinely
+flip at a prompt/completion ratio near 25.8, and *that* pair is what the test is actually sensitive
+to — but the stated justification names the one pair where it cannot hold. Standing-conventions §1.
+
+### 11.4 Provenance of passes 2 and 3
+
+`gitProvenance()` is called **once**, at `ceiling-main.ts:260`, and its values are stamped on every
+row. Rows from passes 2–3 therefore record `gitDirty: false` at `8c4fc8b` as the state **at launch**,
+not throughout. Documentation edits — including this section — were made to the working tree while
+those passes were running. The code that produced the rows is exactly `8c4fc8b`: the driver has no
+dynamic imports, so every module was read and cached at startup, and `ceiling.ts` / `ceiling-main.ts`
+were deliberately left untouched until all three passes finished, so that a relaunch could not
+silently mix code versions across passes.
 
