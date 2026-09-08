@@ -936,6 +936,7 @@ Regenerated with **all three passes**:
 
 | arm | pass | findings | tp | fp | fn | P | R | **F1** |
 |---|---|---|---|---|---|---|---|---|
+| `ceiling-b-glm-5.3-flash` **thinking ON, 8,192 cap** | — | 93 | 70 | 23 | 38 | 0.753 | 0.648 | **0.697** |
 | **FLOOR — orthographic oracle, budget-matched** *(told N)* | — | — | — | — | — | 0.705 | 0.685 | **0.695** |
 | `ceiling-b-nemotron` | 01 | 123 | 78 | 45 | 30 | 0.634 | 0.722 | **0.675** |
 | `ceiling-b-nemotron` | 02 | 131 | 80 | 51 | 28 | 0.611 | 0.741 | **0.669** |
@@ -968,8 +969,15 @@ Against the *unbudgeted* oracle — the same orthographic reader with no access 
 arm is ahead by **+0.221**, and **every** ceiling B arm clears it in **every** pass. Every ceiling B
 arm also beats the best model-only local arm (0.331) by 1.6–2.0×.
 
-So: *given the same number of guesses, is the model better at choosing?* — no, narrowly, and only
-against nemotron's arm. *Against a reader with no label access?* — yes, by a wide margin, universally.
+So: *given the same number of guesses, is the model better at choosing?* — for every thinking-OFF
+arm, no, narrowly. *Against a reader with no label access?* — yes, by a wide margin, universally.
+
+**One arm answers the first question differently, and it is the thinking-ON one.**
+`ceiling-b-glm-5.3-flash` at an 8,192-token cap scores **0.697 against the budget-matched oracle's
+0.695** over all 189 rows — and **0.809 against 0.633** over the 130 rows it was allowed to answer,
+with the oracle recomputed on that same subset. It is the only arm in the experiment to clear the
+oracle under either reading. §10.7 has the full result and its four limits, the largest being that
+31% of its rows were lost to provider rate limiting.
 
 ### 9.3 What the three passes actually bought: variance, and where it lives
 
@@ -1094,6 +1102,13 @@ oracle read as a baseline.
 
 **What has not changed:** *the binding constraint is classification, not span extraction.* Both
 readings agree, and it is §5d's local result confirmed at 30–120 B.
+
+**§10.7 adds a third reading, from the one condition this section does not cover.** Every figure
+above is thinking-OFF. With mandatory reasoning given room to finish (8,192 tokens rather than 600),
+GLM-5.3-flash clears the floor at the predicate level by **+0.186** and becomes the only arm in the
+experiment to clear the *oracle* at the span level. That does not overturn the thinking-off answer —
+it is a different condition, one pass, and 31% of its rows are missing — but it does mean the
+ceiling this document measures is a ceiling **on thinking-off inference**, not on these models.
 
 > **History, kept rather than overwritten.** The first draft ended *"moves the numbers up to the
 > floor and stops"* — from pass 1, on a −0.006 gap that §8 itself computes to be one-eighth of a
