@@ -704,57 +704,163 @@ every answered call.**
 
 ### 9.1 Predicate level — `pred:client-relationship-disclosure`
 
-189 gold rows, 179 scored, 10 disputed, **19 positives**. Identical under all three match rules for
-every ceiling arm (each emits one span per finding, and the gold span is that span), so one column
-suffices; the local arms' three-rule spread is in the generated output.
+189 gold rows, 179 scored, 10 disputed, **19 positives**. Regenerated from
+`pnpm -C apps/eval ceiling:score` with **all three passes present**; every ceiling arm appears once
+per pass, so pass-to-pass variance is readable directly off the table rather than asserted.
 
-| arm | kind | P | R | **F1** | findings |
-|---|---|---|---|---|---|
-| `ceiling-judge-glm-5.3-flash` **thinking ON, 22% truncated** | ceiling | 0.625 | 0.526 | **0.571** | 16 |
-| **FLOOR — `first-capitalised-multiword`** | floor | 0.467 | 0.737 | **0.571** | 30 |
-| `ceiling-judge-deepseek-v4-flash-0731` | ceiling | 0.481 | 0.684 | 0.565 | 27 |
-| `ceiling-judge-qwen3.8-27b` | ceiling | 0.421 | 0.842 | 0.561 | 38 |
-| **FLOOR — `capitalised-multiword`** | floor | 0.380 | 1.000 | 0.551 | 50 |
-| `ceiling-judge-nemotron-3-super-120b-a12b` | ceiling | 0.545 | 0.316 | 0.400 | 11 |
-| `ceiling-judge-qwen3.8-flash` | ceiling | 0.213 | 0.842 | 0.340 | 75 |
-| `ceiling-b-mistral-small-2603` | ceiling | 0.200 | 0.263 | 0.227 | 25 |
-| **`tier2-Qwen3-4B` — best LOCAL arm** | local | 0.143 | 0.316 | 0.197 | 42 |
-| **FLOOR — `whole-message`** (overlap only) | floor | 0.106 | 1.000 | 0.192 | 179 |
-| `ceiling-b-qwen3.8-flash` | ceiling | 0.500 | 0.105 | 0.174 | 4 |
-| `tier2only-Qwen3-4B` | local | 0.115 | 0.316 | 0.169 | 52 |
-| `tier2-Phi-4-mini` | local | 0.070 | 0.474 | 0.122 | 129 |
-| `ceiling-b-deepseek`, `ceiling-b-qwen3.8-27b`, `ceiling-judge-mistral` | ceiling | 0.000 | 0.000 | 0.000 | 4/3/1 |
-| `ceiling-b-nemotron` | ceiling | — | 0.000 | — | **0** |
-| all 6 local `baselineB*` arms on 3 of 4 models | local | — | 0.000 | — | 0 |
+**Read this table with §7.5 beside it.** These are **span-wise** figures — a finding counts only if
+its span matches a gold span — and the gold's primary annotation is a **message-level boolean**. The
+message-level table is in §7.5 and it ranks the arms differently.
 
-> **STALE — this table and this line are pass 1 only.** They were generated before the repeat
-> passes existed. With all three passes present the scorer's verdict is **not** `NONE`: it names
-> `ceiling-judge-deepseek-v4-flash-0731` at `[ceiling-02]` and `[ceiling-03]`, under all three
-> rules. §10.1 carries the three-pass figures. **This table is regenerated wholesale once pass 3
-> finishes; until then read §10.1, not this section, for the floor comparison.**
+The `F1 overlap` column shows `=` where the overlap rule gives the same number as exact. It does for
+every judge arm (each emits one span per finding and the gold span *is* that span) but **not** for
+the Approach-B arms, which is where the rules separate. An earlier version of this section claimed
+they were identical for every ceiling arm; that was true only of the judge family.
+
+| arm | pass | P | R | **F1 exact** | F1 overlap | findings | answered |
+|---|---|---|---|---|---|---|---|
+| `judge-deepseek` | 03 | 0.500 | 0.842 | **0.627** | = | 32 | 178/179 |
+| `judge-deepseek` | 02 | 0.485 | 0.842 | **0.615** | = | 33 | 178/179 |
+| `judge-glm-5.3-flash` **thinking ON** | glmon-01 | 0.625 | 0.526 | **0.571** | = | 16 | 179/179 |
+| `judge-qwen3.8-27b` | 02 | 0.432 | 0.842 | **0.571** | = | 37 | 179/179 |
+| `judge-qwen3.8-27b` | 03 | 0.432 | 0.842 | **0.571** | = | 37 | 179/179 |
+| `judge-deepseek` | 01 | 0.481 | 0.684 | **0.565** | = | 27 | 175/179 |
+| `judge-qwen3.8-27b` | 01 | 0.421 | 0.842 | **0.561** | = | 38 | 179/179 |
+| `judge-nemotron` | 01 | 0.545 | 0.316 | **0.400** | = | 11 | 179/179 |
+| `judge-nemotron` | 02 | 0.556 | 0.263 | **0.357** | = | 9 | 158/179 |
+| `judge-qwen3.8-flash` | 02 | 0.219 | 0.842 | **0.348** | = | 73 | 179/179 |
+| `judge-qwen3.8-flash` | 01 | 0.213 | 0.842 | **0.340** | = | 75 | 179/179 |
+| `judge-qwen3.8-flash` | 03 | 0.213 | 0.842 | **0.340** | = | 75 | 179/179 |
+| `judge-mistral` | 02 | 0.667 | 0.211 | **0.320** | = | 6 | 179/179 |
+| `b-mistral` | 01 | 0.200 | 0.263 | **0.227** | 0.318 | 25 | 179/179 |
+| `judge-nemotron` | 03 | 0.375 | 0.158 | **0.222** | = | 8 | 160/179 |
+| `b-mistral` | 02 | 0.200 | 0.211 | **0.205** | 0.256 | 20 | 179/179 |
+| `b-qwen3.8-flash` | 01 | 0.500 | 0.105 | **0.174** | = | 4 | 166/179 |
+| `b-qwen3.8-flash` | 03 | 0.250 | 0.105 | **0.148** | 0.370 | 8 | 179/179 |
+| `b-mistral` | 03 | 0.087 | 0.105 | **0.095** | 0.190 | 23 | 179/179 |
+| `judge-mistral` | 03 | 0.333 | 0.053 | **0.091** | = | 3 | 179/179 |
+| `b-deepseek` | 01 | 0.000 | 0.000 | **0.000** | = | 4 | 162/179 |
+| `b-deepseek` | 02 | 0.000 | 0.000 | **0.000** | = | 3 | 175/179 |
+| `b-deepseek` | 03 | 0.000 | 0.000 | **0.000** | = | 3 | 175/179 |
+| `b-qwen3.8-27b` | 01 | 0.000 | 0.000 | **0.000** | = | 3 | 179/179 |
+| `b-qwen3.8-27b` | 02 | 0.000 | 0.000 | **0.000** | = | 3 | 179/179 |
+| `b-qwen3.8-27b` | 03 | 0.000 | 0.000 | **0.000** | = | 3 | 179/179 |
+| `b-qwen3.8-flash` | 02 | 0.000 | 0.000 | **0.000** | = | 1 | 179/179 |
+| `judge-mistral` | 01 | 0.000 | 0.000 | **0.000** | = | 1 | 179/179 |
+| `b-nemotron` | 01 | — | 0.000 | **—** | = | 0 | 179/179 |
+| `b-nemotron` | 02 | — | 0.000 | **—** | = | 0 | 177/179 |
+| `b-nemotron` | 03 | — | 0.000 | **—** | = | 0 | 179/179 |
+| `b-deepseek` | 01 | — | — | **—** | = | 0 | 18/19 |
+| `b-deepseek` | 02 | — | — | **—** | = | 0 | 18/19 |
+| `b-deepseek` | 03 | — | — | **—** | = | 0 | 18/19 |
+| `b-mistral` | 01 | 0.000 | — | **—** | = | 1 | 19/19 |
+| `b-mistral` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `b-mistral` | 03 | 0.000 | — | **—** | = | 1 | 19/19 |
+| `b-nemotron` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `b-nemotron` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `b-nemotron` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-27b` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-27b` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-27b` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-flash` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-flash` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `b-qwen3.8-flash` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `judge-deepseek` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `judge-deepseek` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `judge-deepseek` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `judge-glm-5.3-flash` **thinking ON** | glmon-01 | — | — | **—** | = | 0 | 19/19 |
+| `judge-mistral` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `judge-mistral` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `judge-mistral` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `judge-nemotron` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `judge-nemotron` | 02 | — | — | **—** | = | 0 | 17/19 |
+| `judge-nemotron` | 03 | — | — | **—** | = | 0 | 18/19 |
+| `judge-qwen3.8-27b` | 01 | — | — | **—** | = | 0 | 19/19 |
+| `judge-qwen3.8-27b` | 02 | — | — | **—** | = | 0 | 19/19 |
+| `judge-qwen3.8-27b` | 03 | — | — | **—** | = | 0 | 19/19 |
+| `judge-qwen3.8-flash` | 01 | 0.000 | — | **—** | = | 14 | 19/19 |
+| `judge-qwen3.8-flash` | 02 | 0.000 | — | **—** | = | 12 | 19/19 |
+| `judge-qwen3.8-flash` | 03 | 0.000 | — | **—** | = | 14 | 19/19 |
+
+**Floors** (identical under all three rules except `whole-message`, which scores only under
+`overlap`):
+
+| floor | P | R | **F1** |
+|---|---|---|---|
+| **FLOOR capitalised-multiword** | 0.380 | 1.000 | **0.551** |
+| **FLOOR first-capitalised-multiword** | 0.467 | 0.737 | **0.571** |
+| **FLOOR whole-message** | 0.000 | 0.000 | **0.000** |
+| **FLOOR capitalised-multiword** | 0.000 | — | **—** |
+| **FLOOR first-capitalised-multiword** | 0.000 | — | **—** |
+| **FLOOR whole-message** | 0.000 | — | **—** |
+
+**The scorer's verdict, all three passes:**
+
+```
+under exact / overlap / iou50:  best floor F1 0.571
+arms beating it: ceiling-judge-deepseek-v4-flash-0731 [ceiling-03],
+                 ceiling-judge-deepseek-v4-flash-0731 [ceiling-02]
+```
+
+Three things worth reading off this table directly:
+
+- **`judge-deepseek` rises monotonically across passes** — 0.565, 0.615, 0.627 — at `temperature: 0`.
+  Its `answered` column explains part of it: 175/179 on pass 1 against 178/179 on passes 2 and 3
+  (§7.4).
+- **`judge-nemotron` falls, and its answered count collapses** — 179/179, then **158/179**, then
+  **160/179**. Its 0.400 → 0.357 → 0.222 is substantially a rate-limit artefact, not a model result.
+- **`judge-qwen3.8-27b` sits exactly on the floor** (0.561, 0.571, 0.571) with recall 0.842 in every
+  pass — the most stable arm on the slate, and it neither clears nor falls below the floor.
+
+The local arms and the 20-row contested-span gold are in the generated output; only the ceiling arms
+and floors are reproduced here.
 
 ### 9.2 Span level — entity gold (108 spans over 189 items), MODEL-ONLY arms
 
 Only Approach-B-shaped arms emit entity spans; the judge family emits the shadow predicate alone by
 construction and has no span score. **The eight local `tier2-*` and `baselineB+tier0-*` arms are
 excluded from this table entirely** — they run tier 0, so their spans are the compiled regex layer's
-and not their model's, which is why they cluster at P≈0.36 whatever model they name. `ceiling-score.ts`
-prints them in a separate "NOT model-only" block below the table for completeness.
+and not their model's, which is why they cluster at P≈0.36 whatever model they name.
+`ceiling-score.ts` prints them in a separate "NOT model-only" block for completeness.
 
-| arm | kind | findings | tp | fp | fn | P | R | **F1** |
+Regenerated with **all three passes**:
+
+| arm | pass | findings | tp | fp | fn | P | R | **F1** |
 |---|---|---|---|---|---|---|---|---|
-| **FLOOR — orthographic oracle, budget-matched** | floor | — | — | — | — | 0.705 | 0.685 | **0.695** |
-| `ceiling-b-nemotron-3-super-120b-a12b` | ceiling | 123 | 78 | 45 | 30 | 0.634 | 0.722 | **0.675** |
-| `ceiling-b-qwen3.8-27b` | ceiling | 241 | 102 | 139 | 6 | 0.423 | 0.944 | 0.585 |
-| `ceiling-b-deepseek-v4-flash-0731` | ceiling | 197 | 87 | 110 | 21 | 0.442 | 0.806 | 0.570 |
-| `ceiling-b-mistral-small-2603` | ceiling | 196 | 80 | 116 | 28 | 0.408 | 0.741 | 0.526 |
-| `ceiling-b-qwen3.8-flash` | ceiling | 261 | 96 | 165 | 12 | 0.368 | 0.889 | 0.520 |
-| **FLOOR — orthographic oracle, unbudgeted** | floor | — | — | — | — | 0.307 | 0.870 | 0.454 |
-| `baselineB-Qwen3.5-2B` — best model-only LOCAL arm | local | 43 | 25 | 18 | 83 | 0.581 | 0.231 | **0.331** |
+| **FLOOR — orthographic oracle, budget-matched** *(told N)* | — | — | — | — | — | 0.705 | 0.685 | **0.695** |
+| `ceiling-b-nemotron` | 01 | 123 | 78 | 45 | 30 | 0.634 | 0.722 | **0.675** |
+| `ceiling-b-nemotron` | 02 | 131 | 80 | 51 | 28 | 0.611 | 0.741 | **0.669** |
+| `ceiling-b-nemotron` | 03 | 130 | 79 | 51 | 29 | 0.608 | 0.731 | **0.664** |
+| `ceiling-b-deepseek` | 02 | 198 | 91 | 107 | 17 | 0.460 | 0.843 | 0.595 |
+| `ceiling-b-qwen3.8-27b` | 03 | 235 | 101 | 134 | 7 | 0.430 | 0.935 | 0.589 |
+| `ceiling-b-qwen3.8-27b` | 01 | 241 | 102 | 139 | 6 | 0.423 | 0.944 | 0.585 |
+| `ceiling-b-deepseek` | 03 | 211 | 93 | 118 | 15 | 0.441 | 0.861 | 0.583 |
+| `ceiling-b-qwen3.8-27b` | 02 | 242 | 101 | 141 | 7 | 0.417 | 0.935 | 0.577 |
+| `ceiling-b-deepseek` | 01 | 197 | 87 | 110 | 21 | 0.442 | 0.806 | 0.570 |
+| `ceiling-b-mistral` | 03 | 200 | 84 | 116 | 24 | 0.420 | 0.778 | 0.545 |
+| `ceiling-b-qwen3.8-flash` | 02 | 283 | 106 | 177 | 2 | 0.375 | 0.981 | 0.542 |
+| `ceiling-b-qwen3.8-flash` | 03 | 265 | 99 | 166 | 9 | 0.374 | 0.917 | 0.531 |
+| `ceiling-b-mistral` | 02 | 211 | 84 | 127 | 24 | 0.398 | 0.778 | 0.527 |
+| `ceiling-b-mistral` | 01 | 196 | 80 | 116 | 28 | 0.408 | 0.741 | 0.526 |
+| `ceiling-b-qwen3.8-flash` | 01 | 261 | 96 | 165 | 12 | 0.368 | 0.889 | 0.520 |
+| **FLOOR — orthographic oracle, unbudgeted** *(no label access)* | — | — | — | — | — | 0.307 | 0.870 | **0.454** |
+| `baselineB-Qwen3.5-2B` — best model-only LOCAL arm | — | 43 | 25 | 18 | 83 | 0.581 | 0.231 | **0.331** |
 
-Best model-only span arm **0.675** against a budget-matched oracle floor of **0.695**: still below,
-by 0.020. Every ceiling B arm beats the *unbudgeted* oracle (0.454) and the best local model-only arm
-(0.331); none beats the budget-matched one.
+**This level is far more stable across passes than the predicate level.** `ceiling-b-nemotron` runs
+0.675 / 0.669 / 0.664 — a spread of **0.011** — against 0.062 for `judge-deepseek` at the predicate
+level and up to 0.248 for other arms there. Span extraction is not where the variance lives, which
+is the accuracy-side counterpart of §10.1's conclusion.
+
+**On the two floors, and which one a conclusion rests on.** The best model-only span arm is
+**0.675**. Against the *budget-matched* oracle (**0.695**) it falls short by 0.020 — but that oracle
+is **handed N, the item's own gold count**, and allowed only its first N hits in document order.
+That is label information no deployable system has, and a reference holding it is not a floor.
+Against the *unbudgeted* oracle — the same orthographic reader with no access to the labels — the
+arm is ahead by **+0.221**, and **every** ceiling B arm clears it in **every** pass. Every ceiling B
+arm also beats the best model-only local arm (0.331) by 1.6–2.0×.
+
+So: *given the same number of guesses, is the model better at choosing?* — no, narrowly, and only
+against nemotron's arm. *Against a reader with no label access?* — yes, by a wide margin, universally.
 
 ---
 
