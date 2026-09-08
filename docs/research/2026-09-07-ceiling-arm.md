@@ -862,6 +862,57 @@ arm also beats the best model-only local arm (0.331) by 1.6–2.0×.
 So: *given the same number of guesses, is the model better at choosing?* — no, narrowly, and only
 against nemotron's arm. *Against a reader with no label access?* — yes, by a wide margin, universally.
 
+### 9.3 What the three passes actually bought: variance, and where it lives
+
+The repeat passes were commissioned to answer *"is that gap real or noise?"*. They answer it, and
+they also produce the sharpest single result in this arm.
+
+**Every call in every pass was made at `temperature: 0`, with the provider pinned and
+`allow_fallbacks: false`.** Whatever moves between passes is therefore provider and routing
+variance — batching, load, a different GPU, a silently updated serving stack — and **not** the
+sampler.
+
+| level | metric | mean spread across 3 passes | max spread |
+|---|---|---|---|
+| **span** (entity gold, 108 spans) | F1 | **0.018** | 0.025 |
+| **predicate** (message-level, 19 positives) | F1 | **0.109** | **0.344** |
+
+Per arm, message-level predicate F1:
+
+| arm | pass 1 | pass 2 | pass 3 | spread |
+|---|---|---|---|---|
+| `judge-deepseek` | 0.811 | 0.905 | **0.927** | 0.116 |
+| `judge-qwen3.8-27b` | 0.760 | 0.776 | 0.776 | **0.016** |
+| `judge-qwen3.8-flash` | 0.450 | 0.474 | 0.481 | 0.031 |
+| `judge-nemotron` | 0.467 | 0.357 | 0.296 | 0.170 |
+| `judge-mistral` | 0.100 | 0.348 | 0.190 | **0.248** |
+| `b-qwen3.8-flash` | 0.261 | 0.100 | 0.444 | **0.344** |
+| `b-mistral` | 0.400 | 0.457 | 0.300 | 0.157 |
+| `b-deepseek` | 0.261 | 0.273 | 0.273 | 0.012 |
+| `b-qwen3.8-27b` | 0.273 | 0.273 | 0.273 | 0.000 |
+| `b-nemotron` | 0.000 | 0.000 | 0.000 | 0.000 |
+
+**Three things follow, and the third is the important one.**
+
+1. **A single pass against a hosted provider is not a measurement.** `b-qwen3.8-flash` scored 0.261,
+   0.100 and 0.444 on identical inputs at `temperature: 0`. Any conclusion drawn from one of those
+   three numbers would be wrong about the other two. This document's original headline was drawn
+   from exactly one pass — see §10.1 — and that is how it went wrong.
+2. **The stable arms are stable for opposite reasons.** `b-nemotron` and `b-qwen3.8-27b` have zero
+   spread because they emit the same thing every time (nemotron emits *nothing* on the predicate,
+   in all three passes). `judge-qwen3.8-27b`'s 0.016 is genuine stability at a useful score. Low
+   variance is not by itself evidence of anything.
+3. **Variance is 6× larger at the predicate than at the span level** — 0.109 against 0.018 — on the
+   same rows, the same passes, the same providers. **Where these models are unstable is exactly
+   where they are inaccurate.** That is the same statement as *the binding constraint is
+   classification, not span extraction*, arrived at from a completely independent direction: not
+   "they score worse at classification" but "they do not even agree with themselves about
+   classification, while agreeing with themselves about spans to within 0.02".
+
+The practical consequence for anyone repeating this: **budget for three passes minimum on the
+classification metric, and one is sufficient for span extraction.** The cost asymmetry is real —
+these three passes cost $0.51 — and spending it on the span level would have bought almost nothing.
+
 ---
 
 ## 10. The six questions
