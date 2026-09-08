@@ -274,20 +274,30 @@ written when only the two DeepSeek arms existed, said *"not one thinking-off cal
 **That is false on the completed run** and is corrected here rather than quietly amended: three
 calls did.
 
+**This figure has now been corrected twice, and it grew both times.** The first draft said *"not one
+thinking-off call reached 512"*; that became 3 when the pass-1 slate finished; it is **12** now that
+all three passes are in. Recomputed over **5,580 thinking-off calls**:
+
 | population | calls | completions ≥ 512 | truncated at 600 |
 |---|---|---|---|
-| all ten thinking-off arms | 1,854 | **3 (0.162%)** | **0** |
-| — `ceiling-b-mistral-small-2603` | 189 | 1 (544 tokens) | 0 |
-| — `ceiling-b-qwen3.8-flash` | 176 | 2 (534, 581 tokens) | 0 |
-| `ceiling-judge-glm-5.3-flash` **thinking ON** | 216 | **55** | **48 (22.2%)** |
+| all thinking-off arms, **passes 1–3** | 5,580 | **12 (0.215%)** | **3** |
+| — `ceiling-b-qwen3.8-flash` | 555 | 7 (520, 525, 534, 581, 581, 581, **600**) | **1** |
+| — `ceiling-b-mistral-small-2603` | 568 | 4 (544, 544, 566, **600**) | **1** |
+| — `ceiling-b-deepseek-v4-flash` | 541 | 1 (**600**) | **1** |
+| `ceiling-judge-glm-5.3-flash` **thinking ON** | 216 | 55 | **48 (22.2%)** |
 
-So the asymmetry is **not** perfectly inert: **3 of 1,854 thinking-off calls (0.162%)** produced
-completions the browser arms' 512-token cap would have cut short, both in Approach-B arms, all three
-in the 512–581 range. None of the ten thinking-off arms truncated at 600, so no thinking-off result
-is a truncation artefact *at the cap that was used* — but three answers would have been at 512.
-Whether those three change a finding is not knowable without re-running at 512, which was not done.
-The effect is bounded and small; it is not zero, and the honest statement is the percentage, not the
-word "inert". It remains large only for the thinking-on arm. `ceiling-score.ts` prints the `calls >=512` column so this
+So the asymmetry is **not** perfectly inert, and one claim in the earlier version is now false.
+**Three thinking-off calls did truncate at 600** — one each in the DeepSeek, Mistral and
+qwen3.8-flash Approach-B arms — where this section previously said none did. Those three answers are
+truncation artefacts *at the cap that was actually used*, not merely answers that would have been
+cut at 512.
+
+Every one of the 12 is in an **Approach-B** arm; no judge arm has produced a completion over 512 in
+5,580 calls, which follows from §10.4's completion-token medians (5–7 for the judge against 58–113
+for B). Whether the 12 change a finding is not knowable without re-running at 512, which was not
+done. The effect is bounded and small — 0.215% of calls, 0.054% truncated — and it is **not zero**;
+the honest statement is the percentages, not the word "inert". It remains large only for the
+thinking-on arm. `ceiling-score.ts` prints the `calls >=512` column so this
 stays checkable rather than asserted, and the record now carries `maxTokens` and
 `localArmMaxTokens` on every row written from here on. It was **not** changed mid-experiment: the
 paid run was in flight, and a slate half-measured at each value is worse than one measured at a
