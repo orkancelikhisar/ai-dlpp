@@ -53,3 +53,5 @@ Keep the in-browser checker for fast, free catching of keys and ID numbers. For 
 [Paper](docs/paper/paper.pdf) · [One-page summary](docs/paper/executive-summary.pdf) · [Research records](docs/research/) · [Technical notes and how to run it](docs/technical-notes.md)
 
 All test data here is synthetic. Every key, ID number, name, email and policy document was written or generated for the study.
+
+Released under the [MIT License](LICENSE).
