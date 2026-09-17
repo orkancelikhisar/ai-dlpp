@@ -4,6 +4,7 @@ import { loadPolicyIr } from "@sih/core";
 import { NOT_CONFIDENTIAL, TYPESAFE_MODEL, decideCandidate, projectFindings, type CandidateAnswer, type TypeSafeRecord } from "../src/driver/typesafe.js";
 import {
   THRESHOLD_GRID,
+  blockedShare,
   crossValidateEntity,
   entityPointWith,
   foldOf,
@@ -67,6 +68,37 @@ describe("overlap merging", () => {
     expect(merged).toHaveLength(2);
     expect(merged.map((f) => [f.start, f.end])).toEqual([[0, 16], [24, 36]]);
     expect(merged[1]!.confidence).toBe(0.9);
+  });
+});
+
+describe("gating a type on the message predicate", () => {
+  const withClient = (predicateProbability: number | null): TypeSafeRecord =>
+    rec({ predicateProbability, gold: [], candidates: [cand({ choice: "client-name", probability: 0.8, probabilities: { "client-name": 0.8, [NOT_CONFIDENTIAL]: 0.2 } })] });
+  const t = { predicate: 0.375, candidate: 0.5, rule: "confidential-mass" as const, gateTypesOnPredicate: ["client-name"] };
+
+  it("keeps a client-name finding when the message discloses a client relationship", () => {
+    expect(projectFindings(IR, withClient(0.9), t).filter((f) => f.entityType === "client-name")).toHaveLength(1);
+  });
+
+  it("drops it when the message does not, and when the predicate went unanswered", () => {
+    expect(projectFindings(IR, withClient(0.2), t).filter((f) => f.entityType === "client-name")).toHaveLength(0);
+    expect(projectFindings(IR, withClient(null), t).filter((f) => f.entityType === "client-name")).toHaveLength(0);
+  });
+
+  it("gates only the named types, and not at all when the list is absent", () => {
+    const other = rec({ predicateProbability: 0.1, gold: [], candidates: [cand({ choice: "in-pan", probability: 0.8, probabilities: { "in-pan": 0.8, [NOT_CONFIDENTIAL]: 0.2 } })] });
+    expect(projectFindings(IR, other, t)).toHaveLength(1);
+    expect(projectFindings(IR, withClient(0.2), { ...t, gateTypesOnPredicate: undefined })).toHaveLength(1);
+  });
+});
+
+describe("blocked is not touched", () => {
+  it("counts only clean messages carrying a finding the policy blocks", () => {
+    const pseudonymised = rec({ itemId: "p", gold: [], candidates: [cand({ choice: "client-name", probability: 0.9, probabilities: { "client-name": 0.9, [NOT_CONFIDENTIAL]: 0.1 } })] });
+    const blocked = rec({ itemId: "b", gold: [], candidates: [cand({ choice: "in-pan", probability: 0.9, probabilities: { "in-pan": 0.9, [NOT_CONFIDENTIAL]: 0.1 } })] });
+    const t = { predicate: 1.1, candidate: 0.5, rule: "confidential-mass" as const };
+    expect(entityPointWith(IR, [pseudonymised, blocked], t).overBlocking).toBe(1);
+    expect(blockedShare(IR, [pseudonymised, blocked], t)).toEqual({ clean: 2, blocked: 1, share: 0.5 });
   });
 });
 

@@ -434,6 +434,23 @@ export interface Thresholds {
    * the system1-dlp session, which hit it while lifting this function.
    */
   readonly mergeOverlaps?: boolean;
+  /**
+   * Entity types whose span findings require the message predicate to fire.
+   *
+   * Composition of two judgments the model already answered, in code, for
+   * nothing. It comes from the POLICY, not from error analysis: p-fin §3.1 and
+   * §3.3 govern the name of a CLIENT, so a capitalised organisation in a message
+   * that discloses no client relationship is not the thing the clause forbids.
+   * That provenance is what keeps it from being a fitted parameter.
+   *
+   * MEASURED on the three passes with `client-name` gated at the shipped 0.375
+   * predicate threshold: 8 of 102 span false positives removed, NO true positive
+   * lost, F1 0.640 -> 0.657, clean messages touched 27.2% -> 24.7%. At 0.5 it
+   * starts costing real spans, which is a second argument for the gap midpoint.
+   * Raised by the system1-dlp session, which measured a larger version of the
+   * same effect on its own pipeline.
+   */
+  readonly gateTypesOnPredicate?: readonly string[];
 }
 
 const overlapsSpan = (a: { start: number; end: number }, b: { start: number; end: number }): boolean =>
@@ -485,10 +502,12 @@ export function projectFindings(ir: PolicyIr, record: TypeSafeRecord, t: Thresho
     });
   }
   const fired: ProjectedFinding[] = [];
+  const predicateFired = record.predicateProbability !== null && record.predicateProbability >= t.predicate;
   for (const c of record.candidates) {
     const decision = decideCandidate(c, t);
     if (decision === undefined) continue;
     if (!ir.entityTypes.some((e) => e.id === decision.entityType)) continue;
+    if (t.gateTypesOnPredicate?.includes(decision.entityType) === true && !predicateFired) continue;
     fired.push({
       start: c.start,
       end: c.end,

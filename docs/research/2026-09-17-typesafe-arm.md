@@ -332,3 +332,32 @@ They also report a negative result worth keeping: tuning per entity type to maxi
 did not hold out of fold. §10.4's warning that F1 is the wrong objective for a leak-stopping tool is
 stronger than it was written: under a prevention objective, per-type tuning on evidence this thin
 appears to add nothing.
+
+## 11.1 Two of their findings, reproduced here
+
+Both were testable on the probabilities already stored, so both were checked rather than accepted.
+
+**Blocked is not touched, and this record has been reporting the wrong one alone.** `over-blocking`
+here counts a clean message with ANY finding on it. But p-fin pseudonymises `client-name` and blocks
+the seven identifier types, so a clean message whose organisation name is pseudonymised is an
+annoyance while one carrying a blocked identifier cannot be sent at all. On the three passes at the
+confidential-mass rule: **27.2% of clean messages touched, 17.3% blocked.** A third of the number this
+study has been quoting as over-blocking is pseudonymisation. Every published figure stands as the
+*touched* share — that is what it always measured — but `blockedShare` now reports the other half, and
+an operating point chosen against the touched number is being chosen against the wrong cost.
+
+**Composing the two judgments in code is free and it works.** The engine session gates `client-name`
+span findings on the message-level predicate, on the policy's own reading: §3.1 and §3.3 govern the
+name of a CLIENT, so a capitalised organisation in a message that discloses no client relationship is
+not what the clause forbids. Reproduced on this arm at the shipped 0.375 threshold: **8 of 102 span
+false positives removed, no true positive lost**, F1 0.640 → 0.657, clean messages touched 27.2% →
+24.7%. Their version removed 31 of 112 on their own pipeline; the direction and the zero-loss property
+hold in both. At a 0.5 predicate threshold it starts costing real spans, which is a second argument for
+the gap midpoint. Shipped as `gateTypesOnPredicate`, off by default, so no published number moves.
+
+Two results of theirs this arm cannot check, recorded as theirs: giving the model code-counted facts
+(length, digit and mask counts, the rule that matched) lifted their prevention 92.6% → 96.3% while
+costing precision, which only a matched-cost comparison reveals; and trimming examples and
+counter-examples from the criteria took their median input tokens 3,306 → 1,804 with no accuracy loss,
+which is §10's cost item measured. Both need a new run to test here, and this arm's numbers are
+published, so they stay theirs.

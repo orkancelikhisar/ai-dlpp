@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { loadIr } from "./ceiling-run.js";
 import { loadTypeSafeRecords, type Thresholds } from "./typesafe.js";
 import {
+  blockedShare,
   crossValidateEntity,
   entityPointWith,
   loadPredicateGold,
@@ -54,12 +55,14 @@ function main(): void {
     { name: "+ merge overlaps", t: { predicate: 1.1, candidate: 0.5, mergeOverlaps: true } },
     { name: "+ confidential mass", t: { predicate: 1.1, candidate: 0.5, rule: "confidential-mass" } },
     { name: "+ both", t: { predicate: 1.1, candidate: 0.5, rule: "confidential-mass", mergeOverlaps: true } },
+    { name: "+ client-name gated on the predicate", t: { predicate: 0.375, candidate: 0.5, rule: "confidential-mass", mergeOverlaps: true, gateTypesOnPredicate: ["client-name"] } },
   ];
   console.log("\nENTITY SPANS at the 0.5 default, one decision rule at a time (mean over passes)");
   for (const v of VARIANTS) {
     const pts = passes.map((p) => entityPointWith(ir, p.records, v.t));
     const mean = (pick: (x: (typeof pts)[number]) => number): number => pts.reduce((a, x) => a + pick(x), 0) / pts.length;
-    console.log(`  ${v.name.padEnd(26)} F1 ${f(mean((x) => x.f1))}  P ${f(mean((x) => x.precision))}  R ${f(mean((x) => x.recall))}   prevention ${f(mean((x) => x.leakPrevention))}  over-blocking ${f(mean((x) => x.overBlocking))}`);
+    const blocked = passes.map((p) => blockedShare(ir, p.records, v.t).share).reduce((a, b) => a + b, 0) / passes.length;
+    console.log(`  ${v.name.padEnd(38)} F1 ${f(mean((x) => x.f1))}  prevention ${f(mean((x) => x.leakPrevention))}  clean touched ${f(mean((x) => x.overBlocking))}  clean blocked ${f(blocked)}`);
   }
 
   const opts: TuneOptions = { rule: "confidential-mass", mergeOverlaps: true, base: 0.5 };

@@ -190,6 +190,28 @@ export function splitHalf(rows: readonly ScoredRow[]): SplitHalf {
 const nonPred = (s: { entityType: string }): boolean => !s.entityType.startsWith("pred:");
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }): boolean => a.start < b.end && b.start < a.end;
 
+/**
+ * Share of clean messages that would be BLOCKED, as distinct from touched.
+ *
+ * The distinction is the system1-dlp session's, and it is right: a clean message
+ * whose organisation name gets pseudonymised is an annoyance; one that cannot be
+ * sent at all is what the desk feels. p-fin pseudonymises `client-name` and
+ * blocks the seven identifier types, so the two numbers differ by a third here —
+ * 27.2% touched against 17.3% blocked on pass 1. Every `overBlocking` figure in
+ * this file and in the paper is the TOUCHED one; this is the other half.
+ */
+export function blockedShare(ir: PolicyIr, records: readonly TypeSafeRecord[], t: import("./typesafe.js").Thresholds): { clean: number; blocked: number; share: number } {
+  let clean = 0;
+  let blocked = 0;
+  for (const r of records) {
+    if (r.gold.filter(nonPred).length > 0) continue;
+    clean += 1;
+    const findings = projectFindings(ir, r, t).filter(nonPred);
+    if (findings.some((f) => f.action === "block")) blocked += 1;
+  }
+  return { clean, blocked, share: clean === 0 ? 0 : blocked / clean };
+}
+
 export interface EntityPoint {
   readonly threshold: number;
   readonly tp: number;
