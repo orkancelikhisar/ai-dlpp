@@ -206,6 +206,26 @@ export interface EntityPoint {
   readonly overBlocking: number;
 }
 
+export function entityPointWith(ir: PolicyIr, records: readonly TypeSafeRecord[], t: import("./typesafe.js").Thresholds): EntityPoint {
+  let tp = 0, fp = 0, fn = 0, leakBearing = 0, fullyCaught = 0, clean = 0, overBlocked = 0;
+  for (const r of records) {
+    const findings = projectFindings(ir, r, t).filter(nonPred);
+    const gold = r.gold.filter(nonPred);
+    const counts = pairSpansGreedy("overlap", findings, gold);
+    tp += counts.tp; fp += counts.fp; fn += counts.fn;
+    if (gold.length > 0) {
+      leakBearing += 1;
+      if (gold.every((g) => findings.some((f) => overlaps(f, g)))) fullyCaught += 1;
+    } else {
+      clean += 1;
+      if (findings.length > 0) overBlocked += 1;
+    }
+  }
+  const base = prf1(tp, fp, fn, t.candidate);
+  return { ...base, leakBearing, fullyCaught, leakPrevention: leakBearing === 0 ? 0 : fullyCaught / leakBearing,
+           clean, overBlocked, overBlocking: clean === 0 ? 0 : overBlocked / clean };
+}
+
 export function entityPoint(ir: PolicyIr, records: readonly TypeSafeRecord[], threshold: number): EntityPoint {
   let tp = 0;
   let fp = 0;
@@ -360,4 +380,125 @@ export function costAndTime(records: readonly TypeSafeRecord[]): CostTimeSummary
     itemWallMsP50: pct(answered.map((r) => r.itemWallMs), 0.5),
     itemWallMsP95: pct(answered.map((r) => r.itemWallMs), 0.95),
   };
+}
+
+// ------------------------------------------------------------------ tuning ---
+
+/**
+ * Threshold tuning, and the honesty machinery that has to come with it.
+ *
+ * The first run scored one global 0.5 with the argmax rule and no overlap
+ * merging, because those were defaults, not decisions. Three things were left on
+ * the table and all three are measurable from the SAME stored probabilities, at
+ * no further cost:
+ *
+ *   1. firing on 1 - P(not-confidential) rather than on the top option's own
+ *      probability, which stops splitting mass between two confidential labels
+ *      from reading as doubt;
+ *   2. keeping one finding per overlapping cluster;
+ *   3. a threshold per entity type.
+ *
+ * A tuned number is worth nothing without the estimate that says it generalises,
+ * so `crossValidateEntity` tunes on four fifths of the MESSAGES and scores the
+ * fifth, five times, and that pooled number is the one to quote. Tuning on the
+ * rows you then score is how a 0.79 becomes a lie.
+ */
+export const THRESHOLD_GRID: readonly number[] = Array.from({ length: 21 }, (_, i) => Number((i / 20).toFixed(2)));
+
+/** Deterministic, content-addressed fold assignment: the same message lands in the same fold anywhere. */
+export function foldOf(itemId: string, folds: number): number {
+  let h = 2166136261;
+  for (let i = 0; i < itemId.length; i++) {
+    h ^= itemId.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h % folds;
+}
+
+export interface TuneOptions {
+  readonly rule: "argmax" | "confidential-mass";
+  readonly mergeOverlaps: boolean;
+  readonly base: number;
+  readonly rounds?: number;
+}
+
+/** Coordinate ascent over the per-type thresholds; deterministic, and it never reads the fold it is scored on. */
+export function tuneThresholds(ir: PolicyIr, records: readonly TypeSafeRecord[], opts: TuneOptions): Record<string, number> {
+  const types = ir.entityTypes.filter((e) => !e.id.startsWith("pred:")).map((e) => e.id);
+  const perType: Record<string, number> = Object.fromEntries(types.map((t) => [t, opts.base]));
+  for (let round = 0; round < (opts.rounds ?? 3); round++) {
+    for (const type of types) {
+      let bestValue = perType[type] ?? opts.base;
+      let bestF1 = -1;
+      for (const v of THRESHOLD_GRID) {
+        const f1 = entityPointWith(ir, records, { predicate: 1.1, candidate: opts.base, perType: { ...perType, [type]: v }, rule: opts.rule, mergeOverlaps: opts.mergeOverlaps }).f1;
+        if (f1 > bestF1) { bestF1 = f1; bestValue = v; }
+      }
+      perType[type] = bestValue;
+    }
+  }
+  return perType;
+}
+
+export interface CrossValidated {
+  readonly folds: number;
+  readonly point: EntityPoint;
+  readonly perFold: readonly { fold: number; items: number; thresholds: Record<string, number> }[];
+}
+
+/** The number to quote: every message scored by thresholds tuned without it. */
+export function crossValidateEntity(ir: PolicyIr, records: readonly TypeSafeRecord[], opts: TuneOptions, folds = 5): CrossValidated {
+  let tp = 0, fp = 0, fn = 0, leakBearing = 0, fullyCaught = 0, clean = 0, overBlocked = 0;
+  const perFold: { fold: number; items: number; thresholds: Record<string, number> }[] = [];
+  for (let k = 0; k < folds; k++) {
+    const train = records.filter((r) => foldOf(r.itemId, folds) !== k);
+    const test = records.filter((r) => foldOf(r.itemId, folds) === k);
+    if (test.length === 0) continue;
+    const perType = tuneThresholds(ir, train, opts);
+    perFold.push({ fold: k, items: test.length, thresholds: perType });
+    const p = entityPointWith(ir, test, { predicate: 1.1, candidate: opts.base, perType, rule: opts.rule, mergeOverlaps: opts.mergeOverlaps });
+    tp += p.tp; fp += p.fp; fn += p.fn;
+    leakBearing += p.leakBearing; fullyCaught += p.fullyCaught; clean += p.clean; overBlocked += p.overBlocked;
+  }
+  const base = prf1(tp, fp, fn, 0);
+  return {
+    folds,
+    perFold,
+    point: { ...base, leakBearing, fullyCaught, leakPrevention: leakBearing === 0 ? 0 : fullyCaught / leakBearing,
+             clean, overBlocked, overBlocking: clean === 0 ? 0 : overBlocked / clean },
+  };
+}
+
+/**
+ * The predicate threshold, chosen at the MIDDLE of the gap rather than at the
+ * best observed value.
+ *
+ * An F1-argmax lands exactly on some message's probability, so the next run's
+ * equivalent message can fall a thousandth below it. The midpoint of the widest
+ * empty band is the same decision with margin on both sides, and it is worth
+ * 0.006 of split-half F1 here for no cost at all.
+ */
+export function pickThresholdMidGap(rows: readonly ScoredRow[]): number | null {
+  const pos = rows.filter((r) => r.label).map((r) => r.probability).sort((a, b) => a - b);
+  const neg = rows.filter((r) => !r.label).map((r) => r.probability).sort((a, b) => a - b);
+  if (pos.length === 0 || neg.length === 0) return null;
+  const argmax = bestPoint(sweep(rows))?.threshold;
+  if (argmax === undefined) return null;
+  const below = neg.filter((p) => p < argmax);
+  const above = pos.filter((p) => p >= argmax);
+  if (above.length === 0) return argmax;
+  const lower = below.length === 0 ? 0 : Math.max(...below);
+  return Number(((lower + Math.min(...above)) / 2).toFixed(4));
+}
+
+/** Split-half with a choosable picker, so two picking rules can be compared on the same rows. */
+export function splitHalfWith(rows: readonly ScoredRow[], pick: (r: readonly ScoredRow[]) => number | null): SplitHalf {
+  const a = rows.filter((r) => halfOf(r.itemId) === 0);
+  const b = rows.filter((r) => halfOf(r.itemId) === 1);
+  const tauA = pick(a);
+  const tauB = pick(b);
+  const f1OnB = tauA === null || b.length === 0 ? null : pointAt(b, tauA).f1;
+  const f1OnA = tauB === null || a.length === 0 ? null : pointAt(a, tauB).f1;
+  const both = [f1OnB, f1OnA].filter((x): x is number => x !== null);
+  return { tauFromA: tauA, f1OnB, tauFromB: tauB, f1OnA, mean: both.length === 0 ? null : both.reduce((x, y) => x + y, 0) / both.length };
 }

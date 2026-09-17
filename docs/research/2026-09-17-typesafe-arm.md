@@ -213,3 +213,84 @@ five hosted models could.
   orthographic oracle propose, and nothing else can be found. The tier-0 baseline row is there
   so that ceiling stays visible.
 - **The span-wise predicate column stays empty.** A noul returns no clause.
+
+---
+
+# 10. Tuning the decision rule, at no further cost
+
+Run `pnpm -C apps/eval typesafe:tune`. No model was called: every number below comes from
+probabilities already on disk. That is the return on storing raw probabilities instead of decisions —
+the first run's defaults turned out to cost a third of the achievable F1, and finding that out cost
+nothing but arithmetic.
+
+## 10.1 Three things the first run left on the table
+
+| decision rule, at the 0.5 default | span F1 | precision | recall | prevention | over-blocking |
+|---|---|---|---|---|---|
+| as run: argmax, every finding kept | 0.551 | 0.403 | 0.870 | 0.870 | 0.251 |
+| + keep one finding per overlapping cluster | 0.630 | 0.494 | 0.870 | 0.870 | 0.251 |
+| + fire on 1 − P(not-confidential) | 0.562 | 0.405 | 0.917 | 0.917 | 0.272 |
+| + both | 0.640 | 0.492 | 0.917 | 0.917 | 0.272 |
+
+**Overlap merging is the larger half, and it was a measurement artefact in the first run.** 55 of the
+139 span false positives in pass 1 were a second candidate inside a finding already reported: four
+orthographic hits inside one PEM block, three inside one masked Aadhaar. The gold pairs one to one, so
+every extra is a false positive for text that was already caught.
+
+**Firing on the confidential mass buys recall.** Where the model splits 0.40 api-credential / 0.35
+db-connection-string / 0.25 not-confidential, the argmax rule reads 0.40 and stays silent at a 0.5
+threshold, although the model put three-quarters of its mass on "this is confidential". Reading
+1 − P(not-confidential) and labelling with the best confidential option lifts recall 0.870 → 0.917.
+
+## 10.2 One threshold per entity type
+
+Coordinate ascent over the grid, per pass, then cross-validated over five folds of MESSAGES so that no
+message is ever scored by a threshold its own row helped choose:
+
+| | pass 1 | pass 2 | pass 3 |
+|---|---|---|---|
+| fitted F1 (tuned and scored on the same rows) | 0.790 | 0.798 | 0.814 |
+| **cross-validated F1** | **0.718** | **0.759** | **0.779** |
+| cross-validated prevention / over-blocking | 0.694 / 0.086 | 0.787 / 0.111 | 0.815 / 0.099 |
+
+**Mean cross-validated F1 0.752 against 0.551 as run: +0.201 for no extra call.** The fitted figures
+are 0.04 to 0.07 higher, which is the size of the self-congratulation a paper gets if it quotes them.
+
+Shipped thresholds, the median of the three passes: `in-pan 0.95`, `in-aadhaar 0.95`,
+`bank-account-identifier 0.05`, `internal-customer-id 0.95`, `client-name 0.95`, `api-credential 0.95`,
+`db-connection-string 0.80`, `private-key-material 1.00`. On the three passes those give F1
+0.787 / 0.792 / 0.813 at prevention 0.769 / 0.778 / 0.787 and over-blocking 0.086 / 0.074 / 0.074.
+
+**Two of those numbers are warnings rather than settings.** `private-key-material 1.00` and
+`bank-account-identifier 0.05` are the grid's endpoints, which means the tuner found no interior
+optimum: the model is saturated on PEM blocks and under-fires on account identifiers, and on 17 and 18
+gold spans respectively that is as likely to be the corpus as the model. Both should be re-derived on a
+second corpus before anyone ships them.
+
+## 10.3 Where to put the predicate threshold
+
+The F1-argmax lands exactly on some message's probability, so the next run's equivalent message can
+fall a thousandth below it. Taking the midpoint of the widest empty band instead is the same decision
+with margin on both sides:
+
+| threshold picker | split-half F1, pass 1 / 2 / 3 |
+|---|---|
+| best observed value | 0.971 / 0.971 / 0.971 |
+| **midpoint of the gap** | **1.000 / 1.000 / 0.971** |
+
+Shipped predicate threshold, the median of the three midpoints: **0.375**.
+
+## 10.4 What optimising F1 costs
+
+F1 is a compromise, and tuning to it moves the pipeline toward precision: prevention falls from 0.870
+as run to about 0.78, while over-blocking falls from 0.251 to about 0.09. **If the objective is leaks
+stopped rather than F1, the operating point is different**: confidential mass plus merging at a low
+threshold reaches prevention 0.917 at 0.272 over-blocking. The right default is a policy decision about
+the cost of a missed leak against the cost of an interrupted prompt, and the tuner prints both.
+
+## 10.5 What did not change
+
+The paper's published figures are the rule as it ran, and they still reproduce byte for byte:
+`typesafe:score` prints 0.944 at the predicate and 0.556 at the entity level on pass 1. The tuned rule
+is an addition, not a correction, and `projectFindings` defaults to the original behaviour so that no
+stored number moves under it.

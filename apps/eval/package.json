@@ -13,7 +13,8 @@
     "ceiling:score": "vite-node --config vite-node.config.ts src/driver/ceiling-score.ts",
     "ceiling:ledger": "vite-node --config vite-node.config.ts src/driver/ceiling-ledger.ts",
     "typesafe": "vite-node --config vite-node.config.ts src/driver/typesafe-main.ts",
-    "typesafe:score": "vite-node --config vite-node.config.ts src/driver/typesafe-score.ts"
+    "typesafe:score": "vite-node --config vite-node.config.ts src/driver/typesafe-score.ts",
+    "typesafe:tune": "vite-node --config vite-node.config.ts src/driver/typesafe-tune.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.3.0",

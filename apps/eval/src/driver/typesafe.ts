@@ -403,7 +403,52 @@ export interface ProjectedFinding {
 
 export interface Thresholds {
   readonly predicate: number;
+  /** The fallback when no per-type threshold is given. */
   readonly candidate: number;
+  /** Per entity type, because one number cannot serve a PEM block and a client name. */
+  readonly perType?: Readonly<Record<string, number>>;
+  /**
+   * How a candidate's probability is read.
+   *
+   * `"argmax"` is what the first run used: fire on the top option's own
+   * probability. `"confidential-mass"` fires on 1 - P(not-confidential) and
+   * labels with the best confidential option, which is the honest question when
+   * the mass splits across two entity types that are both confidential.
+   */
+  readonly rule?: "argmax" | "confidential-mass";
+  /**
+   * Keep one finding per overlapping cluster, highest probability first.
+   *
+   * MEASURED: 55 of the 139 span false positives in pass 1 were a second
+   * candidate inside a finding already reported -- four orthographic hits inside
+   * one PEM block, say. Gold pairs one-to-one, so every extra is a false
+   * positive for text already caught.
+   */
+  readonly mergeOverlaps?: boolean;
+}
+
+const overlapsSpan = (a: { start: number; end: number }, b: { start: number; end: number }): boolean =>
+  a.start < b.end && b.start < a.end;
+
+/** The firing decision for one candidate: its label and the probability that fired it, or nothing. */
+export function decideCandidate(c: CandidateAnswer, t: Thresholds): { entityType: string; probability: number } | undefined {
+  if (c.choice === null) return undefined;
+  const rule = t.rule ?? "argmax";
+  const threshold = (type: string): number => t.perType?.[type] ?? t.candidate;
+  if (rule === "argmax") {
+    if (c.choice === NOT_CONFIDENTIAL || c.probability === null) return undefined;
+    return c.probability >= threshold(c.choice) ? { entityType: c.choice, probability: c.probability } : undefined;
+  }
+  const probs = c.probabilities;
+  if (probs === null) return undefined;
+  let best: string | undefined;
+  for (const [k, v] of Object.entries(probs)) {
+    if (k === NOT_CONFIDENTIAL) continue;
+    if (best === undefined || v > (probs[best] ?? 0)) best = k;
+  }
+  if (best === undefined) return undefined;
+  const confidential = 1 - (probs[NOT_CONFIDENTIAL] ?? 0);
+  return confidential >= threshold(best) ? { entityType: best, probability: confidential } : undefined;
 }
 
 /**
@@ -430,23 +475,32 @@ export function projectFindings(ir: PolicyIr, record: TypeSafeRecord, t: Thresho
       action: resolveAction(ir, id, "default"),
     });
   }
+  const fired: ProjectedFinding[] = [];
   for (const c of record.candidates) {
-    if (c.choice === null || c.choice === NOT_CONFIDENTIAL) continue;
-    if (c.probability === null || c.probability < t.candidate) continue;
-    const known = ir.entityTypes.some((e) => e.id === c.choice);
-    if (!known) continue;
-    out.push({
+    const decision = decideCandidate(c, t);
+    if (decision === undefined) continue;
+    if (!ir.entityTypes.some((e) => e.id === decision.entityType)) continue;
+    fired.push({
       start: c.start,
       end: c.end,
       text: c.text,
-      entityType: c.choice,
-      severity: ir.entityTypes.find((e) => e.id === c.choice)?.severity ?? "high",
+      entityType: decision.entityType,
+      severity: ir.entityTypes.find((e) => e.id === decision.entityType)?.severity ?? "high",
       tier: 2,
       source: `typesafe/${record.modelId ?? record.requestedModelId}`,
-      confidence: c.probability,
-      action: resolveAction(ir, c.choice, "default"),
+      confidence: decision.probability,
+      action: resolveAction(ir, decision.entityType, "default"),
     });
   }
+  const kept: ProjectedFinding[] = [];
+  if (t.mergeOverlaps === true) {
+    for (const f of [...fired].sort((a, b) => b.confidence - a.confidence || a.start - b.start)) {
+      if (!kept.some((k) => overlapsSpan(f, k))) kept.push(f);
+    }
+  } else {
+    kept.push(...fired);
+  }
+  out.push(...kept);
   return out.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
