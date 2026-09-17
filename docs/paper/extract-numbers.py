@@ -321,6 +321,84 @@ ent_spread = {}
 for a in ("b-nemotron-3-super-120b-a12b","b-deepseek-v4-flash-0731","b-qwen3.8-27b","b-mistral-small-2603","b-qwen3.8-flash"):
     v = [float(spanlevel[f"ceiling-{a} [ceiling-0{p}]"]["F1"]) for p in (1,2,3)]
     ent_spread[a] = float(f"{max(v)-min(v):.3f}")
+# ---- the TypeSafe judgment arm (jev-1.13.0), three passes -------------------
+TS_PASSES = ["ts-01", "ts-02", "ts-03"]
+ts = None
+ts_scores = None
+if all(os.path.exists(os.path.join(RUNS, f"{p}.ts-judgment.score.json")) for p in TS_PASSES):
+    S = [json.load(open(os.path.join(RUNS, f"{p}.ts-judgment.score.json"))) for p in TS_PASSES]
+    gates = [json.loads(open(os.path.join(RUNS, f"{p}.ts-judgment.gates.jsonl")).readline()) for p in TS_PASSES]
+    POS = S[0]["gold"]["positives"]; SCORED = S[0]["gold"]["scored"]; NEG = SCORED - POS
+    def point(d):
+        return {"P": round(d["precision"], 3), "R": round(d["recall"], 3), "F1": round(d["f1"], 3),
+                "tp": d["tp"], "fp": d["fp"], "fn": d["fn"], "tn": NEG - d["fp"],
+                "fpr": round(d["fp"] / NEG, 4), "fnr": round(d["fn"] / POS, 4)}
+    def ent(d):
+        return {"F1": round(d["f1"], 3), "P": round(d["precision"], 3), "R": round(d["recall"], 3),
+                "leak_prevention": round(d["leakPrevention"], 3), "over_blocking": round(d["overBlocking"], 3),
+                "fully_caught": d["fullyCaught"], "leak_bearing": d["leakBearing"], "over_blocked": d["overBlocked"], "clean": d["clean"],
+                "tp": d["tp"], "fp": d["fp"], "fn": d["fn"], "threshold": round(d["threshold"], 2)}
+    def at(sweep, t):
+        return next(x for x in sweep if abs(x["threshold"] - t) < 1e-9)
+    f1s = [s["predicate"]["at0_5"]["f1"] for s in S]
+    ts = {
+        "passes": TS_PASSES, "model": gates[0]["modelReturned"], "requested_model": gates[0]["model"],
+        "gold": {"scored": SCORED, "positives": POS, "negatives": NEG},
+        "predicate_at_half": {p: point(s["predicate"]["at0_5"]) for p, s in zip(TS_PASSES, S)},
+        "predicate_best": {p: {"threshold": round(s["predicate"]["best"]["threshold"], 3), "F1": round(s["predicate"]["best"]["f1"], 3),
+                               "fp": s["predicate"]["best"]["fp"], "fn": s["predicate"]["best"]["fn"]} for p, s in zip(TS_PASSES, S)},
+        "split_half": {p: round(s["predicate"]["splitHalf"]["mean"], 3) for p, s in zip(TS_PASSES, S)},
+        "roc_auc": {p: round(s["predicate"]["rocAuc"], 4) for p, s in zip(TS_PASSES, S)},
+        "average_precision": {p: round(s["predicate"]["averagePrecision"], 4) for p, s in zip(TS_PASSES, S)},
+        "mean": {"F1_at_half": round(st.mean(f1s), 3), "split_half": round(st.mean(s["predicate"]["splitHalf"]["mean"] for s in S), 3),
+                 "roc_auc": round(st.mean(s["predicate"]["rocAuc"] for s in S), 4),
+                 "fpr": round(st.mean(s["predicate"]["at0_5"]["fp"] for s in S) / NEG, 4),
+                 "F1_spread": round(max(f1s) - min(f1s), 3)},
+        "entity_at_half": {p: ent(s["entity"]["at0_5"]) for p, s in zip(TS_PASSES, S)},
+        "entity_at_85": {p: ent(at(s["entity"]["sweep"], 0.85)) for p, s in zip(TS_PASSES, S)},
+        "entity_at_95": {p: ent(at(s["entity"]["sweep"], 0.95)) for p, s in zip(TS_PASSES, S)},
+        "entity_tier0": ent(S[0]["entity"]["tier0Baseline"]),
+        "entity_sweep": [{"threshold": round(x["threshold"], 2), "leak_prevention": round(x["leakPrevention"], 3),
+                          "over_blocking": round(x["overBlocking"], 3), "F1": round(x["f1"], 3)} for x in S[0]["entity"]["sweep"]],
+        "filter": {p: {"candidates": s["filterEffect"]["tier0Candidates"], "on_gold": s["filterEffect"]["onGold"], "off_gold": s["filterEffect"]["offGold"],
+                       "correct_rejections": s["filterEffect"]["correctRejections"], "wrongful_rejections": s["filterEffect"]["wrongfulRejections"],
+                       "rejection_rate_off_gold": round(s["filterEffect"]["rejectionRateOffGold"], 3),
+                       "rejection_rate_on_gold": round(s["filterEffect"]["rejectionRateOnGold"], 3)} for p, s in zip(TS_PASSES, S)},
+        "cost_time": {"per_1k_usd": round(st.mean(s["costAndTime"]["costPer1kMessages"] for s in S), 4),
+                      "cost_per_pass_usd": round(st.mean(s["costAndTime"]["costUsd"] for s in S), 6),
+                      "item_wall_p50": round(st.mean(s["costAndTime"]["itemWallMsP50"] for s in S)),
+                      "item_wall_p95": round(st.mean(s["costAndTime"]["itemWallMsP95"] for s in S)),
+                      "input_tokens_p50": round(st.mean(s["costAndTime"]["inputTokensP50"] for s in S)),
+                      "questions_p50": round(st.mean(s["costAndTime"]["questionsPerItemP50"] for s in S))},
+        "ops": {"items": gates[0]["items"], "answered": [g["answered"] for g in gates], "errored": [g["errored"] for g in gates],
+                "retries": [g["retries"] for g in gates], "rate_limited": [g["rateLimited"] for g in gates]},
+        "calibration": [{"lower": b["lower"], "n": b["n"], "mean_p": None if b["meanProbability"] is None else round(b["meanProbability"], 3),
+                         "observed": None if b["observedRate"] is None else round(b["observedRate"], 3)} for b in S[0]["predicate"]["calibration"] if b["n"] > 0],
+    }
+    # The separation strip: every scored message's probability, split by gold label.
+    # Read from the ARM file and the gold, not from the score file, so the figure
+    # cannot show a distribution the scorer smoothed.
+    tsgold = {}
+    for r in rows(os.path.join(ROOT, "corpora/generated/injection-p-fin-v2.gold-tier2-predicate.jsonl")):
+        if r.get("status") == "scored" and isinstance(r.get("satisfies"), bool):
+            tsgold[r["itemId"]] = r["satisfies"]
+    pos, neg = [], []
+    for r in rows(os.path.join(RUNS, "ts-01.ts-judgment.jsonl")):
+        lab = tsgold.get(r["itemId"])
+        if lab is None or r.get("predicateProbability") is None: continue
+        (pos if lab else neg).append(round(float(r["predicateProbability"]), 4))
+    ts_scores = {"pass": TS_PASSES[0], "positives": sorted(pos), "negatives": sorted(neg),
+                 "highest_negative": max(neg), "lowest_positive": min(pos),
+                 "gap": round(min(pos) - max(neg), 4)}
+    # Cross-pass agreement, which is the stability claim.
+    recs = {p: {r["itemId"]: r for r in rows(os.path.join(RUNS, f"{p}.ts-judgment.jsonl"))} for p in TS_PASSES}
+    ids = sorted(recs[TS_PASSES[0]])
+    trip = [[recs[p][i]["predicateProbability"] for p in TS_PASSES] for i in ids]
+    labs = [[recs[p][i]["candidates"][k]["choice"] for p in TS_PASSES] for i in ids for k in range(len(recs[TS_PASSES[0]][i]["candidates"]))]
+    ts["stability"] = {"identical_predicate": sum(1 for t in trip if t[0] == t[1] == t[2]), "items": len(trip),
+                       "max_probability_spread": round(max(max(t) - min(t) for t in trip), 4),
+                       "identical_labels": sum(1 for l in labs if l[0] == l[1] == l[2]), "candidates": len(labs)}
+
 out = {"gold": G, "corpus": corpus, "floor_message_level_all": floor_all, "message_level": msg, "unanswered": unanswered,
        "local_best_message": {"arm": local_best_message[0], **local_best_message[1]},
        "variance": {"per_arm": spreads, "mean_spread": float(f"{st.mean(msg_spread):.3f}"), "max_spread": float(f"{max(msg_spread):.3f}"),
@@ -328,7 +406,8 @@ out = {"gold": G, "corpus": corpus, "floor_message_level_all": floor_all, "messa
        "local_message_level": local_msg, "spanwise_predicate": spanwise, "floors_spanwise": floors_spanwise,
        "spanlevel_entity": spanlevel, "span_floors": span_floors, "attempted_only": attempted, "latency": latency,
        "structured": structured, "spend": {"segments": spend, **spend_total}, "thinkon": thinkon,
-       "local_feasibility": local_feas, "local_ladder": local_ladder, "prevention": prev, "cost_per_1k": cost_1k}
+       "local_feasibility": local_feas, "local_ladder": local_ladder, "prevention": prev, "cost_per_1k": cost_1k,
+       "typesafe": ts, "typesafe_scores": ts_scores}
 json.dump(out, open(OUT,"w",encoding="utf8"), indent=1)
 print("wrote", OUT)
 print(f"  gold {G}  floor(msg) {floor_all['F1']}  variance mean {out['variance']['mean_spread']} max {out['variance']['max_spread']}")
@@ -336,4 +415,5 @@ print(f"  spanwise rows {len(spanwise)}  spanlevel rows {len(spanlevel)}  attemp
 print(f"  structured {structured}")
 print(f"  spend total {spend_total['calls']} calls ${spend_total['costUsd']}")
 print(f"  thinkon 600 msg-att {thinkon['glm_600']['message_attempted']['F1']} vs floor {thinkon['glm_600']['floor_attempted']['F1']} | 8192 {thinkon['glm_8192']['message_attempted']['F1']} vs {thinkon['glm_8192']['floor_attempted']['F1']}")
+if ts: print(f"  typesafe F1@0.5 {ts['mean']['F1_at_half']} split-half {ts['mean']['split_half']} AUC {ts['mean']['roc_auc']} FPR {ts['mean']['fpr']} | gap {ts_scores['gap']} | ${ts['cost_time']['per_1k_usd']}/1k {ts['cost_time']['item_wall_p50']}ms")
 print(f"  glm-b entity whole {thinkon['glm_b_8192']['entity_whole']['F1']} answered {thinkon['glm_b_8192']['entity_answered']['F1']}  oracle {oracle}")

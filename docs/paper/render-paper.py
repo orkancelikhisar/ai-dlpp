@@ -93,11 +93,40 @@ prows.append(f"<tr><td class='l'>hosted B · glm-5.3-flash, reasoning on (all ro
 TABLE_PREVENTION = ("<table class='data'>{CAP}<thead><tr><th class='l'>arm</th><th>leaks fully caught</th><th>prevention</th><th>clean messages actioned</th><th>over-blocking</th></tr></thead><tbody>"
                     + "".join(prows) + "</tbody></table>")
 
+# ---- Table: the judgment arm, three passes --------------------------------------
+TS = N.get("typesafe")
+TABLE_TS = ""
+if TS:
+    ps = TS["passes"]
+    def r(label, cells, strong=False):
+        tag = "<b>%s</b>" if strong else "%s"
+        return "<tr><td class='l'>" + label + "</td>" + "".join(f"<td>{tag % c}</td>" for c in cells) + "</tr>"
+    ph = [TS["predicate_at_half"][p] for p in ps]
+    e5 = [TS["entity_at_half"][p] for p in ps]
+    e85 = [TS["entity_at_85"][p] for p in ps]
+    t0 = TS["entity_tier0"]
+    rows = [
+        r("predicate F1 at 0.5", [f"{x['F1']:.3f}" for x in ph], True),
+        r("precision / recall", [f"{x['P']:.3f} / {x['R']:.3f}" for x in ph]),
+        r("false alarms (of %d clean)" % TS["gold"]["negatives"], [str(x["fp"]) for x in ph], True),
+        r("misses (of %d leaks)" % TS["gold"]["positives"], [str(x["fn"]) for x in ph]),
+        r("F1, split-half threshold", [f"{TS['split_half'][p]:.3f}" for p in ps], True),
+        r("ROC-AUC", [f"{TS['roc_auc'][p]:.3f}" for p in ps]),
+        r("entity prevention / over-blocking at 0.5", [f"{x['leak_prevention']:.0%} / {x['over_blocking']:.0%}".replace("%", "%") for x in e5]),
+        r("the same at 0.85", [f"{x['leak_prevention']:.0%} / {x['over_blocking']:.0%}" for x in e85]),
+        r("regex tier alone, no model", ["%.0f%% / %.0f%%" % (100 * t0["leak_prevention"], 100 * t0["over_blocking"])] * 3),
+        r("candidates kept wrongly / rejected wrongly", [f"{TS['filter'][p]['off_gold'] - TS['filter'][p]['correct_rejections']} / {TS['filter'][p]['wrongful_rejections']}" for p in ps]),
+        r("cost per 1,000 messages", ["$%.3f" % TS["cost_time"]["per_1k_usd"]] * 3),
+        r("median ms per message", [f"{TS['cost_time']['item_wall_p50']:,}"] * 3),
+    ]
+    TABLE_TS = ("<table class='data'>{CAP}<thead><tr><th class='l'>the judgment arm (jev-1.13.0)</th>"
+                + "".join(f"<th>pass {i}</th>" for i in (1, 2, 3)) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+
 FIGS = {"FIG1": "f1-architecture.svg", "FIG_SCORE": "f2-scorecard.svg", "FIG_FEAS": "f3-feasibility.svg", "FIG_VAR": "f4-variance.svg",
-        "FIG_THINK": "f5-thinking-on.svg", "FIG_LAT": "f6-latency.svg", "FIG_PR": "f8-pr-scatter.svg", "EFIG_SCORE": "e-scorecard.svg"}
+        "FIG_THINK": "f5-thinking-on.svg", "FIG_LAT": "f6-latency.svg", "FIG_TS": "f9-typesafe.svg", "FIG_PR": "f8-pr-scatter.svg", "EFIG_SCORE": "e-scorecard.svg"}
 def render(template, outname):
     out = open(os.path.join(HERE, template), encoding="utf8").read()
-    tables = {"TABLE_CEILING": TABLE_CEILING, "TABLE_LATENCY": TABLE_LATENCY, "TABLE_SPEND": TABLE_SPEND, "TABLE_FEAS": TABLE_FEAS, "TABLE_PREVENTION": TABLE_PREVENTION}
+    tables = {"TABLE_CEILING": TABLE_CEILING, "TABLE_LATENCY": TABLE_LATENCY, "TABLE_SPEND": TABLE_SPEND, "TABLE_FEAS": TABLE_FEAS, "TABLE_PREVENTION": TABLE_PREVENTION, "TABLE_TS": TABLE_TS}
     for k, tbl in tables.items():   # {{TABLE_X|CAP=...}} puts the caption INSIDE the table so it cannot be orphaned by a page break
         for m in list(re.finditer(r"\{\{" + k + r"\|CAP=(.*?)\}\}", out, re.S)):
             out = out.replace(m.group(0), tbl.replace("{CAP}", "<caption>" + m.group(1) + "</caption>"))

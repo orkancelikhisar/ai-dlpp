@@ -3,64 +3,71 @@
 <title>AI-DLPP — can small models in the browser prevent data leakage? Executive summary</title>
 <style>
 @page { size: A4; margin: 9mm 10mm 8mm 10mm; }
-html { font-size: 8.3pt; }
-body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #111; margin: 0; line-height: 1.25; }
-h1 { font-size: 14pt; margin: 0 0 1pt; letter-spacing: -0.2pt; line-height: 1.1; }
+html { font-size: 7.5pt; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #111; margin: 0; line-height: 1.2; }
+h1 { font-size: 13pt; margin: 0 0 1pt; letter-spacing: -0.2pt; line-height: 1.1; }
 .sub { color: #555; font-size: 7.8pt; margin: 0 0 4pt; }
-.qs { display: grid; grid-template-columns: 1fr 1fr; gap: 5pt; margin: 0 0 5pt; }
-.q { background: #1f2937; color: #fff; padding: 4pt 7pt; border-radius: 3pt; font-size: 8.6pt; line-height: 1.3; }
+.qs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5pt; margin: 0 0 5pt; }
+.q { background: #1f2937; color: #fff; padding: 3.2pt 6pt; border-radius: 3pt; font-size: 8.2pt; line-height: 1.25; }
 .q b { color: #fbbf24; }
 .hero { margin: 0 0 4pt; } .hero svg { width: 100%; height: auto; display: block; }
-.cap { font-size: 7.1pt; color: #444; margin: 1pt 0 0; line-height: 1.25; }
+.cap { font-size: 6.8pt; color: #444; margin: 1pt 0 0; line-height: 1.2; }
 table.grid { border-collapse: collapse; width: 100%; font-size: 7.5pt; line-height: 1.25; margin: 0 0 5pt; }
-table.grid th, table.grid td { border-bottom: 0.6pt solid #d1d5db; padding: 2.4pt 4pt; vertical-align: top; text-align: left; }
+table.grid th, table.grid td { border-bottom: 0.6pt solid #d1d5db; padding: 1.7pt 3.4pt; vertical-align: top; text-align: left; }
 table.grid th { font-size: 7.4pt; text-transform: uppercase; letter-spacing: .3pt; color: #444; border-bottom: 1px solid #333; }
-table.grid td.k { width: 12%; font-weight: 700; color: #1e3a5f; }
-table.grid td.c { width: 44%; }
+table.grid td.k { width: 11%; font-weight: 700; color: #1e3a5f; }
+table.grid td.c { width: 29.6%; }
 table.grid .n { font-size: 11.5pt; font-weight: 700; letter-spacing: -0.2pt; }
-.aqua { color: #1baf7a; } .blue { color: #2a78d6; } .orange { color: #eb6834; } .mag { color: #e87ba4; } .grey { color: #6b7280; }
-.concl { border: 2px solid #2a78d6; border-radius: 3pt; padding: 4pt 8pt; margin: 0 0 3pt; background: #f8fafc; }
+.aqua { color: #1baf7a; } .blue { color: #2a78d6; } .green { color: #008300; } .orange { color: #eb6834; } .mag { color: #e87ba4; } .grey { color: #6b7280; }
+.concl { border: 1.5px solid #2a78d6; border-radius: 3pt; padding: 3pt 7pt; margin: 0 0 2pt; background: #f8fafc; }
 .concl h2 { font-size: 9.2pt; margin: 0 0 2pt; color: #1e3a5f; }
 .concl p { margin: 0 0 2.5pt; font-size: 8pt; line-height: 1.3; }
 .concl .v { margin-top: 2pt; font-size: 8.5pt; font-weight: 700; color: #1e3a5f; }
 .foot { font-size: 6.6pt; color: #666; margin-top: 2pt; line-height: 1.25; }
 </style></head>
 <body>
-<h1>Can small language models in the browser identify and prevent data leakage in LLM prompts — and does the answer change with larger models?</h1>
-<p class="sub">AI-DLPP study · four in-browser 2–4 B models on WebGPU in real Chrome vs the identical method on five hosted open-weight models (27–120 B where published), three passes at temperature 0, plus one run once with reasoning on · 189-message corpus, blind-annotated gold, a model-free floor beside every number · every figure regenerated from artifacts · draft v2, 9 Sep 2026</p>
+<h1>Can small language models in the browser prevent data leakage in LLM prompts — and does a larger, or a different kind of, model change the answer?</h1>
+<p class="sub">AI-DLPP study · four in-browser 2–4 B models on WebGPU in real Chrome, the identical method on five hosted open-weight models (27–120 B where published) over three passes, and a typed-judgment model (TypeSafe Jev) over three passes · 189-message corpus, blind-annotated gold, a model-free floor beside every number · every figure regenerated from artifacts · draft v3, 17 Sep 2026</p>
 
 <div class="qs">
   <div class="q"><b>Q1.</b> Can small language models, running in real time directly in the browser, identify and prevent data leakage?</div>
   <div class="q"><b>Q2.</b> Does the result differ if we use larger models instead of in-browser ones?</div>
+  <div class="q"><b>Q3.</b> Does it differ again if the model returns typed judgments instead of text?</div>
 </div>
 
 <div class="hero">{{EFIG_SCORE}}<p class="cap"><b>Accuracy and prevention, side by side.</b> (A) F1 at the policy's semantic predicate, message level — best in-browser arm, the model-free floor, the best hosted arm over three passes (dots), and the hosted model with reasoning allowed to finish. (B) Share of leak-bearing messages fully caught (dark) against share of clean messages wrongly actioned (light), entity level. Time and cost are in the table below.</p></div>
 
 <table class="grid">
-<thead><tr><th></th><th>Q1 · small models, in the browser (2–4 B)</th><th>Q2 · larger models, hosted (27–120 B)</th></tr></thead>
+<thead><tr><th></th><th>Q1 · small models, in the browser (2–4 B)</th><th>Q2 · larger models, hosted (27–120 B)</th><th>Q3 · typed judgment, hosted (Jev)</th></tr></thead>
 <tbody>
 <tr><td class="k">Accuracy</td>
-<td class="c"><span class="n aqua">0.262</span> <span class="grey">vs floor 0.776</span> — semantic predicate F1; every in-browser model is <b>below a trivial capitalisation rule</b>, because it fires on most messages (precision ≤ 0.25). Entity spans: F1 0.44–0.49 with the regex tier (0.44–0.47 compiled), of which that tier alone supplies 0.47.</td>
-<td class="c"><span class="n blue">0.881</span> <span class="grey">vs floor 0.776</span> — DeepSeek, mean over three passes, clears the floor every time; <b>the other four models never do</b> (27 B sits on it, 120 B at 0.30–0.47). With reasoning allowed to finish, a sixth model reaches <b>recall 1.000</b> (F1 0.929). Entity spans 0.675 model-only, 2.0× the in-browser best; 0.809 with reasoning.</td></tr>
+<td class="c"><span class="n aqua">0.262</span> <span class="grey">vs floor 0.776</span> — semantic predicate F1; every in-browser model is <b>below a trivial capitalisation rule</b>, because it fires on most messages. Entity spans: F1 0.44–0.49, of which the regex tier alone supplies 0.47.</td>
+<td class="c"><span class="n blue">0.881</span> <span class="grey">vs floor 0.776</span> — DeepSeek, mean of three passes; <b>the other four never clear the floor</b> (27 B sits on it, 120 B at 0.30–0.47). With reasoning, a sixth model reaches <b>recall 1.000</b> (F1 0.929). Entity spans 0.675 model-only, 2.0× the in-browser best.</td>
+<td class="c"><span class="n green">0.963</span> <span class="grey">vs floor 0.776</span> — mean of three passes at the untuned default, and <b>0 false alarms in 160 clean messages</b> on every pass. Perfect ranking; 0.971 when the threshold is picked on held-out messages.</td></tr>
 <tr><td class="k">Prevention</td>
 <td class="c"><span class="n aqua">62–67%</span> of leak-bearing messages fully caught, <span class="n grey">25%</span> of clean messages wrongly actioned — the same 20 of 81, produced by the regex tier whichever model sits behind it.</td>
-<td class="c"><span class="n blue">84%</span> caught at <span class="n grey">21%</span> over-blocked (DeepSeek); 94% at 44% (Qwen3.8 27B). Larger models find more; how eagerly they fire is model-specific.</td></tr>
+<td class="c"><span class="n blue">84%</span> caught at <span class="n grey">21%</span> over-blocked (DeepSeek); 94% at 44% (Qwen3.8 27B). Larger models find more; how eagerly they fire is model-specific.</td>
+<td class="c"><span class="n green">87%</span> caught at <span class="n grey">25%</span> flagged; turn the threshold up and it is <b>78% at 12%</b>, beating the regex tier on both at once.</td></tr>
 <tr><td class="k">Feasibility</td>
-<td class="c">Runs in real Chrome on WebGPU with grammar-constrained JSON. <b>Only the 2 B model answers every message inside the 5 s budget</b>; 3–4 B models exceed it on 3–70 of 189; policy-in-context prompting never reaches a first token on three of four models.</td>
-<td class="c"><b>Not shippable</b> — prompts would leave the machine; the answer points to a <b>local server</b> running the same open weights. Operationally sound: 0 malformed responses in 5,580 calls; rate limits cost 1.8% of rows; reasoning needs 8,192-token budgets.</td></tr>
+<td class="c">Runs in real Chrome on WebGPU. <b>Only the 2 B model answers every message inside the 5 s budget</b>; 3–4 B models exceed it on 3–70 of 189; policy-in-context prompting never reaches a first token on three of four.</td>
+<td class="c"><b>Not shippable</b> — prompts would leave the machine; the answer points to a <b>local server</b> running the same weights. 0 malformed responses in 5,580 calls; rate limits cost 1.8% of rows.</td>
+<td class="c"><b>Not shippable either</b> — also hosted. 567 calls, <b>0 errors, 0 rate limits</b>, 189 of 189 answered every pass. One request per message.</td></tr>
 <tr><td class="k">Cost</td>
 <td class="c"><span class="n aqua">$0</span> per message. Hardware: 2.2–3.4 GB VRAM, 1.7–3.6 s engine load; the compiled prompt is 408–447 tokens against ~1,570 for policy-in-context.</td>
-<td class="c"><span class="n blue">$0.04–0.31</span> per 1,000 messages by model (compiled judge $0.09, policy-in-context $0.21, 2.5×); reasoning $0.23–1.44. The whole study, 6,502 calls: <b>$1.22</b>. Local-server capital cost not measured.</td></tr>
+<td class="c"><span class="n blue">$0.04–0.31</span> per 1,000 messages by model (compiled judge $0.09, policy-in-context $0.21, 2.5×); reasoning $0.23–1.44. The whole study, 6,502 calls: <b>$1.22</b>. Local-server capital cost not measured.</td>
+<td class="c"><span class="n green">$0.12</span> per 1,000 messages. Three passes over the whole corpus cost 7 cents.</td></tr>
 <tr><td class="k">Time</td>
 <td class="c"><span class="n aqua">1.0 s</span> median, 2.6 s p95 per message on the 2 B model; 2.6–4.5 s median on 3–4 B with p95 at the budget; policy-in-context 3.3 s on the 116 messages it answers, 4.4 s over all 189.</td>
-<td class="c"><span class="n blue">0.36–1.2 s</span> median per call for the compiled judge, 0.75–4.5 s for policy-in-context — the same order as the browser's best, not faster. The judge answers in 5–7 tokens: ~0.1 s of decode on a 60 tok/s local server. Reasoning: 3.7–10 s per message.</td></tr>
+<td class="c"><span class="n blue">0.36–1.2 s</span> median per call for the compiled judge, 0.75–4.5 s for policy-in-context — the same order as the browser's best, not faster. The judge answers in 5–7 tokens: ~0.1 s of decode on a 60 tok/s local server. Reasoning: 3.7–10 s per message.</td>
+<td class="c"><span class="n green">0.28 s</span> median per message, 0.33–0.40 s p95 — the fastest arm in the study.</td></tr>
 </tbody></table>
 
 <div class="concl">
 <h2>Conclusion</h2>
-<p><b>Q1 — partly.</b> A 2 B model in the browser runs a policy-conditioned check on every message inside a second at no marginal cost, and the shippable pipeline stops about two leak-bearing messages in three while interrupting one clean prompt in four. That protection is the regex/validator tier's; the language model adds little to it and cannot make the policy's semantic judgment — every in-browser model is below a trivial rule there, because it fires indiscriminately. Structured identifiers: yes. A client relationship disclosed in prose: no.</p>
-<p><b>Q2 — yes, on accuracy.</b> The identical method on the best larger open-weight model clears the semantic floor in every pass — one model of five; the two with published sizes do not — catches five leaks in six at lower over-blocking, doubles model-only entity accuracy, and reaches perfect recall when reasoning is given room — at per-call latency comparable to the browser's best and at cents per thousand messages. Not on time, and not for free on feasibility: hosted inference is forbidden by the cloud boundary, so these numbers describe what a local server running the same weights would deliver.</p>
-<div class="v">Verdict: ship the in-browser tier for what it does well — real-time identifier catching at 1 s and $0 — and put the semantic judgment on a local server running an open-weight model that has shown it clears the floor — here only DeepSeek did, in three passes of three — with the compiled judge, which answers in 5–7 tokens and is the design that transfers.</div>
+<p><b>Q1 — partly.</b> A 2 B model checks every message inside a second at no cost, and the shippable pipeline stops two leak-bearing messages in three while interrupting one clean prompt in four. That protection is the regex tier's: no in-browser model beats a trivial rule at the policy's judgment call. Structured identifiers yes, a client relationship in prose no.</p>
+<p><b>Q2 — yes, on accuracy.</b> One hosted model of five, DeepSeek, clears the floor in every pass and catches five leaks in six at lower over-blocking; the two with published sizes never clear it. Latency matches the browser's best, at cents per thousand messages. Hosted inference is forbidden by the cloud boundary, so this describes what a local server would deliver.</p>
+<p><b>Q3 — yes, and it is the biggest change.</b> Dropping generated text, and letting code propose spans while a judgment model only keeps or rejects them, clears the floor by a wider margin than any language model here, never flags a clean message, and moves 0.029 between passes where the language models moved up to 0.344. Fastest arm in the study, and hosted, so it inherits Q2's boundary.</p>
+<div class="v">Verdict: ship the in-browser tier for what it does well — real-time identifier catching at 1 s and $0 — and put the semantic judgment on a server you control. The design that transfers is the shape rather than the vendor: code proposes the candidates, a small judgment model keeps or rejects them, and the threshold stays yours to set.</div>
 </div>
-<p class="foot">Bounds: one policy (p-fin), one predicate, 19 gold positives (one item moves recall by 0.053); the corpus generator gives every positive a capitalised organisation name, so the floor cannot miss one and no floor figure transfers to a corpus without that property; the reasoning result is one model, one pass, with 31% of rows lost to provider rate limiting; local-server hardware was not measured. Seven defects in the study's own instrumentation and reporting are stated in the paper (§6). Repository <code>orkancelikhisar/ai-dlpp</code>, <code>docs/paper/</code>; full records in <code>docs/research/</code>.</p>
+<p class="foot">Bounds: one policy, one predicate, 19 gold positives (one item moves recall by 0.053); the judgment arm's span recall is capped by the candidates code proposes; the corpus generator gives every positive a capitalised organisation name, which flatters both the floor and the separation; the reasoning result is one pass with 31% of rows lost to rate limiting. Seven defects in the study's own instrumentation are stated in the paper (§7). Repository <code>orkancelikhisar/ai-dlpp</code>; full records in <code>docs/research/</code>.</p>
 </body></html>

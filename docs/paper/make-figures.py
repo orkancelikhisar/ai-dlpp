@@ -12,10 +12,13 @@ Aqua and magenta sit below 3:1 on the light surface; every mark in them carries 
 direct label, which is the relief the validator requires.
 """
 import json, os
+import statistics as st
 HERE = os.path.dirname(os.path.abspath(__file__))
 N = json.load(open(os.path.join(HERE, "data/numbers.json")))
+TS = N.get("typesafe")
+TSS = N.get("typesafe_scores")
 OUT = os.path.join(HERE, "figures")
-C = {"local": "#1baf7a", "floor": "#eb6834", "judge": "#2a78d6", "b": "#e87ba4", "think": "#4a3aa7",
+C = {"local": "#1baf7a", "floor": "#eb6834", "judge": "#2a78d6", "b": "#e87ba4", "think": "#4a3aa7", "ts": "#008300",
      "ink": "#0b0b0b", "mute": "#52514e", "grid": "#e5e7eb", "bg": "#ffffff"}
 FONT = "font-family='Helvetica Neue, Helvetica, Arial, sans-serif'"
 
@@ -93,6 +96,9 @@ def panel_accuracy(b, x0, y0, y1, pw):
     jd = [ML["judge-deepseek-v4-flash-0731"][f"ceiling-0{p}"]["F1"] for p in (1, 2, 3)]
     items = [("in-browser best\n(2–4 B)", N["local_best_message"]["F1"], C["local"], False, None), ("floor: a rule\nwith no model", N["floor_message_level_all"]["F1"], C["floor"], True, None),
              ("hosted best,\nthree passes", sum(jd) / 3, C["judge"], False, jd), ("hosted,\nreasoning on", N["thinkon"]["glm_8192"]["message_attempted"]["F1"], C["think"], False, None)]
+    if TS:
+        tsp = [TS["predicate_at_half"][p]["F1"] for p in TS["passes"]]
+        items.append(("typed judgment\n(TypeSafe)", sum(tsp) / 3, C["ts"], False, tsp))
     step = (pw - 40) / len(items); bw = step * 0.58
     for k, (lab, v, col, hatch, dots) in enumerate(items):
         cx = ax + 4 + step * k + step / 2; y = y1 - (y1 - y0) * v
@@ -111,6 +117,10 @@ def panel_prevention(b, x0, y0, y1, pw):
     dl, do = pv_mean("b-deepseek-v4-flash-0731"); ql, qo = pv_mean("b-qwen3.8-27b"); g = PV["b-glm-5.3-flash [thinkonglm-01]"]
     groups = [("in-browser\n2 B pipeline", q["leak_prevention"], q["over_blocking"], C["local"]), ("hosted B,\nDeepSeek", dl, do, C["b"]),
               ("hosted B,\nQwen3.8 27B", ql, qo, C["b"]), ("hosted B,\nreasoning on*", g["leak_prevention"], g["over_blocking"], C["think"])]
+    if TS:
+        tl = st.mean(TS["entity_at_half"][p]["leak_prevention"] for p in TS["passes"])
+        to = st.mean(TS["entity_at_half"][p]["over_blocking"] for p in TS["passes"])
+        groups.append(("typed judgment\nat 0.5", tl, to, C["ts"]))
     step = (pw - 40) / len(groups); bw = step * 0.27
     for k, (lab, lp, ob, col) in enumerate(groups):
         cx = ax + 4 + step * k + step / 2
@@ -128,6 +138,7 @@ def panel_time(b, x0, y0, pw):
             ("in-browser B, 2 B", fe("baselineB-", "Qwen3.5-2B")["item_wall_p50"], C["local"]),
             ("hosted judge, Mistral", LAT["judge-mistral-small-2603"]["item_wall_p50_answered"], C["judge"]), ("hosted judge, DeepSeek", LAT["judge-deepseek-v4-flash-0731"]["item_wall_p50_answered"], C["judge"]),
             ("hosted B, DeepSeek", LAT["b-deepseek-v4-flash-0731"]["item_wall_p50_answered"], C["b"]), ("hosted B, Nemotron", LAT["b-nemotron-3-super-120b-a12b"]["item_wall_p50_answered"], C["b"])]
+    if TS: rows.append(("typed judgment", TS["cost_time"]["item_wall_p50"], C["ts"]))
     vmax = 6000; rh = 19; y = y0
     for t in (0, 2500, 5000):
         x = ax + bw_ * t / vmax; b.append(line(x, y - 4, x, y + rh * len(rows) + 2)); b.append(text(x, y + rh * len(rows) + 13, f"{t:,}", 8, "middle", C["mute"]))
@@ -142,6 +153,7 @@ def panel_cost(b, x0, y0, pw):
     cm = CK["thinkoff_per_model"]
     short = {"deepseek-v4-flash-0731": "DeepSeek", "mistral-small-2603": "Mistral", "qwen3.8-flash": "Qwen3.8 Flash", "nemotron-3-super-120b-a12b": "Nemotron", "qwen3.8-27b": "Qwen3.8 27B"}
     rows = [("in-browser", 0.0, C["local"])] + [(short[m], v, C["judge"]) for m, v in sorted(cm.items(), key=lambda kv: kv[1])] + [("reasoning on, B", CK["thinkon_glm_b"], C["think"])]
+    if TS: rows.insert(2, ("typed judgment", TS["cost_time"]["per_1k_usd"], C["ts"]))
     vmax = 1.5; rh = 19; y = y0
     for t in (0, 0.5, 1.0, 1.5):
         x = ax + bw_ * t / vmax; b.append(line(x, y - 4, x, y + rh * len(rows) + 2)); b.append(text(x, y + rh * len(rows) + 13, f"${t:.2f}", 8, "middle", C["mute"]))
@@ -157,13 +169,13 @@ def f2():
     W, H = 720, 476; b = []
     panel_accuracy(b, 10, 30, 190, 340); panel_prevention(b, 370, 30, 190, 340)
     panel_time(b, 10, 262, 340); panel_cost(b, 370, 262, 340)
-    b.append(text(10, H - 6, "Same corpus, policy and gold throughout. Hatched = a rule with no model. B = policy-in-context. *Reasoning-on prevention counts 59 unanswered rows as misses; its time is over answered rows.", 8, "start", C["mute"]))
+    b.append(text(10, H - 6, "Same corpus, policy and gold throughout. Hatched = a rule with no model. B = policy-in-context. Typed judgment = TypeSafe at its default 0.5. *Reasoning-on counts 59 unanswered rows as misses.", 8, "start", C["mute"]))
     svg(W, H, b, "f2-scorecard.svg")
 
 def e_scorecard():
-    W, H = 720, 250; b = []
-    panel_accuracy(b, 10, 28, 190, 340); panel_prevention(b, 370, 28, 190, 340)
-    b.append(text(10, H - 6, "Same corpus, policy and gold. Hatched = a rule with no model. B = policy-in-context. *Reasoning-on prevention counts its 59 unanswered rows as misses.", 8, "start", C["mute"]))
+    W, H = 720, 212; b = []
+    panel_accuracy(b, 10, 26, 158, 340); panel_prevention(b, 370, 26, 158, 340)
+    b.append(text(10, H - 6, "Same corpus, policy and gold. Hatched = a rule with no model. B = policy-in-context. Typed judgment = TypeSafe at 0.5. *Reasoning-on counts its 59 unanswered rows as misses.", 8, "start", C["mute"]))
     svg(W, H, b, "e-scorecard.svg")
 
 # ---------------------------------------------------------------- F3 in-browser feasibility (paper Figure 2)
@@ -271,6 +283,54 @@ def f6():
     svg(W, H, b, "f6-latency.svg")
 
 # ---------------------------------------------------------------- F8 precision/recall scatter (paper Figure 6)
+def f9():
+    """The judgment arm's two distinctive pictures: a separating score, and a knob."""
+    W, H = 720, 310; b = []
+    x0, x1, ax = 20, 400, 62
+    b.append(text(x0, 20, "A  Every message's probability, by what the annotators said", 10.5, "start", C["ink"], "bold"))
+    def X(p): return ax + (x1 - ax) * p
+    for t in (0, .25, .5, .75, 1):
+        b.append(line(X(t), 34, X(t), 212)); b.append(text(X(t), 226, f"{t:g}", 8.5, "middle", C["mute"]))
+    b.append(text((ax + x1) / 2, 243, "P(the message discloses a client relationship)", 9, "middle", C["mute"]))
+    hi, lo = TSS["highest_negative"], TSS["lowest_positive"]
+    b.append(rect(X(hi), 34, X(lo) - X(hi), 178, "#f1f5f9"))
+    b.append(line(X(hi), 34, X(hi), 212, C["mute"], 1, "3,3")); b.append(line(X(lo), 34, X(lo), 212, C["mute"], 1, "3,3"))
+    b.append(text((X(hi) + X(lo)) / 2, 30, "empty band", 8, "middle", C["ink"], "bold"))
+    b.append(text((X(hi) + X(lo)) / 2, 256, f"no message scores between {hi:g} and {lo:g}", 8, "middle", C["ink"]))
+    lanes = ((f"{len(TSS['negatives'])} clean", TSS["negatives"], C["mute"]), (f"{len(TSS['positives'])} leak", TSS["positives"], C["ts"]))
+    for lane, (label, vals, col) in enumerate(lanes):
+        cy = 78 + lane * 86
+        b.append(text(ax - 8, cy + 3, label, 8.5, "end", C["ink"]))
+        for i, v in enumerate(vals):
+            b.append(f"<circle cx='{X(v):.1f}' cy='{cy + (i % 7) * 4 - 12:.1f}' r='2.6' fill='{col}' fill-opacity='0.72'/>")
+    b.append(line(X(0.5), 34, X(0.5), 212, C["floor"], 1.5, "4,3")); b.append(text(X(0.5) + 4, 46, "default 0.5", 8, "start", C["floor"], "bold"))
+    px0, py0, px1, py1 = 470, 40, 700, 212
+    b.append(text(440, 20, "B  Leaks stopped against clean prompts flagged", 10.5, "start", C["ink"], "bold"))
+    def PX(v): return px0 + (px1 - px0) * min(v, 0.6) / 0.6
+    def PY(v): return py1 - (py1 - py0) * v
+    for t in (0, .2, .4, .6):
+        b.append(line(PX(t), py0, PX(t), py1)); b.append(text(PX(t), py1 + 12, f"{t:.0%}", 8.5, "middle", C["mute"]))
+    for t in (0, .25, .5, .75, 1):
+        b.append(line(px0, PY(t), px1, PY(t))); b.append(text(px0 - 5, PY(t) + 3, f"{t:.0%}", 8.5, "end", C["mute"]))
+    b.append(text((px0 + px1) / 2, py1 + 25, "clean messages flagged", 9, "middle", C["mute"]))
+    b.append(text(px0 - 36, (py0 + py1) / 2, "leaks stopped", 9, "middle", C["mute"], rot=-90))
+    pts = [f"{PX(x['over_blocking']):.1f},{PY(x['leak_prevention']):.1f}" for x in sorted(TS["entity_sweep"], key=lambda z: z["over_blocking"])]
+    b.append(f"<polyline points='{' '.join(pts)}' fill='none' stroke='{C['ts']}' stroke-width='2'/>")
+    for t, lab in ((0.5, "0.5"), (0.85, "0.85"), (0.95, "0.95")):
+        pt = next(x for x in TS["entity_sweep"] if abs(x["threshold"] - t) < 1e-9)
+        b.append(circ(PX(pt["over_blocking"]), PY(pt["leak_prevention"]), 4, C["ts"]))
+        b.append(text(PX(pt["over_blocking"]) + 7, PY(pt["leak_prevention"]) + 3, lab, 8, "start", C["ts"], "bold"))
+    t0 = TS["entity_tier0"]; q = next(v for k, v in PV.items() if k.startswith("tier2-Qwen3.5-2B ["))
+    dl, do = pv_mean("b-deepseek-v4-flash-0731"); ql, qo = pv_mean("b-qwen3.8-27b")
+    for x, y, col, lab, dy in ((t0["over_blocking"], t0["leak_prevention"], C["floor"], "regex tier alone", -9),
+                               (q["over_blocking"], q["leak_prevention"], C["local"], "in-browser", 16),
+                               (do, dl, C["b"], "hosted B, DeepSeek", -9), (qo, ql, C["b"], "hosted B, Qwen 27B", -9)):
+        b.append(f"<rect x='{PX(x) - 3.5:.1f}' y='{PY(y) - 3.5:.1f}' width='7' height='7' fill='{col}' stroke='white'/>")
+        b.append(text(PX(x) - 6, PY(y) + dy, lab, 7.5, "end", col, "bold"))
+    b.append(text(px1, py0 - 6, "better: up and left", 7.5, "end", C["mute"]))
+    b.append(text(20, H - 8, "Left: pass 1, all 179 scored messages, dots stacked where they collide. Right: the judgment threshold swept 0 to 1 (line) against every other arm's single operating point (squares).", 8, "start", C["mute"]))
+    svg(W, H, b, "f9-typesafe.svg")
+
 def f8():
     W, H = 340, 316; b = []
     x0, y0, x1, y1 = 40, 40, 325, 272
@@ -297,13 +357,18 @@ def f8():
     t8 = N["thinkon"]["glm_8192"]["message_attempted"]; b.append(f"<polygon points='{X(t8['P']):.1f},{Y(t8['R']) - 6:.1f} {X(t8['P']) + 5.5:.1f},{Y(t8['R']) + 4:.1f} {X(t8['P']) - 5.5:.1f},{Y(t8['R']) + 4:.1f}' fill='{C['think']}' stroke='white'/>")
     b.append(text(X(t8["P"]) - 8, Y(t8["R"]) + 34, "reasoning on (8,192)", 8, "end", C["think"], "bold"))
     jd = ML["judge-deepseek-v4-flash-0731"]["ceiling-03"]; b.append(text(X(jd["P"]) - 8, Y(jd["R"]) + 22, "hosted judge, DeepSeek ×3", 8, "end", C["judge"], "bold"))
+    if TS:
+        for p in TS["passes"]:
+            v = TS["predicate_at_half"][p]; b.append(circ(X(v["P"]), Y(v["R"]), 3.6, C["ts"]))
+        v = TS["predicate_at_half"][TS["passes"][0]]
+        b.append(text(X(v["P"]) - 8, Y(v["R"]) - 8, "typed judgment ×3", 8, "end", C["ts"], "bold"))
     b.append(text(X(0.05), Y(0.62), "in-browser 2–4 B: low precision at any recall", 8, "start", C["local"]))
     b.append(text(10, H - 6, f"Aqua: {len(N['local_message_level'])} in-browser arms · blue: hosted judge · pink: hosted B (3 passes) · grey: iso-F1", 8.5, "start", C["mute"]))
     svg(W, H, b, "f8-pr-scatter.svg")
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    for fn in (f1, f2, e_scorecard, f3, f4, f5, f6, f8): fn()
+    for fn in (f1, f2, e_scorecard, f3, f4, f5, f6, f8, f9): fn()
     figs = sorted(f for f in os.listdir(OUT) if f.endswith(".svg") and not f.startswith(("e-", "f7-")))
     html = "<html><body style='margin:0;background:#fff'>" + "".join(f"<div style='padding:6px;border-bottom:1px solid #ddd'><div style='font:11px monospace;color:#888'>{f}</div><img src='{f}' style='max-width:720px;display:block'></div>" for f in figs) + "</body></html>"
     open(os.path.join(OUT, "_contact.html"), "w").write(html); print("  wrote _contact.html")
