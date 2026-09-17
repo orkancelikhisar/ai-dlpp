@@ -423,6 +423,15 @@ export interface Thresholds {
    * candidate inside a finding already reported -- four orthographic hits inside
    * one PEM block, say. Gold pairs one-to-one, so every extra is a false
    * positive for text already caught.
+   *
+   * REPORTING ONLY. Keeping the most confident member DROPS the others, so a
+   * short high-confidence token inside a long low-confidence key block survives
+   * and the block does not. Here that moves a score and nothing else: these
+   * findings are consumed by `typesafe-score-lib` alone and no transform acts on
+   * them. In an engine whose redactor consumes findings it would blank twenty
+   * characters of a hundred-character private key and send the rest, so build
+   * the redaction set from every finding that fired, BEFORE any merge. Raised by
+   * the system1-dlp session, which hit it while lifting this function.
    */
   readonly mergeOverlaps?: boolean;
 }

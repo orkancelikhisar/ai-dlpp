@@ -294,3 +294,41 @@ The paper's published figures are the rule as it ran, and they still reproduce b
 `typesafe:score` prints 0.944 at the predicate and 0.556 at the entity level on pass 1. The tuned rule
 is an addition, not a correction, and `projectFindings` defaults to the original behaviour so that no
 stored number moves under it.
+
+---
+
+# 11. What a second, independent pipeline found (cross-session, 2026-09-17)
+
+The tuning above was handed to the session building `system1-dlp`, which had re-implemented the same
+idea from the live docs with its own candidate finders and its own question wording. It reproduced the
+decision-rule work on its own probabilities and returned three things this record did not have. Its
+absolute numbers are NOT comparable with §10's — different candidates and different wording make it a
+different pipeline — but three findings are about the method rather than the numbers.
+
+**1. A threshold belongs to a (policy, question-builder, finder) triple, not to a policy.** Same model,
+same corpus, same policy: this arm's empty band sits at 0.29–0.41 and theirs at 0.42–0.81, so the gap
+midpoint is 0.375 here and 0.60 there. Each is right for its own wording and neither transfers; they
+measured the cost of crossing them at one message of F1 (0.973 against 0.944). Any threshold shipped
+without the identity of the prompt that produced it is a number waiting to be wrong. `config/thresholds.json`
+in that repo now carries `tunedFor`; §10.2's values inherit the same condition.
+
+**2. `mergeOverlaps` is safe here and dangerous one step downstream.** It keeps the most confident
+member of a cluster and drops the rest, so a short high-confidence token inside a long low-confidence
+key block survives and the block does not. In this arm the findings are consumed only by
+`typesafe-score-lib`, so it moves a score; in an engine whose redactor consumes findings it would blank
+part of a private key and send the remainder. Verified by grep that nothing here transforms text from
+them, and the warning is now in the function.
+
+**3. The 0.907 candidate ceiling is not a fact about the model.** §10 ranked "raise the candidate
+ceiling" as the first lever; they closed it, reporting 108 of 108 gold spans proposed on 319 candidates
+against this arm's 417, by reading the policy's own §2.5 — the prohibition is "not relieved by masking
+part of the value, by truncating it, by reversing its digits" — as an instruction to the finders, and
+deriving relaxed variants of the IR's rules from it. That is the policy driving the deterministic tier
+as well as the model's questions, which is the project's original claim applied one layer lower than it
+had been.
+
+They also report a negative result worth keeping: tuning per entity type to maximise prevention under a
+10% over-blocking cap did **worse** than not tuning per type at all on their distributions, and the cap
+did not hold out of fold. §10.4's warning that F1 is the wrong objective for a leak-stopping tool is
+stronger than it was written: under a prevention objective, per-type tuning on evidence this thin
+appears to add nothing.
