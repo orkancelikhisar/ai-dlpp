@@ -135,3 +135,81 @@ so the plan is `ts-01`, `ts-02`, `ts-03` and the spread reported beside the mean
 - **A dry run's numbers are noise by construction** (the stub hashes ids into probabilities). The
   dry run proves the pipeline, never the model. Its ROC-AUC came out at 0.538, near chance, which
   is the expected reading and a check that no label leaks into scoring.
+
+---
+
+# Results: three passes, 189 messages, 2026-09-17
+
+Runs `ts-01`, `ts-02`, `ts-03`, model `jev-1.13.0`, concurrency 4. **189 of 189 answered on every
+pass, zero errors, zero 429s, zero retries.** $0.021803 per pass, $0.0654 for the three.
+
+## 9.1 The semantic predicate, message level
+
+| | pass 1 | pass 2 | pass 3 | mean |
+|---|---|---|---|---|
+| F1 at the default 0.5 | 0.944 | 0.973 | 0.973 | **0.963** |
+| precision / recall at 0.5 | 1.000 / 0.895 | 1.000 / 0.947 | 1.000 / 0.947 | 1.000 / 0.930 |
+| F1, split-half (the honest number) | 0.971 | 0.971 | 0.971 | **0.971** |
+| F1, best threshold (FITTED) | 1.000 | 1.000 | 1.000 | 1.000 |
+| best threshold | 0.41 | 0.48 | 0.42 | 0.44 |
+| ROC-AUC | 1.000 | 1.000 | 1.000 | **1.000** |
+
+Beside the study's own numbers: the model-free floor is **0.776**, the best in-browser arm is
+**0.262**, and the best hosted LLM judge, DeepSeek V4 Flash, is **0.881** mean over three passes
+(0.927 at its best). This arm clears the floor on every pass at the untuned default, and its
+ranking is perfect: in pass 1 the highest-scoring negative sits at 0.29 and the lowest-scoring
+positive at 0.41, so ANY threshold in that gap separates the corpus completely. The two
+"misses" at 0.5 are positives at 0.49 and 0.41, both still above every negative.
+
+Calibration is one-sided rather than well spread: 160 of 179 messages land under 0.3 and every
+one of them is a true negative; every message over 0.4 is a true positive. The model is not
+producing a graded belief here, it is producing a near-separating score.
+
+**Stability, which is the result the LLM arms could not deliver.** Message-level F1 moved by
+0.029 across the three passes, against 0.109 mean and 0.344 max for the hosted LLM arms at
+temperature 0 (§9.3 of the ceiling record). The predicate probability was identical on 88 of 189
+messages and never moved by more than 0.070; candidate labels were identical on 407 of 417
+(97.6%).
+
+## 9.2 Entity spans, and what the judgment adds
+
+| | tier 0 alone | TypeSafe at 0.5 (3-pass mean) |
+|---|---|---|
+| span F1, overlap rule | 0.459 | **0.551** |
+| leak prevention | 0.667 | **0.870** |
+| over-blocking | 0.247 | 0.251 |
+
+Same candidates, same corpus: the judgment lifts prevention from two leak-bearing messages in
+three to seven in eight **at the same false-alarm rate**. At a stricter 0.85 it runs the other
+way, 0.778 prevention at 0.123 over-blocking, which is half the false alarms of the regex tier
+alone. The knob is real and it is cheap to move, because the run stored probabilities.
+
+The filter effect says it directly: of 101 tier-0 candidates that touch no gold span, the model
+rejected **80** (79.2%); of 105 that do touch gold, it wrongly rejected **7** (6.7%).
+
+For comparison from the paper, the hosted policy-in-context arms: DeepSeek 0.837 prevention at
+0.210 over-blocking, Qwen3.8 27B 0.938 at 0.444.
+
+## 9.3 Cost and time
+
+$0.1154 per 1,000 messages, 2,490 input tokens p50 per message, 3 questions per message at the
+median. **277-282 ms per message p50, 328-398 ms p95** — one request carrying every question.
+The compiled LLM judge costs $0.0856 per 1,000 and runs 357-1,209 ms per call, and the best
+in-browser arm takes 1,018 ms per message. So this arm is about 1.3x the judge's price and about
+3x faster than the browser, for a score that clears a floor neither the browser nor four of the
+five hosted models could.
+
+## 9.4 What these numbers do not say
+
+- **It is hosted.** Prompts leave the machine, so this is a Q2-style comparator and not a
+  shippable tier, exactly like the OpenRouter slate. The design it argues for is the same one:
+  a local server running the judgment, with the in-browser regex tier in front.
+- **Perfect separation flatters everyone.** The corpus is synthetic and its positives are
+  generated from templates; the same property is why the no-model floor reaches 0.776. A clean
+  0.12 gap between the highest negative and the lowest positive is a statement about this corpus
+  as much as about the model, and it will not transfer unexamined to real traffic.
+- **19 positives.** One item moves recall by 0.053, which is most of the pass-to-pass movement.
+- **Entity recall is capped by the candidate generator**, not by the model: tier 0 and the
+  orthographic oracle propose, and nothing else can be found. The tier-0 baseline row is there
+  so that ceiling stays visible.
+- **The span-wise predicate column stays empty.** A noul returns no clause.
